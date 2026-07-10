@@ -15,6 +15,7 @@ use ratatui::style::{Color, Modifier};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 
+use crate::api;
 use crate::config::Config;
 use crate::proto::{self, ClientMsg, PROTOCOL_VERSION, ServerMsg};
 use crate::runtime::event::{AppEvent, PtyData};
@@ -43,6 +44,7 @@ enum ClientCtl {
 pub async fn run(
     cfg: Config,
     listener: Option<UnixListener>,
+    api_listener: Option<UnixListener>,
     initial: Vec<UnixStream>,
     opts: ServerOpts,
 ) -> io::Result<()> {
@@ -57,6 +59,9 @@ pub async fn run(
 
     let mut clients: HashMap<ClientId, Client> = HashMap::new();
     let mut next_client: ClientId = 1;
+    // Automation API: parked wait-* requests resolve on the agent poll.
+    let (api_tx, mut api_rx) = mpsc::unbounded_channel::<(api::Req, api::Replier)>();
+    let mut waiters: Vec<(api::PendingWait, api::Replier)> = Vec::new();
     let mut term = Terminal::new(TestBackend::new(area.width, area.height)).expect("test backend is infallible");
 
     for stream in initial {
@@ -188,9 +193,21 @@ pub async fn run(
             Some(Ok((stream, _))) = accept_next(&listener) => {
                 let _ = ctl_tx.send(ClientCtl::New(stream));
             }
+            Some(Ok((stream, _))) = accept_next(&api_listener) => {
+                api::spawn_conn(stream, api_tx.clone());
+            }
+            Some((req, reply)) = api_rx.recv() => {
+                match api::handle(&mut rt, area, req) {
+                    Ok(v) => { let _ = reply.send(v); }
+                    Err(pending) => waiters.push((pending, reply)),
+                }
+            }
             _ = ws_poll.tick() => rt.poll_workspaces(),
             _ = agent_poll.tick() => {
-                for notice in rt.poll_agent_status(&manifests) {
+                let notices = rt.poll_agent_status(&manifests);
+                // After the poll — waiters must see fresh statuses.
+                api::check_waiters(&rt, &mut waiters);
+                for notice in notices {
                     // Suppress for the pane the user is looking at right now.
                     let visible = !clients.is_empty() && rt.state.focused_pane() == notice.pane;
                     if !visible {
