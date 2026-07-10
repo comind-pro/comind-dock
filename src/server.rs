@@ -162,15 +162,7 @@ pub async fn run(
                 let mut next = Some(ev);
                 while let Some(ev) = next.take() {
                     match ev {
-                        AppEvent::PtyExit(id) => {
-                            if runtime::handle_pane_exit(&mut rt, id) {
-                                // The user closed everything on purpose.
-                                crate::state::snapshot::delete();
-                                shutdown_clients(&clients);
-                                flush_writers().await;
-                                return Ok(());
-                            }
-                        }
+                        AppEvent::PtyExit(id) => runtime::handle_pane_exit(&mut rt, id, area),
                         AppEvent::Term(id, tev) => runtime::handle_term_event(&mut rt, id, tev),
                     }
                     next = rx.try_recv().ok();

@@ -99,14 +99,18 @@ fn rows(rt: &Runtime, theme: &Theme) -> Vec<Row> {
             ]),
             target: Some(Target::Workspace(wi)),
         });
-        // Subtitle: git branch when in a repo, otherwise tab/pane counts.
-        let subtitle = match rt.branches.get(&ws.id) {
-            Some(b) => b.clone(),
-            None => {
-                let panes: usize = ws.tabs.iter().map(|t| t.layout.panes().len()).sum();
-                format!("{} tabs · {panes} panes", ws.tabs.len())
-            }
-        };
+        // Subtitle: git branch and tab/pane counts side by side — counts
+        // only when non-trivial, so single-pane spaces stay quiet.
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(b) = rt.branches.get(&ws.id) {
+            parts.push(b.clone());
+        }
+        let tabs = ws.tabs.len();
+        let panes: usize = ws.tabs.iter().map(|t| t.layout.panes().len()).sum();
+        if tabs > 1 || panes > 1 {
+            parts.push(format!("{tabs}·{panes}"));
+        }
+        let subtitle = parts.join(" · ");
         out.push(Row {
             line: Line::from(Span::styled(
                 format!("{indent}  {subtitle}"),
@@ -179,12 +183,24 @@ fn rows(rt: &Runtime, theme: &Theme) -> Vec<Row> {
     out
 }
 
-pub fn render(rt: &Runtime, theme: &Theme, area: Rect, frame: &mut Frame) {
-    let lines: Vec<Line> = rows(rt, theme).into_iter().map(|r| r.line).collect();
-    frame.render_widget(Paragraph::new(lines), area);
+/// Scroll offset clamped so the last row stays reachable.
+fn clamped_scroll(rt: &Runtime, row_count: usize, height: u16) -> u16 {
+    rt.sidebar_scroll.min((row_count as u16).saturating_sub(height))
 }
 
-/// Which target sits on sidebar-relative row `y`.
-pub fn hit(rt: &Runtime, theme: &Theme, y: u16) -> Option<Target> {
-    rows(rt, theme).get(y as usize).and_then(|r| r.target)
+pub fn max_scroll(rt: &Runtime, theme: &Theme, height: u16) -> u16 {
+    (rows(rt, theme).len() as u16).saturating_sub(height)
+}
+
+pub fn render(rt: &Runtime, theme: &Theme, area: Rect, frame: &mut Frame) {
+    let lines: Vec<Line> = rows(rt, theme).into_iter().map(|r| r.line).collect();
+    let scroll = clamped_scroll(rt, lines.len(), area.height);
+    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), area);
+}
+
+/// Which target sits on sidebar-relative row `y` (viewport coordinates).
+pub fn hit(rt: &Runtime, theme: &Theme, y: u16, height: u16) -> Option<Target> {
+    let rows = rows(rt, theme);
+    let scroll = clamped_scroll(rt, rows.len(), height);
+    rows.get((y + scroll) as usize).and_then(|r| r.target)
 }

@@ -78,6 +78,8 @@ pub struct Runtime {
     pub branches: HashMap<crate::state::ids::WorkspaceId, String>,
     /// The last computed view — neighbor focus and mouse hit testing.
     pub last_view: Option<crate::ui::view::View>,
+    /// Sidebar scroll offset in rows (mouse wheel over the sidebar).
+    pub sidebar_scroll: u16,
     pub drag: Option<MouseDrag>,
     pub last_click: Option<(std::time::Instant, u16, u16)>,
     tx: mpsc::UnboundedSender<AppEvent>,
@@ -406,6 +408,7 @@ pub fn build(
         titles: HashMap::new(),
         branches: HashMap::new(),
         last_view: None,
+        sidebar_scroll: 0,
         drag: None,
         last_click: None,
         tx,
@@ -417,6 +420,9 @@ pub fn build(
         let resume = agent.as_deref().map(crate::agents::resume_command);
         rt.spawn_pane_cmd(pane, area.width, area.height, resume)?;
     }
+    // Branches known before the first frame — the sidebar subtitle must not
+    // repaint from counts to branch a poll-tick later.
+    rt.poll_workspaces();
     Ok(rt)
 }
 
@@ -448,13 +454,22 @@ fn folder_name(p: &std::path::Path) -> String {
     p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "/".to_string())
 }
 
-/// A pane's process exited: drop its runtime, cascade the close. True → quit app.
-pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId) -> bool {
-    let Some(mut p) = rt.panes.remove(&id) else { return false };
+/// A pane's process exited: drop its runtime, cascade the close. Closing the
+/// last tab of the last space does NOT quit — a fresh root space opens so the
+/// runtime always has a terminal (quit stays on the tab-bar ✕ / prefix keys).
+pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
+    let Some(mut p) = rt.panes.remove(&id) else { return };
     p.pty.kill();
     rt.titles.remove(&id);
     rt.dirty = true;
-    matches!(rt.state.close_pane(id), CloseOutcome::LastClosed)
+    if matches!(rt.state.close_pane(id), CloseOutcome::LastClosed) {
+        let name = rt.workspace_name();
+        let cwd = rt.new_space_cwd();
+        let pane = rt.state.new_workspace(name, cwd, None);
+        if let Err(e) = rt.spawn_pane(pane, area.width.max(4), area.height.max(4)) {
+            tracing::warn!(error = %e, "root space spawn failed");
+        }
+    }
 }
 
 pub fn handle_term_event(rt: &mut Runtime, id: PaneId, ev: TermEvent) {

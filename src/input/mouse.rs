@@ -85,15 +85,10 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 && sb.contains(pos)
             {
                 let theme = rt.theme;
-                match sidebar::hit(rt, &theme, ev.row - sb.y) {
+                match sidebar::hit(rt, &theme, ev.row - sb.y, sb.height) {
                     Some(sidebar::Target::Workspace(wi)) => {
-                        // Select the space and open its menu (mockup behavior).
+                        // Plain click switches; the menu lives on right-click.
                         rt.state.active_workspace = wi;
-                        rt.state.input_mode = InputMode::Menu {
-                            x: ev.column,
-                            y: ev.row,
-                            items: menu::space_items(wi),
-                        };
                     }
                     Some(sidebar::Target::Pane(pane)) => {
                         rt.state.focus_pane(pane);
@@ -218,6 +213,20 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
 
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
             let up = ev.kind == MouseEventKind::ScrollUp;
+            if let Some(sb) = view.sidebar
+                && sb.contains(pos)
+            {
+                let theme = rt.theme;
+                let max = sidebar::max_scroll(rt, &theme, sb.height);
+                let step = scroll_lines as u16;
+                let cur = rt.sidebar_scroll.min(max);
+                rt.sidebar_scroll =
+                    if up { cur.saturating_sub(step) } else { (cur + step).min(max) };
+                if rt.sidebar_scroll != cur {
+                    rt.mark_dirty();
+                }
+                return InputOutcome::Continue;
+            }
             if let Some((id, rect)) = pane_at(&view.pane_rects, pos) {
                 let inner = crate::ui::content_rect(rect);
                 if !inner.contains(pos) {
@@ -240,6 +249,25 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
         }
 
         MouseEventKind::Down(MouseButton::Right) => {
+            // Right-click on a sidebar space opens its menu (same gesture as
+            // the pane context menu).
+            if let Some(sb) = view.sidebar
+                && sb.contains(pos)
+            {
+                let theme = rt.theme;
+                if let Some(sidebar::Target::Workspace(wi)) =
+                    sidebar::hit(rt, &theme, ev.row - sb.y, sb.height)
+                {
+                    rt.state.active_workspace = wi;
+                    rt.state.input_mode = InputMode::Menu {
+                        x: ev.column,
+                        y: ev.row,
+                        items: menu::space_items(wi),
+                    };
+                    rt.mark_dirty();
+                }
+                return InputOutcome::Continue;
+            }
             // Right-click on a pane opens the context menu.
             if let Some((id, _)) = pane_at(&view.pane_rects, pos) {
                 rt.state.active_tab_mut().focused_pane = id;

@@ -206,12 +206,6 @@ pub fn save(state: &AppState, agents: &std::collections::HashMap<PaneId, String>
     }
 }
 
-pub fn delete() {
-    if let Some(p) = path() {
-        let _ = std::fs::remove_file(p);
-    }
-}
-
 pub fn load() -> Option<Snapshot> {
     let p = path()?;
     let text = std::fs::read_to_string(p).ok()?;
