@@ -155,10 +155,25 @@ impl Runtime {
         command: Option<String>,
         env: Vec<(String, String)>,
     ) -> io::Result<()> {
+        self.spawn_pane_full(pane, cols, rows, command, env, None)
+    }
+
+    pub fn spawn_pane_full(
+        &mut self,
+        pane: PaneId,
+        cols: u16,
+        rows: u16,
+        command: Option<String>,
+        env: Vec<(String, String)>,
+        cwd: Option<std::path::PathBuf>,
+    ) -> io::Result<()> {
         let scrollback = self.cfg.advanced.scrollback_lines();
         let emu = Emulator::new(cols, rows, pane, self.tx.clone(), scrollback);
         let mut opts = self.spawn_opts(command);
         opts.env = env;
+        if let Some(cwd) = cwd.filter(|c| c.is_dir()) {
+            opts.cwd = cwd;
+        }
         let program = opts
             .command
             .as_deref()
@@ -284,15 +299,32 @@ impl Runtime {
         (notices, changes)
     }
 
-    /// Track each space's folder from its focused pane's shell: update cwd,
-    /// auto-rename (unless renamed manually), refresh the git branch.
+    /// Track each space's folder: the space follows the cwd MOST of its
+    /// panes live in (majority vote, ties keep the current anchor) — one tab
+    /// cd-ing elsewhere must not drag the whole space with it. Also
+    /// auto-rename (unless renamed manually) and refresh the git branch.
     pub fn poll_workspaces(&mut self) {
         for wi in 0..self.state.workspaces.len() {
             let ws = &self.state.workspaces[wi];
             let ws_id = ws.id;
-            let pane = ws.active_tab().focused_pane;
-            let pid = self.panes.get(&pane).and_then(|p| p.pty.child_pid);
-            if let Some(cwd) = pid.and_then(crate::platform::process_cwd) {
+            let mut votes: HashMap<std::path::PathBuf, usize> = HashMap::new();
+            for pane in ws.tabs.iter().flat_map(|t| t.layout.panes()) {
+                if let Some(cwd) = self
+                    .panes
+                    .get(&pane)
+                    .and_then(|p| p.pty.child_pid)
+                    .and_then(crate::platform::process_cwd)
+                {
+                    *votes.entry(cwd).or_default() += 1;
+                }
+            }
+            let current = ws.cwd.clone();
+            let winner = votes
+                .into_iter()
+                // Strict max; the current anchor wins ties.
+                .max_by_key(|(cwd, n)| (*n, *cwd == current))
+                .map(|(cwd, _)| cwd);
+            if let Some(cwd) = winner {
                 let ws = &mut self.state.workspaces[wi];
                 if ws.cwd != cwd {
                     ws.cwd = cwd.clone();
@@ -364,18 +396,21 @@ impl Runtime {
 
     /// Snapshot the session, remembering which agent ran in which pane.
     pub fn save_session(&self) {
-        let mut agents = HashMap::new();
+        let mut metas = HashMap::new();
         for (id, p) in &self.panes {
-            if let Some(agent) = p.agent {
-                // "agent:session-id" when the integration hook reported one.
-                let ident = match self.agent_sessions.get(id) {
-                    Some(s) => format!("{agent}:{s}"),
-                    None => agent.to_string(),
-                };
-                agents.insert(*id, ident);
+            // "agent:session-id" when the integration hook reported one.
+            let agent = p.agent.map(|agent| match self.agent_sessions.get(id) {
+                Some(s) => format!("{agent}:{s}"),
+                None => agent.to_string(),
+            });
+            // The pane's own folder — an agent must resume where its
+            // conversation lives, wherever the workspace anchor drifted.
+            let cwd = p.pty.child_pid.and_then(crate::platform::process_cwd);
+            if agent.is_some() || cwd.is_some() {
+                metas.insert(*id, crate::state::snapshot::PaneMeta { agent, cwd });
             }
         }
-        crate::state::snapshot::save(&self.state, &agents);
+        crate::state::snapshot::save(&self.state, &metas);
     }
 
     /// Default workspace name: the folder new panes spawn in.
@@ -459,7 +494,7 @@ pub fn build(
             let cwd = resolve_cwd(&cfg.terminal);
             let st = AppState::new(folder_name(&cwd), cwd);
             let first = st.focused_pane();
-            (st, vec![(first, None)])
+            (st, vec![(first, crate::state::snapshot::PaneMeta::default())])
         }
     };
     let mut rt = Runtime {
@@ -481,9 +516,11 @@ pub fn build(
         raw_out,
         dirty: true,
     };
-    for (pane, agent) in initial_panes {
-        let resume = agent.as_deref().map(crate::agents::resume_command);
-        rt.spawn_pane_cmd(pane, area.width, area.height, resume)?;
+    for (pane, meta) in initial_panes {
+        let resume = meta.agent.as_deref().map(crate::agents::resume_command);
+        // The pane's own saved folder wins over the workspace anchor —
+        // agent conversations are folder-bound.
+        rt.spawn_pane_full(pane, area.width, area.height, resume, Vec::new(), meta.cwd)?;
     }
     // Branches known before the first frame — the sidebar subtitle must not
     // repaint from counts to branch a poll-tick later.

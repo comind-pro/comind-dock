@@ -12,8 +12,17 @@ use super::layout::{Dir, Node};
 use super::workspace::{Tab, Workspace};
 use super::{AppState, InputMode};
 
-/// A pane to spawn on restore, with the agent that ran there (if any).
-pub type PaneSpawn = (PaneId, Option<String>);
+/// What restore knows about a pane: the agent ident that ran there (if
+/// any) and the pane's own cwd — an agent must resume in ITS folder, not
+/// wherever the workspace cwd drifted to.
+#[derive(Debug, Clone, Default)]
+pub struct PaneMeta {
+    pub agent: Option<String>,
+    pub cwd: Option<PathBuf>,
+}
+
+/// A pane to spawn on restore with its metadata.
+pub type PaneSpawn = (PaneId, PaneMeta);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -45,10 +54,13 @@ pub struct TabSnap {
 #[serde(rename_all = "snake_case")]
 pub enum NodeSnap {
     /// A pane; `agent` records which agent CLI ran there so restore can
-    /// relaunch it into its conversation.
+    /// relaunch it into its conversation, `cwd` where the pane's process
+    /// actually lived (agent sessions are folder-bound).
     Leaf {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
     },
     Split { dir: DirSnap, ratio: f32, a: Box<NodeSnap>, b: Box<NodeSnap> },
 }
@@ -60,26 +72,32 @@ pub enum DirSnap {
     Down,
 }
 
-fn node_to_snap(node: &Node, agents: &std::collections::HashMap<PaneId, String>) -> NodeSnap {
+fn node_to_snap(node: &Node, panes: &std::collections::HashMap<PaneId, PaneMeta>) -> NodeSnap {
     match node {
-        Node::Leaf(id) => NodeSnap::Leaf { agent: agents.get(id).cloned() },
+        Node::Leaf(id) => {
+            let meta = panes.get(id).cloned().unwrap_or_default();
+            NodeSnap::Leaf {
+                agent: meta.agent,
+                cwd: meta.cwd.map(|c| c.to_string_lossy().into_owned()),
+            }
+        }
         Node::Split { dir, ratio, a, b } => NodeSnap::Split {
             dir: match dir {
                 Dir::Right => DirSnap::Right,
                 Dir::Down => DirSnap::Down,
             },
             ratio: *ratio,
-            a: Box::new(node_to_snap(a, agents)),
-            b: Box::new(node_to_snap(b, agents)),
+            a: Box::new(node_to_snap(a, panes)),
+            b: Box::new(node_to_snap(b, panes)),
         },
     }
 }
 
 fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen, agents: &mut Vec<PaneSpawn>) -> Node {
     match snap {
-        NodeSnap::Leaf { agent } => {
+        NodeSnap::Leaf { agent, cwd } => {
             let id = ids.pane();
-            agents.push((id, agent.clone()));
+            agents.push((id, PaneMeta { agent: agent.clone(), cwd: cwd.clone().map(PathBuf::from) }));
             Node::Leaf(id)
         }
         NodeSnap::Split { dir, ratio, a, b } => Node::Split {
@@ -95,8 +113,8 @@ fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen, agents: &mut Vec<PaneSpawn>) -
 }
 
 impl Snapshot {
-    /// `agents`: which agent CLI ran in which pane (for resume on restore).
-    pub fn of(state: &AppState, agents: &std::collections::HashMap<PaneId, String>) -> Self {
+    /// `panes`: per-pane restore metadata (agent ident, actual cwd).
+    pub fn of(state: &AppState, panes: &std::collections::HashMap<PaneId, PaneMeta>) -> Self {
         Snapshot {
             active_workspace: state.active_workspace,
             workspaces: state
@@ -115,7 +133,7 @@ impl Snapshot {
                         .iter()
                         .map(|t| TabSnap {
                             name: t.name.clone(),
-                            layout: node_to_snap(&t.layout, agents),
+                            layout: node_to_snap(&t.layout, panes),
                         })
                         .collect(),
                 })
@@ -194,9 +212,9 @@ pub fn path() -> Option<PathBuf> {
     crate::logging::state_dir().map(|d| d.join("session.json"))
 }
 
-pub fn save(state: &AppState, agents: &std::collections::HashMap<PaneId, String>) {
+pub fn save(state: &AppState, panes: &std::collections::HashMap<PaneId, PaneMeta>) {
     let Some(p) = path() else { return };
-    let snap = Snapshot::of(state, agents);
+    let snap = Snapshot::of(state, panes);
     match serde_json::to_string_pretty(&snap) {
         Ok(json) => {
             if let Err(e) = std::fs::write(&p, json) {
@@ -233,11 +251,17 @@ mod tests {
         s.new_workspace("x".into(), std::path::PathBuf::from("/tmp"), None);
         s.rename_active_workspace("proj".into());
 
-        // Mark the focused pane of ws1/tab1 as a claude pane.
+        // Mark the focused pane of ws1/tab1 as a claude pane living in its
+        // own folder — the workspace cwd may have drifted elsewhere.
         let claude_pane = s.workspaces[0].tabs[0].focused_pane;
-        let agents =
-            std::collections::HashMap::from([(claude_pane, "claude".to_string())]);
-        let snap = Snapshot::of(&s, &agents);
+        let metas = std::collections::HashMap::from([(
+            claude_pane,
+            PaneMeta {
+                agent: Some("claude:uuid-1".to_string()),
+                cwd: Some(std::path::PathBuf::from("/projects/real-home")),
+            },
+        )]);
+        let snap = Snapshot::of(&s, &metas);
         let json = serde_json::to_string(&snap).unwrap();
         let back: Snapshot = serde_json::from_str(&json).unwrap();
         let (restored, panes) = back.restore().unwrap();
@@ -247,10 +271,13 @@ mod tests {
         assert_eq!(restored.workspaces[0].tabs[0].layout.panes().len(), 3);
         assert_eq!(restored.workspaces[1].name, "proj");
         assert_eq!(panes.len(), 5);
+        let agent: Vec<_> = panes.iter().filter(|(_, m)| m.agent.is_some()).collect();
+        assert_eq!(agent.len(), 1, "exactly one pane remembers its agent");
+        assert_eq!(agent[0].1.agent.as_deref(), Some("claude:uuid-1"));
         assert_eq!(
-            panes.iter().filter(|(_, a)| a.as_deref() == Some("claude")).count(),
-            1,
-            "exactly one pane remembers its agent"
+            agent[0].1.cwd.as_deref(),
+            Some(std::path::Path::new("/projects/real-home")),
+            "the agent restores in ITS folder, not the workspace's"
         );
         assert!(restored.check_invariants());
     }
