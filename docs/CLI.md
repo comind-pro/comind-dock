@@ -11,9 +11,10 @@ where useful for scripting. Exit codes: 0 ok, 1 error, 2 usage.
 - `-f, --folder [path]` — folder-scoped attach (default: current directory).
   The client shows only workspaces rooted at or under the folder — agents,
   history, and notifications for this project only. Creates a workspace with
-  that cwd if none matches. Scope is per-client presentation state; the
-  shared session and other clients are unaffected. Combinable with
-  `--session`.
+  that cwd if none matches. Scope is currently session-level: the last
+  attaching client's scope wins, and a plain `cdock` attach widens the view
+  back (per-client scope and a widen toggle are on the roadmap). Combinable
+  with `--session`.
 - `--session <name>` — use/create a named session.
 - `--no-session` — monolithic single-process mode (no server/client split).
 - `--remote <ssh-target>` — attach to a remote server over SSH

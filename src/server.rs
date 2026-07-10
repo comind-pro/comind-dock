@@ -121,7 +121,7 @@ pub async fn run(
                     tracing::info!(client = id, "client connected");
                 }
                 ClientCtl::In(id, msg) => match msg {
-                    ClientMsg::Hello { version, cols, rows } => {
+                    ClientMsg::Hello { version, cols, rows, folder } => {
                         if version != PROTOCOL_VERSION {
                             tracing::warn!(client = id, version, "protocol mismatch");
                             if let Some(c) = clients.get(&id) {
@@ -132,6 +132,19 @@ pub async fn run(
                         }
                         if let Some(c) = clients.get_mut(&id) {
                             let _ = c.tx.send(ServerMsg::Welcome { version: PROTOCOL_VERSION });
+                        }
+                        // Folder-scoped attach: last Hello wins; a plain
+                        // attach widens the view back (the escape hatch
+                        // until a widen-scope toggle exists).
+                        match folder {
+                            Some(folder) => {
+                                tracing::info!(client = id, folder = %folder.display(), "scoped attach");
+                                if let Some(pane) = rt.state.attach_scope(folder)
+                                    && let Err(e) = rt.spawn_pane(pane, area.width.max(4), area.height.max(4)) {
+                                        tracing::warn!(error = %e, "scoped attach: pane spawn failed");
+                                    }
+                            }
+                            None => rt.state.scope = None,
                         }
                         resize_all(&mut area, &mut term, &mut clients, cols, rows)?;
                         rt.mark_dirty();

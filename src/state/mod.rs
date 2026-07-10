@@ -98,6 +98,12 @@ pub struct AppState {
     pub workspaces: Vec<Workspace>,
     pub active_workspace: usize,
     pub sidebar_visible: bool,
+    /// Folder-scoped attach (`cdock -f`): only workspaces under this folder
+    /// show. Presentation state — never persisted; the client re-sends its
+    /// folder in Hello after a reconnect. ponytail: session-level (last
+    /// attach wins), per-client scope needs per-client rendering.
+    #[serde(skip)]
+    pub scope: Option<std::path::PathBuf>,
     /// Modal UI state — never persisted (handoff/restore resets to Terminal).
     #[serde(skip)]
     pub input_mode: InputMode,
@@ -116,9 +122,49 @@ impl AppState {
             workspaces: vec![ws],
             active_workspace: 0,
             sidebar_visible: true,
+            scope: None,
             input_mode: InputMode::Terminal,
             ids,
         }
+    }
+
+    /// Scope filter: a workspace shows when no scope is set, its folder is
+    /// under the scope, or its parent's is (worktree children live outside
+    /// the repo folder).
+    pub fn in_scope(&self, wi: usize) -> bool {
+        let Some(scope) = &self.scope else { return true };
+        let ws = &self.workspaces[wi];
+        if ws.cwd.starts_with(scope) {
+            return true;
+        }
+        ws.parent
+            .and_then(|pid| self.workspaces.iter().find(|w| w.id == pid))
+            .is_some_and(|p| p.cwd.starts_with(scope))
+    }
+
+    /// Folder-scoped attach (`cdock -f`): set the scope, land on a workspace
+    /// under the folder (exact cwd match preferred; the active one keeps
+    /// focus if it already qualifies), or create one. Returns the new
+    /// workspace's pane when one was created — the caller spawns its PTY.
+    pub fn attach_scope(&mut self, folder: std::path::PathBuf) -> Option<PaneId> {
+        self.scope = Some(folder.clone());
+        if self.in_scope(self.active_workspace) {
+            return None;
+        }
+        let found = self
+            .workspaces
+            .iter()
+            .position(|w| w.cwd == folder)
+            .or_else(|| (0..self.workspaces.len()).find(|&wi| self.in_scope(wi)));
+        if let Some(wi) = found {
+            self.active_workspace = wi;
+            return None;
+        }
+        let name = folder
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/".to_string());
+        Some(self.new_workspace(name, folder, None))
     }
 
     pub fn active_workspace(&self) -> &Workspace {
@@ -303,8 +349,16 @@ impl AppState {
             .unwrap_or_default()
     }
 
+    /// Next workspace, skipping any outside the attach scope.
     pub fn cycle_workspace(&mut self) {
-        self.active_workspace = (self.active_workspace + 1) % self.workspaces.len();
+        let n = self.workspaces.len();
+        for step in 1..=n {
+            let wi = (self.active_workspace + step) % n;
+            if self.in_scope(wi) {
+                self.active_workspace = wi;
+                return;
+            }
+        }
     }
 
     pub fn jump_tab(&mut self, index: usize) {
@@ -475,6 +529,46 @@ mod tests {
         s.cycle_workspace();
         assert_eq!(s.active_workspace, 0);
         assert!(s.check_invariants());
+    }
+
+    #[test]
+    fn folder_scope_attach_filters_and_creates() {
+        let mut s = AppState::new("a".into(), std::path::PathBuf::from("/proj/a"));
+        assert!(s.in_scope(0), "no scope: everything visible");
+
+        // Scope to a folder with no matching workspace: one gets created.
+        let pane = s.attach_scope(std::path::PathBuf::from("/proj/b"));
+        assert!(pane.is_some());
+        assert_eq!(s.active_workspace().cwd, std::path::PathBuf::from("/proj/b"));
+        assert!(!s.in_scope(0));
+        assert!(s.in_scope(1));
+
+        // Re-attach with the same scope: active already in scope, no new space.
+        assert!(s.attach_scope(std::path::PathBuf::from("/proj/b")).is_none());
+        assert_eq!(s.workspaces.len(), 2);
+
+        // Cycling skips out-of-scope spaces.
+        s.cycle_workspace();
+        assert_eq!(s.active_workspace().cwd, std::path::PathBuf::from("/proj/b"));
+
+        // Worktree child outside the folder follows its in-scope parent.
+        let parent = s.active_workspace().id;
+        s.new_workspace("wt".into(), std::path::PathBuf::from("/worktrees/x"), Some(parent));
+        let wt = s.active_workspace;
+        assert!(s.in_scope(wt));
+
+        // Plain attach widens back.
+        s.scope = None;
+        assert!(s.in_scope(0));
+    }
+
+    #[test]
+    fn scope_attach_focuses_existing_workspace() {
+        let mut s = AppState::new("a".into(), std::path::PathBuf::from("/proj/a"));
+        s.new_workspace("b".into(), std::path::PathBuf::from("/proj/b/sub"), None);
+        s.attach_scope(std::path::PathBuf::from("/proj/a"));
+        assert!(s.attach_scope(std::path::PathBuf::from("/proj/b")).is_none(), "prefix match reused");
+        assert_eq!(s.active_workspace().cwd, std::path::PathBuf::from("/proj/b/sub"));
     }
 
     #[test]

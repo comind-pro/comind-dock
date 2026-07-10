@@ -37,8 +37,9 @@ fn restore_terminal() {
 }
 
 /// Run the thin client over an established connection. Returns when the
-/// server detaches us or shuts down.
-pub fn run(stream: UnixStream) -> io::Result<()> {
+/// server detaches us or shuts down. `folder` scopes the view (`cdock -f`)
+/// and is re-sent with every Hello so reconnects keep the scope.
+pub fn run(stream: UnixStream, folder: Option<std::path::PathBuf>) -> io::Result<()> {
     setup_terminal()?;
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -77,7 +78,7 @@ pub fn run(stream: UnixStream) -> io::Result<()> {
                 }
             },
         };
-        session(s, &in_rx)?;
+        session(s, &in_rx, &folder)?;
         // Unexpected disconnect — try again (Detach/Shutdown exit inside).
     }
 }
@@ -87,12 +88,16 @@ pub fn run(stream: UnixStream) -> io::Result<()> {
 fn session(
     stream: UnixStream,
     in_rx: &std::sync::mpsc::Receiver<crossterm::event::Event>,
+    folder: &Option<std::path::PathBuf>,
 ) -> io::Result<()> {
     let mut writer = stream.try_clone()?;
     let mut reader = stream;
 
     let (cols, rows) = crossterm::terminal::size()?;
-    proto::write_msg(&mut writer, &ClientMsg::Hello { version: PROTOCOL_VERSION, cols, rows })?;
+    proto::write_msg(
+        &mut writer,
+        &ClientMsg::Hello { version: PROTOCOL_VERSION, cols, rows, folder: folder.clone() },
+    )?;
 
     let gone = Arc::new(AtomicBool::new(false));
     let gone_r = gone.clone();

@@ -11,7 +11,14 @@ const MAX_MSG: u32 = 16 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ClientMsg {
-    Hello { version: u32, cols: u16, rows: u16 },
+    Hello {
+        version: u32,
+        cols: u16,
+        rows: u16,
+        /// Folder-scoped attach (`cdock -f`); absent → unscoped view.
+        #[serde(default)]
+        folder: Option<std::path::PathBuf>,
+    },
     /// Parsed host-terminal input, forwarded verbatim.
     Event(crossterm::event::Event),
     Detach,

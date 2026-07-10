@@ -70,6 +70,11 @@ Agent statuses: `working`, `blocked` (needs human input), `done`, `idle`,
 
 ## Rules
 
+- NEVER test cdock server features against the user's live session. Spin a
+  sandbox: `D=$(mktemp -d) && XDG_STATE_HOME=$D cdock --server` and point
+  every test command at it with `XDG_STATE_HOME=$D`. A scoped attach or a
+  workspace created in the default session gets autosaved over the user's
+  real session within 5 seconds.
 - Clean up panes you spawned when done: `"$CDOCK_BIN" pane focus <id>` the
   user can see it, or leave long-running watchers only if the user asked.
 - Never `pane run` into a pane whose program you don't know — check

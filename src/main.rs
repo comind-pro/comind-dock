@@ -32,6 +32,11 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     config: Option<std::path::PathBuf>,
 
+    /// Folder-scoped attach: show only workspaces under this folder
+    /// (default: current directory); creates one there if none matches.
+    #[arg(short = 'f', long, value_name = "PATH", num_args = 0..=1, default_missing_value = ".")]
+    folder: Option<std::path::PathBuf>,
+
     /// Run everything in one process (no background server).
     #[arg(long)]
     no_session: bool,
@@ -562,6 +567,18 @@ fn main() -> ExitCode {
         eprintln!("cdock: warning: {w}");
     }
 
+    // Scope folder resolves client-side — the server has its own cwd.
+    let folder = match cli.folder {
+        Some(p) => match std::fs::canonicalize(&p) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                eprintln!("cdock: bad folder {}: {e}", p.display());
+                return ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
+
     // Automation subcommands talk to the socket API and are the whole point
     // of CDOCK_ENV panes — never blocked by the nested-launch guard, no UI.
     if let Some(cmd) = cli.cmd {
@@ -598,9 +615,9 @@ fn main() -> ExitCode {
     let result = if cli.server {
         run_server(cfg)
     } else if cli.no_session {
-        run_monolithic(cfg)
+        run_monolithic(cfg, folder)
     } else {
-        attach_or_spawn()
+        attach_or_spawn(folder)
     };
 
     match result {
@@ -628,6 +645,13 @@ fn run_server(cfg: config::Config) -> std::io::Result<()> {
         if s.exists() && std::os::unix::net::UnixStream::connect(s).is_err() {
             let _ = std::fs::remove_file(s);
         }
+    }
+    // Session snapshot as of this boot — one restore point if a bad attach
+    // or runaway automation mangles the live session and autosave persists it.
+    if let Some(snap) = crate::state::snapshot::path()
+        && snap.exists()
+    {
+        let _ = std::fs::copy(&snap, snap.with_extension("json.boot-bak"));
     }
     let handoff = take_handoff();
     let rt = tokio::runtime::Runtime::new()?;
@@ -693,7 +717,7 @@ fn take_handoff() -> Option<runtime::Handoff> {
 }
 
 /// --no-session: server task and thin client in one process over a socketpair.
-fn run_monolithic(cfg: config::Config) -> std::io::Result<()> {
+fn run_monolithic(cfg: config::Config, folder: Option<std::path::PathBuf>) -> std::io::Result<()> {
     let (client_side, server_side) = std::os::unix::net::UnixStream::pair()?;
     let rt = tokio::runtime::Runtime::new()?;
     let server_thread = std::thread::spawn(move || {
@@ -713,7 +737,7 @@ fn run_monolithic(cfg: config::Config) -> std::io::Result<()> {
             .map(|_| ())
         })
     });
-    let client_result = client::run(client_side);
+    let client_result = client::run(client_side, folder);
     match server_thread.join() {
         Ok(server_result) => client_result.and(server_result),
         Err(_) => Err(std::io::Error::other("server thread panicked")),
@@ -721,12 +745,12 @@ fn run_monolithic(cfg: config::Config) -> std::io::Result<()> {
 }
 
 /// Default flow: attach to a live server, or start one and attach.
-fn attach_or_spawn() -> std::io::Result<()> {
+fn attach_or_spawn(folder: Option<std::path::PathBuf>) -> std::io::Result<()> {
     let sock =
         proto::socket_path().ok_or_else(|| std::io::Error::other("cannot determine state dir"))?;
 
     if let Ok(stream) = std::os::unix::net::UnixStream::connect(&sock) {
-        return client::run(stream);
+        return client::run(stream, folder);
     }
 
     // No server: start a detached daemon seeded with our cwd, wait for its
@@ -746,7 +770,7 @@ fn attach_or_spawn() -> std::io::Result<()> {
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     loop {
         if let Ok(stream) = std::os::unix::net::UnixStream::connect(&sock) {
-            return client::run(stream);
+            return client::run(stream, folder);
         }
         if std::time::Instant::now() > deadline {
             return Err(std::io::Error::other("server did not start within 15s"));

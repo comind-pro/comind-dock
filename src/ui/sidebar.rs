@@ -100,6 +100,9 @@ fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
     ];
 
     for (wi, ws) in state.workspaces.iter().enumerate() {
+        if !state.in_scope(wi) {
+            continue;
+        }
         let active = wi == state.active_workspace;
         let child = ws.parent.is_some();
         let indent = if child { "    " } else { "  " };
@@ -152,7 +155,10 @@ fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
     });
 
     let mut any_agent = false;
-    for ws in &state.workspaces {
+    for (wi, ws) in state.workspaces.iter().enumerate() {
+        if !state.in_scope(wi) {
+            continue;
+        }
         for tab in &ws.tabs {
             for pane in tab.layout.panes() {
                 let Some(p) = rt.panes.get(&pane) else { continue };

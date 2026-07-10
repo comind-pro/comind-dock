@@ -177,6 +177,7 @@ impl Snapshot {
             workspaces,
             active_workspace,
             sidebar_visible: true,
+            scope: None,
             input_mode: InputMode::Terminal,
             ids,
         };
