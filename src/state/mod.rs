@@ -40,6 +40,12 @@ pub enum MenuAction {
     OpenWorktree(usize, std::path::PathBuf),
     /// Open the config file in $EDITOR in a new tab.
     OpenSettings,
+    /// Submenu listing agent profiles; None → spawn in a new tab,
+    /// Some(pane) → split that pane.
+    AgentPicker(Option<ids::PaneId>),
+    StartProfile(String, Option<ids::PaneId>),
+    /// Open the profiles directory in $EDITOR.
+    EditProfiles,
     /// The prefix+? keybinding overlay.
     ShowKeybinds,
     ReloadConfig,

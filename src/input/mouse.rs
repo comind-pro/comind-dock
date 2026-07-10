@@ -394,6 +394,60 @@ fn run_menu_action(
                 None => Ok(()),
             }
         }
+        MenuAction::AgentPicker(split) => {
+            let items: Vec<MenuItem> = crate::profile::list()
+                .into_iter()
+                .map(|name| MenuItem {
+                    label: name.clone(),
+                    action: MenuAction::StartProfile(name, split),
+                })
+                .collect();
+            if items.is_empty() {
+                tracing::info!("no profiles yet — `cdock profile new <name>`");
+            } else {
+                rt.state.input_mode = InputMode::Menu { x, y, items };
+            }
+            Ok(())
+        }
+        MenuAction::StartProfile(name, split) => match crate::profile::load(&name) {
+            Ok(p) => {
+                let (command, env) = p.resolve();
+                let pane = match split {
+                    Some(target) => {
+                        rt.state.focus_pane(target);
+                        rt.state.split_focused(Dir::Right, false)
+                    }
+                    None => rt.state.new_tab(),
+                };
+                rt.spawn_pane_env(
+                    pane,
+                    area.width.max(2) / 2,
+                    area.height.max(2) / 2,
+                    Some(command),
+                    env,
+                )
+            }
+            Err(e) => {
+                tracing::warn!(profile = %name, error = %e, "profile launch failed");
+                Ok(())
+            }
+        },
+        MenuAction::EditProfiles => {
+            match crate::profile::profiles_dir() {
+                Some(dir) => {
+                    let _ = std::fs::create_dir_all(&dir);
+                    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+                    let pane = rt.state.new_tab();
+                    rt.spawn_pane_cmd(
+                        pane,
+                        area.width,
+                        area.height,
+                        Some(format!("{editor} {}", dir.display())),
+                    )
+                }
+                None => Ok(()),
+            }
+        }
         MenuAction::ShowKeybinds => {
             rt.state.input_mode = InputMode::Help;
             Ok(())

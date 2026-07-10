@@ -18,6 +18,7 @@ pub fn pane_items(pane: PaneId) -> Vec<MenuItem> {
         ("new pane left", MenuAction::SplitLeft(pane)),
         ("new pane below", MenuAction::SplitDown(pane)),
         ("new pane above", MenuAction::SplitUp(pane)),
+        ("new agent here…", MenuAction::AgentPicker(Some(pane))),
         ("close pane", MenuAction::ClosePane(pane)),
     ]
     .into_iter()
@@ -28,6 +29,8 @@ pub fn pane_items(pane: PaneId) -> Vec<MenuItem> {
 /// The sidebar "menu" button: app-level settings and session actions.
 pub fn app_items() -> Vec<MenuItem> {
     [
+        ("new agent…", MenuAction::AgentPicker(None)),
+        ("profiles", MenuAction::EditProfiles),
         ("settings", MenuAction::OpenSettings),
         ("keybinds", MenuAction::ShowKeybinds),
         ("reload config", MenuAction::ReloadConfig),
