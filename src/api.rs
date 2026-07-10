@@ -160,7 +160,7 @@ fn pane_list(rt: &Runtime) -> Value {
                     "tab": tab.id.0,
                     "program": p.program,
                     "title": title,
-                    "agent": crate::agents::detect(title, &p.program),
+                    "agent": p.agent,
                     "status": p.effective_status().word(),
                     "focused": id == focused,
                 }));

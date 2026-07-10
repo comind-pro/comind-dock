@@ -32,8 +32,7 @@ fn space_dot(rt: &Runtime, wi: usize, theme: &Theme) -> (&'static str, Style) {
     let mut blocked = false;
     for pane in ws.tabs.iter().flat_map(|t| t.layout.panes()) {
         let Some(p) = rt.panes.get(&pane) else { continue };
-        let title = rt.titles.get(&pane).map(String::as_str).unwrap_or("");
-        if crate::agents::detect(title, &p.program).is_some() {
+        if p.agent.is_some() {
             has_agent = true;
             match p.effective_status() {
                 Status::Blocked => blocked = true,
@@ -140,7 +139,7 @@ fn rows(rt: &Runtime, theme: &Theme) -> Vec<Row> {
                 let Some(p) = rt.panes.get(&pane) else { continue };
                 let title = rt.titles.get(&pane).map(String::as_str).unwrap_or("");
                 // Only recognized agent CLIs live here; plain shells are not agents.
-                let Some(agent) = crate::agents::detect(title, &p.program) else { continue };
+                let Some(agent) = p.agent else { continue };
                 any_agent = true;
                 let status = p.effective_status();
                 let (dot, dot_style) = status_marker(status, theme);

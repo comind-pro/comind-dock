@@ -30,6 +30,9 @@ pub struct PaneRuntime {
     pub program: String,
     /// Last PTY output — the routine "working" signal and detection fallback.
     pub last_output: std::time::Instant,
+    /// Recognized agent CLI in this pane (spawn command, title, or a child
+    /// process of the shell) — refreshed by the agent poll.
+    pub agent: Option<&'static str>,
     /// Detection-engine result for agent panes.
     pub status: crate::detect::Status,
     /// Last status the UI showed — drives redraws and notifications.
@@ -153,6 +156,7 @@ impl Runtime {
             PaneRuntime {
                 emu,
                 pty,
+                agent: crate::agents::detect("", &program),
                 program,
                 last_output: std::time::Instant::now(),
                 status: crate::detect::Status::Unknown,
@@ -202,7 +206,16 @@ impl Runtime {
         for id in ids {
             let title = self.titles.get(&id).cloned().unwrap_or_default();
             let Some(p) = self.panes.get(&id) else { continue };
-            let agent = crate::agents::detect(&title, &p.program);
+            // Spawn command and title first; else look at what actually runs
+            // inside the shell — `claude` typed into a zsh pane must count.
+            let agent = crate::agents::detect(&title, &p.program).or_else(|| {
+                p.pty
+                    .child_pid
+                    .map(crate::platform::child_process_names)
+                    .unwrap_or_default()
+                    .iter()
+                    .find_map(|name| crate::agents::detect("", name))
+            });
             let status = agent
                 .and_then(|a| crate::detect::manifest_for(manifests, a))
                 .and_then(|m| {
@@ -212,6 +225,10 @@ impl Runtime {
                 .unwrap_or(Status::Unknown);
 
             let Some(p) = self.panes.get_mut(&id) else { continue };
+            if p.agent != agent {
+                p.agent = agent;
+                self.dirty = true; // agent row appears/leaves the sidebar
+            }
             p.status = status;
             let eff = p.effective_status();
             if eff == p.last_shown {
@@ -307,8 +324,7 @@ impl Runtime {
     pub fn save_session(&self) {
         let mut agents = HashMap::new();
         for (id, p) in &self.panes {
-            let title = self.titles.get(id).map(String::as_str).unwrap_or("");
-            if let Some(agent) = crate::agents::detect(title, &p.program) {
+            if let Some(agent) = p.agent {
                 agents.insert(*id, agent.to_string());
             }
         }
