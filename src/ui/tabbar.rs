@@ -1,56 +1,73 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use crate::config::theme::Theme;
+use crate::runtime::Runtime;
 use crate::state::AppState;
+
+/// What a tab-bar click hits.
+#[derive(Debug, Clone, Copy)]
+pub enum Hit {
+    Tab(usize),
+    NewTab,
+}
 
 struct Segment {
     text: String,
-    tab: Option<usize>,
+    hit: Option<Hit>,
     active: bool,
-    is_ws: bool,
 }
 
-/// One source of truth for tab-bar content — render draws it, hit() clicks it.
-fn segments(state: &AppState) -> Vec<Segment> {
+/// A tab whose name was never changed from its numeric default shows the
+/// focused pane's OSC title instead — tabs read as "what's running there".
+fn tab_label(rt: &Runtime, state: &AppState, ti: usize) -> String {
     let ws = state.active_workspace();
-    let mut out = vec![
-        Segment { text: format!(" {} ", ws.name), tab: None, active: false, is_ws: true },
-        Segment { text: "│ ".to_string(), tab: None, active: false, is_ws: false },
-    ];
-    for (ti, tab) in ws.tabs.iter().enumerate() {
-        let active = ti == ws.active_tab;
-        let zoomed = active && tab.zoomed.is_some();
-        out.push(Segment {
-            text: format!(" {}:{}{} ", ti + 1, tab.name, if zoomed { " [Z]" } else { "" }),
-            tab: Some(ti),
-            active,
-            is_ws: false,
-        });
-        out.push(Segment { text: " ".to_string(), tab: None, active: false, is_ws: false });
+    let tab = &ws.tabs[ti];
+    if tab.name.chars().all(|c| c.is_ascii_digit()) {
+        if let Some(title) = rt.titles.get(&tab.focused_pane)
+            && !title.trim().is_empty() {
+                let short: String = title.chars().take(16).collect();
+                return short;
+            }
+        if let Some(p) = rt.panes.get(&tab.focused_pane) {
+            return p.program.clone();
+        }
     }
+    tab.name.clone()
+}
+
+/// One source of truth for the bar — render draws it, hit() clicks it.
+fn segments(rt: &Runtime) -> Vec<Segment> {
+    let state = &rt.state;
+    let ws = state.active_workspace();
+    let mut out = vec![Segment { text: " ".into(), hit: None, active: false }];
+    for ti in 0..ws.tabs.len() {
+        let active = ti == ws.active_tab;
+        let zoomed = active && ws.tabs[ti].zoomed.is_some();
+        out.push(Segment {
+            text: format!("  {}{}  ", tab_label(rt, state, ti), if zoomed { " [Z]" } else { "" }),
+            hit: Some(Hit::Tab(ti)),
+            active,
+        });
+        out.push(Segment { text: " ".into(), hit: None, active: false });
+    }
+    out.push(Segment { text: "  +  ".into(), hit: Some(Hit::NewTab), active: false });
     out
 }
 
-pub fn render(
-    state: &AppState,
-    theme: &Theme,
-    focused_title: Option<&str>,
-    area: Rect,
-    frame: &mut Frame,
-) {
-    let mut spans: Vec<Span> = segments(state)
+pub fn render(rt: &Runtime, theme: &Theme, area: Rect, frame: &mut Frame) {
+    let spans: Vec<Span> = segments(rt)
         .into_iter()
         .map(|s| {
-            let style = if s.is_ws {
-                Style::new().add_modifier(Modifier::BOLD).fg(theme.accent)
-            } else if s.active {
+            let style = if s.active {
                 Style::new().fg(Color::Black).bg(theme.accent)
-            } else if s.tab.is_some() {
+            } else if matches!(s.hit, Some(Hit::NewTab)) {
+                Style::new().fg(theme.accent)
+            } else if s.hit.is_some() {
                 Style::new().fg(theme.muted)
             } else {
                 Style::new()
@@ -58,28 +75,17 @@ pub fn render(
             Span::styled(s.text, style)
         })
         .collect();
-    // Focused pane's OSC title, right-aligned.
-    if let Some(title) = focused_title {
-        let used: usize = spans.iter().map(|s| s.content.width()).sum();
-        let title: String = title.chars().take(40).collect();
-        let tw = title.width();
-        let total = area.width as usize;
-        if used + tw + 2 <= total {
-            spans.push(Span::raw(" ".repeat(total - used - tw - 1)));
-            spans.push(Span::styled(title, Style::new().fg(theme.muted)));
-        }
-    }
     let bar = Paragraph::new(Line::from(spans)).style(Style::new().bg(theme.tab_bar_bg));
     frame.render_widget(bar, area);
 }
 
-/// Which tab (index) sits under bar-relative column `x`.
-pub fn hit(state: &AppState, x: u16) -> Option<usize> {
+/// What sits under bar-relative column `x`.
+pub fn hit(rt: &Runtime, x: u16) -> Option<Hit> {
     let mut cursor: u16 = 0;
-    for s in segments(state) {
+    for s in segments(rt) {
         let w = s.text.width() as u16;
         if x >= cursor && x < cursor + w {
-            return s.tab;
+            return s.hit;
         }
         cursor += w;
     }

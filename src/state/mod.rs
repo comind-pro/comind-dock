@@ -269,6 +269,25 @@ impl AppState {
         self.active_workspace().tabs.iter().flat_map(|t| t.layout.panes()).collect()
     }
 
+    /// Workspace/tab indices containing a pane.
+    pub fn locate_pane(&self, pane: PaneId) -> Option<(usize, usize)> {
+        self.workspaces.iter().enumerate().find_map(|(wi, ws)| {
+            ws.tabs
+                .iter()
+                .position(|t| t.layout.contains(pane))
+                .map(|ti| (wi, ti))
+        })
+    }
+
+    /// Jump straight to a pane wherever it lives (sidebar agent click).
+    pub fn focus_pane(&mut self, pane: PaneId) -> bool {
+        let Some((wi, ti)) = self.locate_pane(pane) else { return false };
+        self.active_workspace = wi;
+        self.workspaces[wi].active_tab = ti;
+        self.workspaces[wi].tabs[ti].focused_pane = pane;
+        true
+    }
+
     /// Invariants, checked in tests and debug builds after every mutation.
     pub fn check_invariants(&self) -> bool {
         let mut seen = std::collections::HashSet::new();

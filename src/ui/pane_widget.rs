@@ -11,9 +11,38 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::term::emulator::EventProxy;
 
-/// Draw a pane's terminal content into `area`. Only the focused pane
+/// Draw a pane as a bordered box: rounded frame (accent when focused),
+/// title in the frame, terminal content inside. Only the focused pane
 /// positions the host cursor.
-pub fn render(term: &Term<EventProxy>, area: Rect, frame: &mut Frame, focused: bool) {
+pub fn render(
+    term: &Term<EventProxy>,
+    area: Rect,
+    frame: &mut Frame,
+    focused: bool,
+    title: &str,
+    theme: &crate::config::theme::Theme,
+) {
+    use ratatui::widgets::{Block, BorderType, Borders};
+
+    let border_style = if focused {
+        Style::new().fg(theme.accent)
+    } else {
+        Style::new().fg(theme.divider)
+    };
+    let title_style =
+        if focused { Style::new().fg(theme.accent) } else { Style::new().fg(theme.muted) };
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(border_style)
+        .title(ratatui::text::Span::styled(format!(" {title} "), title_style));
+    frame.render_widget(block, area);
+
+    let area = super::content_rect(area);
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
     let content = term.renderable_content();
     let offset = content.display_offset as i32;
     let buf = frame.buffer_mut();

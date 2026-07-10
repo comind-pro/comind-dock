@@ -25,23 +25,36 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent) {
             rt.mark_dirty();
 
             if view.tab_bar.contains(pos) {
-                if let Some(ti) = tabbar::hit(&rt.state, ev.column - view.tab_bar.x) {
-                    rt.state.jump_tab(ti);
+                match tabbar::hit(rt, ev.column - view.tab_bar.x) {
+                    Some(tabbar::Hit::Tab(ti)) => rt.state.jump_tab(ti),
+                    Some(tabbar::Hit::NewTab) => {
+                        let pane = rt.state.new_tab();
+                        let size = view
+                            .pane_rects
+                            .first()
+                            .map(|(_, r)| (r.width, r.height))
+                            .unwrap_or((80, 24));
+                        if let Err(e) = rt.spawn_pane(pane, size.0.max(4), size.1.max(4)) {
+                            tracing::warn!(error = %e, "new tab spawn failed");
+                        }
+                    }
+                    None => {}
                 }
                 return;
             }
             if let Some(sb) = view.sidebar
-                && sb.contains(pos) {
-                    match sidebar::hit(&rt.state, ev.row - sb.y) {
-                        Some(sidebar::Target::Workspace(wi)) => rt.state.active_workspace = wi,
-                        Some(sidebar::Target::Tab(wi, ti)) => {
-                            rt.state.active_workspace = wi;
-                            rt.state.jump_tab(ti);
-                        }
-                        None => {}
+                && sb.contains(pos)
+            {
+                let theme = rt.theme;
+                match sidebar::hit(rt, &theme, ev.row - sb.y) {
+                    Some(sidebar::Target::Workspace(wi)) => rt.state.active_workspace = wi,
+                    Some(sidebar::Target::Pane(pane)) => {
+                        rt.state.focus_pane(pane);
                     }
-                    return;
+                    None => {}
                 }
+                return;
+            }
             if let Some(d) = view.dividers.iter().find(|d| d.rect.contains(pos)) {
                 let last_pos = if d.dir == Dir::Right { ev.column } else { ev.row };
                 rt.drag = Some(MouseDrag::Divider {
@@ -55,7 +68,11 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent) {
             }
             if let Some((id, rect)) = pane_at(&view.pane_rects, pos) {
                 rt.state.active_tab_mut().focused_pane = id;
-                let (col, row) = (ev.column - rect.x, ev.row - rect.y);
+                let inner = crate::ui::content_rect(rect);
+                if !inner.contains(pos) {
+                    return; // border click: focus only
+                }
+                let (col, row) = (ev.column - inner.x, ev.row - inner.y);
                 let semantic = rt
                     .last_click
                     .is_some_and(|(t, x, y)| {
@@ -87,9 +104,10 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent) {
                 }
             }
             Some(MouseDrag::Select { pane }) => {
-                if let Some((_, rect)) =
+                if let Some((_, r)) =
                     view.pane_rects.iter().find(|(id, _)| *id == pane).copied()
                 {
+                    let rect = crate::ui::content_rect(r);
                     let col = ev.column.clamp(rect.x, rect.x + rect.width.saturating_sub(1)) - rect.x;
                     let row = ev.row.clamp(rect.y, rect.y + rect.height.saturating_sub(1)) - rect.y;
                     if let Some(p) = rt.panes.get_mut(&pane) {
@@ -133,7 +151,11 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent) {
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
             let up = ev.kind == MouseEventKind::ScrollUp;
             if let Some((id, rect)) = pane_at(&view.pane_rects, pos) {
-                let (col, row) = (ev.column - rect.x, ev.row - rect.y);
+                let inner = crate::ui::content_rect(rect);
+                if !inner.contains(pos) {
+                    return;
+                }
+                let (col, row) = (ev.column - inner.x, ev.row - inner.y);
                 let Some(p) = rt.panes.get_mut(&id) else { return };
                 if p.emu.wants_mouse() {
                     let bytes = sgr(if up { 64 } else { 65 }, col, row, true, ev.modifiers);

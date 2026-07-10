@@ -28,7 +28,18 @@ const DRAIN_BUDGET: usize = 256 * 1024;
 pub struct PaneRuntime {
     pub emu: Emulator,
     pub pty: Pty,
+    /// Program shown in the agents sidebar (command or shell basename).
+    pub program: String,
+    /// Last PTY output — drives the working/idle activity heuristic
+    /// (real agent detection is Phase 3).
+    pub last_output: std::time::Instant,
     last_size: (u16, u16),
+}
+
+impl PaneRuntime {
+    pub fn working(&self) -> bool {
+        self.last_output.elapsed() < Duration::from_secs(3)
+    }
 }
 
 /// An in-progress mouse drag gesture.
@@ -96,8 +107,25 @@ impl Runtime {
         let scrollback = self.cfg.advanced.scrollback_lines();
         let emu = Emulator::new(cols, rows, pane, self.tx.clone(), scrollback);
         let opts = self.spawn_opts(command);
+        let program = opts
+            .command
+            .as_deref()
+            .unwrap_or(&opts.shell)
+            .split_whitespace()
+            .next()
+            .map(|w| w.rsplit('/').next().unwrap_or(w).to_string())
+            .unwrap_or_else(|| "shell".to_string());
         let pty = pty::spawn_shell(pane, cols, rows, self.tx.clone(), self.data_tx.clone(), &opts)?;
-        self.panes.insert(pane, PaneRuntime { emu, pty, last_size: (cols, rows) });
+        self.panes.insert(
+            pane,
+            PaneRuntime {
+                emu,
+                pty,
+                program,
+                last_output: std::time::Instant::now(),
+                last_size: (cols, rows),
+            },
+        );
         Ok(())
     }
 
@@ -172,7 +200,8 @@ impl Runtime {
         };
         for (id, rect) in &rects {
             if let Some(p) = self.panes.get_mut(id) {
-                let size = (rect.width, rect.height);
+                let inner = crate::ui::content_rect(*rect);
+                let size = (inner.width, inner.height);
                 if p.last_size != size {
                     p.emu.resize(size.0, size.1);
                     p.pty.resize(size.0, size.1);
@@ -252,6 +281,7 @@ pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> 
                     budget = budget.saturating_sub(bytes.len());
                     if let Some(p) = rt.panes.get_mut(&id) {
                         p.emu.feed(&bytes);
+                        p.last_output = std::time::Instant::now();
                         rt.dirty = true;
                     }
                     if budget > 0 {
