@@ -88,6 +88,11 @@ enum Cmd {
         #[command(subcommand)]
         sub: ProfileCmd,
     },
+    /// Skill catalog: named skill sources assignable to profiles.
+    Skill {
+        #[command(subcommand)]
+        sub: SkillCmd,
+    },
     /// Stream server events as JSON lines (agent-status, output).
     Events {
         /// Only events for this pane.
@@ -221,6 +226,22 @@ enum AgentCmd {
         #[arg(long)]
         workspace: Option<u64>,
     },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum SkillCmd {
+    /// Catalog with sources and descriptions.
+    List,
+    /// Register a skill directory (must contain SKILL.md).
+    Add {
+        name: String,
+        #[arg(long)]
+        source: String,
+        #[arg(long, default_value = "")]
+        description: String,
+    },
+    /// Unregister (profiles referencing it just skip it with a warning).
+    Remove { name: String },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -382,6 +403,26 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 None => (command.expect("clap: command or profile"), Vec::new()),
             };
             Req::AgentStart { command, split, workspace, env }
+        }
+        Cmd::Skill { sub } => {
+            return match sub {
+                SkillCmd::List => {
+                    for (name, e) in profile::skill_catalog() {
+                        println!("{name}\t{}\t{}", e.source, e.description);
+                    }
+                    Ok(true)
+                }
+                SkillCmd::Add { name, source, description } => {
+                    profile::skill_add(&name, &source, &description)?;
+                    println!("added {name}");
+                    Ok(true)
+                }
+                SkillCmd::Remove { name } => {
+                    profile::skill_remove(&name)?;
+                    println!("removed {name}");
+                    Ok(true)
+                }
+            };
         }
         Cmd::Events { pane, only } => {
             let spec = api::SubSpec {
