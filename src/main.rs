@@ -178,7 +178,7 @@ fn install_claude_hook() -> Result<bool, String> {
     let arr = starts.as_array_mut().ok_or("\"SessionStart\" is not an array")?;
     if arr.iter().any(|e| e.to_string().contains(MARKER)) {
         println!("claude integration already installed");
-        return Ok(true);
+        return install_claude_skill(); // keep the skill fresh anyway
     }
     arr.push(serde_json::json!({
         "hooks": [{
