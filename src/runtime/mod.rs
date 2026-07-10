@@ -208,13 +208,15 @@ impl Runtime {
             let Some(p) = self.panes.get(&id) else { continue };
             // Spawn command and title first; else look at what actually runs
             // inside the shell — `claude` typed into a zsh pane must count.
+            // Idents are exe paths, word-matched like titles: Claude Code's
+            // process is literally named "2.1.206", only its path says claude.
             let agent = crate::agents::detect(&title, &p.program).or_else(|| {
                 p.pty
                     .child_pid
-                    .map(crate::platform::child_process_names)
+                    .map(crate::platform::child_process_idents)
                     .unwrap_or_default()
                     .iter()
-                    .find_map(|name| crate::agents::detect("", name))
+                    .find_map(|ident| crate::agents::detect(ident, ""))
             });
             let status = agent
                 .and_then(|a| crate::detect::manifest_for(manifests, a))
