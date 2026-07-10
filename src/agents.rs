@@ -41,8 +41,11 @@ pub struct ClaudeSession {
 /// user message; cwd from the transcript itself (the dir slug is lossy).
 pub fn recent_claude_sessions(limit: usize) -> Vec<ClaudeSession> {
     let Some(home) = std::env::var_os("HOME") else { return Vec::new() };
-    let root = std::path::PathBuf::from(home).join(".claude/projects");
-    let Ok(projects) = std::fs::read_dir(&root) else { return Vec::new() };
+    sessions_under(&std::path::PathBuf::from(home).join(".claude/projects"), limit)
+}
+
+fn sessions_under(root: &std::path::Path, limit: usize) -> Vec<ClaudeSession> {
+    let Ok(projects) = std::fs::read_dir(root) else { return Vec::new() };
 
     let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = projects
         .flatten()
@@ -135,6 +138,90 @@ mod tests {
         assert_eq!(resume_command("codex:xyz"), "codex resume xyz");
         assert_eq!(resume_command("claude"), "claude --resume"); // no id → picker
         assert_eq!(resume_command("goose"), "goose");
+    }
+
+    fn write_jsonl(dir: &std::path::Path, name: &str, lines: &[&str]) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(format!("{name}.jsonl"));
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        path
+    }
+
+    #[test]
+    fn parse_session_takes_first_real_user_message() {
+        let dir = std::env::temp_dir().join(format!("cdock-sess-a-{}", std::process::id()));
+        let path = write_jsonl(
+            &dir,
+            "aaaa-1111",
+            &[
+                r#"{"type":"mode","mode":"normal","sessionId":"aaaa-1111"}"#,
+                r#"{"type":"user","message":{"role":"user","content":"<local-command-caveat>skip me"},"cwd":"/projects/alpha"}"#,
+                r#"{"type":"user","isSidechain":true,"message":{"role":"user","content":"sidechain noise"}}"#,
+                r#"{"type":"user","message":{"role":"user","content":"справжнє питання про код"}}"#,
+            ],
+        );
+        let s = parse_session(&path).expect("parses");
+        assert_eq!(s.id, "aaaa-1111");
+        assert_eq!(s.cwd, std::path::PathBuf::from("/projects/alpha"));
+        assert_eq!(s.title, "справжнє питання про код");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn parse_session_block_content_and_truncation() {
+        let dir = std::env::temp_dir().join(format!("cdock-sess-b-{}", std::process::id()));
+        let long = "x".repeat(80);
+        let line = format!(
+            r#"{{"type":"user","cwd":"/p","message":{{"role":"user","content":[{{"type":"image"}},{{"type":"text","text":"{long}"}}]}}}}"#
+        );
+        let path = write_jsonl(&dir, "bbbb", &[&line]);
+        let s = parse_session(&path).expect("parses");
+        assert_eq!(s.title.chars().count(), 48, "titles are truncated");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn parse_session_requires_cwd_but_not_title() {
+        let dir = std::env::temp_dir().join(format!("cdock-sess-c-{}", std::process::id()));
+        // No cwd anywhere → unusable for resume-in-place → None.
+        let p1 = write_jsonl(&dir, "no-cwd", &[r#"{"type":"mode","mode":"normal"}"#]);
+        assert!(parse_session(&p1).is_none());
+        // cwd but no user message → placeholder title.
+        let p2 = write_jsonl(&dir, "no-title", &[r#"{"type":"assistant","cwd":"/p"}"#]);
+        assert_eq!(parse_session(&p2).unwrap().title, "(no prompt)");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sessions_under_orders_newest_first_and_limits() {
+        let root = std::env::temp_dir().join(format!("cdock-sess-d-{}", std::process::id()));
+        let mk = |slug: &str, name: &str, age_secs: u64| {
+            let path = write_jsonl(
+                &root.join(slug),
+                name,
+                &[&format!(
+                    r#"{{"type":"user","cwd":"/p/{name}","message":{{"role":"user","content":"{name}"}}}}"#
+                )],
+            );
+            let mtime = std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs);
+            let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            f.set_times(std::fs::FileTimes::new().set_modified(mtime)).unwrap();
+        };
+        mk("proj-one", "old", 300);
+        mk("proj-one", "new", 10);
+        mk("proj-two", "mid", 100);
+        std::fs::write(root.join("proj-one/notes.txt"), "not a session").unwrap();
+
+        let all = sessions_under(&root, 10);
+        let ids: Vec<&str> = all.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["new", "mid", "old"], "newest first, across projects");
+
+        let limited = sessions_under(&root, 2);
+        assert_eq!(limited.len(), 2);
+        assert_eq!(limited[0].id, "new");
+
+        assert!(sessions_under(&root.join("missing"), 5).is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// Live-system sanity: `cargo test -- --ignored print_recent`.
