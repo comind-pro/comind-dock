@@ -16,28 +16,42 @@ fn err(e: impl std::fmt::Display) -> io::Error {
     io::Error::other(e.to_string())
 }
 
-/// Spawn the user's shell in a new PTY. A detached reader thread pumps output
-/// bytes into the app event loop; EOF is reported as `PtyExit`.
+/// How to launch the process in a new pane.
+pub struct SpawnOpts {
+    pub shell: String,
+    pub login: bool,
+    pub cwd: std::path::PathBuf,
+    /// Some → run `shell -c command` instead of an interactive shell.
+    pub command: Option<String>,
+    pub tab_id: String,
+    pub workspace_id: String,
+}
+
+/// Spawn a pane process in a new PTY. A detached reader thread pumps output
+/// bytes into the app event loop; child exit is reported as `PtyExit`.
 pub fn spawn_shell(
     pane: PaneId,
     cols: u16,
     rows: u16,
     tx: UnboundedSender<AppEvent>,
+    opts: &SpawnOpts,
 ) -> io::Result<Pty> {
     let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
     let pair = native_pty_system().openpty(size).map_err(err)?;
 
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let mut cmd = CommandBuilder::new(&shell);
-    // ponytail: shell_mode=auto — login shell on macOS; configurable in M6
-    if cfg!(target_os = "macos") {
+    let mut cmd = CommandBuilder::new(&opts.shell);
+    if let Some(command) = &opts.command {
+        cmd.args(["-c", command]);
+    } else if opts.login {
         cmd.arg("-l");
     }
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("CDOCK_ENV", "1");
     cmd.env("CDOCK_PANE_ID", pane.to_string());
-    cmd.cwd(std::env::current_dir()?);
+    cmd.env("CDOCK_TAB_ID", &opts.tab_id);
+    cmd.env("CDOCK_WORKSPACE_ID", &opts.workspace_id);
+    cmd.cwd(&opts.cwd);
 
     let mut child = pair.slave.spawn_command(cmd).map_err(err)?;
     drop(pair.slave);

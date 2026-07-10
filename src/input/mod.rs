@@ -24,7 +24,6 @@ pub enum Action {
     NewTab,
     NextTab,
     PrevTab,
-    JumpTab(u8),
     RenameTab,
     CloseTab,
     NewWorkspace,
@@ -55,7 +54,6 @@ impl Action {
             Action::NewTab => "new tab",
             Action::NextTab => "next tab",
             Action::PrevTab => "previous tab",
-            Action::JumpTab(_) => "jump to tab 1..9",
             Action::RenameTab => "rename tab",
             Action::CloseTab => "close tab",
             Action::NewWorkspace => "new workspace",
@@ -75,74 +73,52 @@ pub struct Chord {
     pub mods: KeyModifiers,
 }
 
-pub fn prefix_chord() -> Chord {
-    // ponytail: configurable via [keys].prefix in M6
-    Chord { code: KeyCode::Char('b'), mods: KeyModifiers::CONTROL }
+/// Default binding table (FEATURES.md defaults): config action name,
+/// default keys (bare = after prefix), action. Order = help-overlay order.
+pub fn default_actions() -> Vec<(&'static str, &'static [&'static str], Action)> {
+    vec![
+        ("split_right", &["v"], Action::SplitRight),
+        ("split_down", &["-"], Action::SplitDown),
+        ("focus_left", &["h"], Action::Focus(Side::Left)),
+        ("focus_down", &["j"], Action::Focus(Side::Down)),
+        ("focus_up", &["k"], Action::Focus(Side::Up)),
+        ("focus_right", &["l"], Action::Focus(Side::Right)),
+        ("swap_left", &["H"], Action::Swap(Side::Left)),
+        ("swap_down", &["J"], Action::Swap(Side::Down)),
+        ("swap_up", &["K"], Action::Swap(Side::Up)),
+        ("swap_right", &["L"], Action::Swap(Side::Right)),
+        ("resize_mode", &["r"], Action::ResizeMode),
+        ("zoom", &["z"], Action::Zoom),
+        ("close_pane", &["x"], Action::ClosePane),
+        ("new_tab", &["c"], Action::NewTab),
+        ("next_tab", &["n", "tab"], Action::NextTab),
+        ("prev_tab", &["p", "backtab"], Action::PrevTab),
+        ("rename_tab", &["T"], Action::RenameTab),
+        ("close_tab", &["X"], Action::CloseTab),
+        ("new_workspace", &["N"], Action::NewWorkspace),
+        ("rename_workspace", &["W"], Action::RenameWorkspace),
+        ("close_workspace", &["D"], Action::CloseWorkspace),
+        ("next_workspace", &["o"], Action::CycleWorkspace),
+        ("toggle_sidebar", &["b"], Action::ToggleSidebar),
+        ("help", &["?"], Action::Help),
+        ("quit", &["q"], Action::Quit),
+    ]
 }
 
-fn ch(c: char) -> Chord {
-    let mods = if c.is_ascii_uppercase() { KeyModifiers::SHIFT } else { KeyModifiers::NONE };
-    Chord { code: KeyCode::Char(c), mods }
+fn is_prefix(rt: &Runtime, key: &KeyEvent) -> bool {
+    let p = rt.keymap.prefix;
+    let strip = |m: KeyModifiers| m & !KeyModifiers::SHIFT;
+    key.code == p.code && strip(key.modifiers) == strip(p.mods)
 }
 
-/// Default binding table (FEATURES.md defaults). Order = help-overlay order.
-pub fn bindings() -> Vec<(Chord, &'static str, Action)> {
-    let mut b: Vec<(Chord, &'static str, Action)> = vec![
-        (ch('v'), "v", Action::SplitRight),
-        (ch('-'), "-", Action::SplitDown),
-        (ch('h'), "h", Action::Focus(Side::Left)),
-        (ch('j'), "j", Action::Focus(Side::Down)),
-        (ch('k'), "k", Action::Focus(Side::Up)),
-        (ch('l'), "l", Action::Focus(Side::Right)),
-        (ch('H'), "H", Action::Swap(Side::Left)),
-        (ch('J'), "J", Action::Swap(Side::Down)),
-        (ch('K'), "K", Action::Swap(Side::Up)),
-        (ch('L'), "L", Action::Swap(Side::Right)),
-        (
-            Chord { code: KeyCode::Tab, mods: KeyModifiers::NONE },
-            "tab",
-            Action::NextTab,
-        ),
-        (
-            Chord { code: KeyCode::BackTab, mods: KeyModifiers::SHIFT },
-            "shift+tab",
-            Action::PrevTab,
-        ),
-        (ch('r'), "r", Action::ResizeMode),
-        (ch('z'), "z", Action::Zoom),
-        (ch('x'), "x", Action::ClosePane),
-        (ch('c'), "c", Action::NewTab),
-        (ch('n'), "n", Action::NextTab),
-        (ch('p'), "p", Action::PrevTab),
-        (ch('T'), "T", Action::RenameTab),
-        (ch('X'), "X", Action::CloseTab),
-        (ch('N'), "N", Action::NewWorkspace),
-        (ch('W'), "W", Action::RenameWorkspace),
-        (ch('D'), "D", Action::CloseWorkspace),
-        (ch('o'), "o", Action::CycleWorkspace),
-        (ch('b'), "b", Action::ToggleSidebar),
-        (ch('?'), "?", Action::Help),
-        (ch('q'), "q", Action::Quit),
-    ];
-    for n in 1..=9u8 {
-        b.push((ch((b'0' + n) as char), "1..9", Action::JumpTab(n)));
+/// prefix+1..9 tab jumps — a fixed indexed family, not per-key configurable.
+fn jump_tab_index(key: &KeyEvent) -> Option<usize> {
+    if let KeyCode::Char(c @ '1'..='9') = key.code {
+        if key.modifiers.is_empty() {
+            return Some(c as usize - '1' as usize);
+        }
     }
-    b
-}
-
-fn lookup(key: &KeyEvent) -> Option<Action> {
-    // Char chords carry case; ignore SHIFT for comparison on chars,
-    // compare mods exactly otherwise.
-    bindings().into_iter().find_map(|(chord, _, action)| {
-        let key_mods = key.modifiers & !KeyModifiers::SHIFT;
-        let chord_mods = chord.mods & !KeyModifiers::SHIFT;
-        (chord.code == key.code && key_mods == chord_mods).then_some(action)
-    })
-}
-
-fn is_prefix(key: &KeyEvent) -> bool {
-    let p = prefix_chord();
-    key.code == p.code && key.modifiers.contains(KeyModifiers::CONTROL) == p.mods.contains(KeyModifiers::CONTROL)
+    None
 }
 
 /// Handle one key event according to the input-mode machine.
@@ -150,7 +126,11 @@ fn is_prefix(key: &KeyEvent) -> bool {
 pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<bool> {
     match rt.state.input_mode.clone() {
         InputMode::Terminal => {
-            if is_prefix(&key) {
+            if let Some(entry) = rt.keymap.lookup_direct(key.code, key.modifiers).cloned() {
+                rt.mark_dirty();
+                return dispatch_bound(rt, entry.bound, area);
+            }
+            if is_prefix(rt, &key) {
                 rt.state.input_mode = InputMode::Prefix;
                 rt.mark_dirty();
             } else {
@@ -161,12 +141,16 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<boo
         InputMode::Prefix => {
             rt.state.input_mode = InputMode::Terminal;
             rt.mark_dirty();
-            if is_prefix(&key) {
+            if is_prefix(rt, &key) {
                 rt.send_key(&key); // double prefix → literal
                 return Ok(false);
             }
-            match lookup(&key) {
-                Some(action) => dispatch(rt, action, area),
+            if let Some(ti) = jump_tab_index(&key) {
+                rt.state.jump_tab(ti);
+                return Ok(false);
+            }
+            match rt.keymap.lookup_prefixed(key.code, key.modifiers).cloned() {
+                Some(entry) => dispatch_bound(rt, entry.bound, area),
                 None => Ok(false), // unknown chord: swallow
             }
         }
@@ -228,6 +212,16 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<boo
 
 const RESIZE_STEP: f32 = 0.03;
 
+fn dispatch_bound(rt: &mut Runtime, bound: crate::config::keys::Bound, area: Rect) -> io::Result<bool> {
+    match bound {
+        crate::config::keys::Bound::Builtin(action) => dispatch(rt, action, area),
+        crate::config::keys::Bound::Command(cmd) => {
+            rt.run_custom_command(&cmd, area)?;
+            Ok(false)
+        }
+    }
+}
+
 fn dispatch(rt: &mut Runtime, action: Action, area: Rect) -> io::Result<bool> {
     let rects = rt.last_view.as_ref().map(|v| v.pane_rects.clone()).unwrap_or_default();
     match action {
@@ -248,7 +242,6 @@ fn dispatch(rt: &mut Runtime, action: Action, area: Rect) -> io::Result<bool> {
         }
         Action::NextTab => rt.state.next_tab(),
         Action::PrevTab => rt.state.prev_tab(),
-        Action::JumpTab(n) => rt.state.jump_tab((n - 1) as usize),
         Action::RenameTab => {
             rt.state.input_mode =
                 InputMode::Prompt { kind: PromptKind::RenameTab, buffer: String::new() };

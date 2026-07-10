@@ -9,6 +9,9 @@ use ratatui::DefaultTerminal;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 
+use crate::config::keys::Keymap;
+use crate::config::theme::Theme;
+use crate::config::{CommandKind, Config, CustomCommand, ShellMode};
 use crate::input;
 use crate::state::layout::{Dir, Divider};
 use crate::state::{AppState, CloseOutcome};
@@ -38,6 +41,9 @@ pub enum MouseDrag {
 pub struct Runtime {
     pub state: AppState,
     pub panes: HashMap<PaneId, PaneRuntime>,
+    pub cfg: Config,
+    pub keymap: Keymap,
+    pub theme: Theme,
     /// The last computed view — neighbor focus and mouse hit testing.
     pub last_view: Option<crate::ui::view::View>,
     pub drag: Option<MouseDrag>,
@@ -75,10 +81,83 @@ impl Runtime {
     }
 
     pub fn spawn_pane(&mut self, pane: PaneId, cols: u16, rows: u16) -> io::Result<()> {
-        let emu = Emulator::new(cols, rows, pane, self.tx.clone());
-        let pty = pty::spawn_shell(pane, cols, rows, self.tx.clone())?;
+        self.spawn_pane_cmd(pane, cols, rows, None)
+    }
+
+    pub fn spawn_pane_cmd(
+        &mut self,
+        pane: PaneId,
+        cols: u16,
+        rows: u16,
+        command: Option<String>,
+    ) -> io::Result<()> {
+        let scrollback = self.cfg.advanced.scrollback_lines();
+        let emu = Emulator::new(cols, rows, pane, self.tx.clone(), scrollback);
+        let opts = self.spawn_opts(command);
+        let pty = pty::spawn_shell(pane, cols, rows, self.tx.clone(), &opts)?;
         self.panes.insert(pane, PaneRuntime { emu, pty, last_size: (cols, rows) });
         Ok(())
+    }
+
+    fn spawn_opts(&self, command: Option<String>) -> pty::SpawnOpts {
+        let t = &self.cfg.terminal;
+        let shell = if t.default_shell.is_empty() {
+            std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+        } else {
+            t.default_shell.clone()
+        };
+        let login = match t.shell_mode {
+            ShellMode::Auto => cfg!(target_os = "macos"),
+            ShellMode::Login => true,
+            ShellMode::NonLogin => false,
+        };
+        let cwd = match t.new_cwd.as_str() {
+            "home" => std::env::var_os("HOME").map(std::path::PathBuf::from),
+            p if p.starts_with('/') => Some(std::path::PathBuf::from(p)),
+            // ponytail: "follow" = launch cwd until per-pane cwd tracking
+            // (platform process info) lands; "current" is the same today.
+            _ => None,
+        }
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| std::path::PathBuf::from("/"));
+
+        // The tab/workspace that contain this pane (just created in the active ones).
+        let ws = self.state.active_workspace();
+        let tab = ws.active_tab();
+        pty::SpawnOpts {
+            shell,
+            login,
+            cwd,
+            command,
+            tab_id: tab.id.to_string(),
+            workspace_id: ws.id.to_string(),
+        }
+    }
+
+    /// `[[keys.command]]`: pane → run in a new tab; shell → silent background run.
+    pub fn run_custom_command(&mut self, cmd: &CustomCommand, area: Rect) -> io::Result<()> {
+        match cmd.kind {
+            CommandKind::Pane => {
+                let pane = self.state.new_tab();
+                self.spawn_pane_cmd(pane, area.width, area.height, Some(cmd.command.clone()))
+            }
+            CommandKind::Shell => {
+                let focused = self.state.focused_pane();
+                let result = std::process::Command::new("/bin/sh")
+                    .arg("-c")
+                    .arg(&cmd.command)
+                    .env("CDOCK_ENV", "1")
+                    .env("CDOCK_PANE_ID", focused.to_string())
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+                if let Err(e) = result {
+                    tracing::warn!(command = %cmd.command, error = %e, "shell command failed");
+                }
+                Ok(())
+            }
+        }
     }
 
     /// Geometry phase: compute pane rects for the active tab and propagate
@@ -103,15 +182,24 @@ impl Runtime {
     }
 }
 
-pub async fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
+pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
     let area = terminal.get_frame().area();
+
+    let (keymap, key_warnings) = crate::config::keys::build_keymap(&cfg.keys);
+    let (theme, theme_warnings) = crate::config::theme::resolve(&cfg.theme);
+    for w in key_warnings.iter().chain(&theme_warnings) {
+        tracing::warn!("{w}");
+    }
 
     let state = AppState::new();
     let first = state.focused_pane();
     let mut rt = Runtime {
         state,
         panes: HashMap::new(),
+        cfg,
+        keymap,
+        theme,
         last_view: None,
         drag: None,
         last_click: None,

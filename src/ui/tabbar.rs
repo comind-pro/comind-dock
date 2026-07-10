@@ -5,6 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
+use crate::config::theme::Theme;
 use crate::state::AppState;
 
 struct Segment {
@@ -35,23 +36,23 @@ fn segments(state: &AppState) -> Vec<Segment> {
     out
 }
 
-pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
+pub fn render(state: &AppState, theme: &Theme, area: Rect, frame: &mut Frame) {
     let spans: Vec<Span> = segments(state)
         .into_iter()
         .map(|s| {
             let style = if s.is_ws {
-                Style::new().add_modifier(Modifier::BOLD).fg(Color::Cyan)
+                Style::new().add_modifier(Modifier::BOLD).fg(theme.accent)
             } else if s.active {
-                Style::new().fg(Color::Black).bg(Color::Cyan)
+                Style::new().fg(Color::Black).bg(theme.accent)
             } else if s.tab.is_some() {
-                Style::new().fg(Color::Gray)
+                Style::new().fg(theme.muted)
             } else {
                 Style::new()
             };
             Span::styled(s.text, style)
         })
         .collect();
-    let bar = Paragraph::new(Line::from(spans)).style(Style::new().bg(Color::Rgb(20, 20, 30)));
+    let bar = Paragraph::new(Line::from(spans)).style(Style::new().bg(theme.tab_bar_bg));
     frame.render_widget(bar, area);
 }
 

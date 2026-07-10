@@ -14,11 +14,11 @@ use crate::state::layout::Dir;
 use crate::ui::{sidebar, tabbar};
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
-const SCROLL_LINES: i32 = 3; // ponytail: [ui].mouse_scroll_lines in M6
 
 pub fn handle(rt: &mut Runtime, ev: MouseEvent) {
     let Some(view) = rt.last_view.clone() else { return };
     let pos = Position::new(ev.column, ev.row);
+    let scroll_lines = rt.cfg.ui.mouse_scroll_lines.max(1) as i32;
 
     match ev.kind {
         MouseEventKind::Down(MouseButton::Left) => {
@@ -145,10 +145,10 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent) {
                     send_mouse(rt, id, bytes);
                 } else if p.emu.alternate_scroll() {
                     let arrow: &[u8] = if up { b"\x1bOA" } else { b"\x1bOB" };
-                    let bytes = arrow.repeat(SCROLL_LINES as usize);
+                    let bytes = arrow.repeat(scroll_lines as usize);
                     p.pty.write(&bytes);
                 } else {
-                    p.emu.scroll_display(if up { SCROLL_LINES } else { -SCROLL_LINES });
+                    p.emu.scroll_display(if up { scroll_lines } else { -scroll_lines });
                     rt.mark_dirty();
                 }
             }

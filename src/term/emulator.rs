@@ -31,9 +31,16 @@ pub struct Emulator {
 }
 
 impl Emulator {
-    pub fn new(cols: u16, rows: u16, pane: PaneId, tx: UnboundedSender<AppEvent>) -> Self {
+    pub fn new(
+        cols: u16,
+        rows: u16,
+        pane: PaneId,
+        tx: UnboundedSender<AppEvent>,
+        scrollback_lines: usize,
+    ) -> Self {
+        let config = term::Config { scrolling_history: scrollback_lines, ..Default::default() };
         let size = TermSize::new(cols.max(1) as usize, rows.max(1) as usize);
-        let term = Term::new(term::Config::default(), &size, EventProxy { pane, tx });
+        let term = Term::new(config, &size, EventProxy { pane, tx });
         Self { term, processor: Processor::new() }
     }
 

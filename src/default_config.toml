@@ -1,17 +1,53 @@
 # comind-dock default configuration.
-# Location: $XDG_CONFIG_HOME/comind-dock/config.toml (or CDOCK_CONFIG_PATH).
+# Location: $XDG_CONFIG_HOME/comind-dock/config.toml (or CDOCK_CONFIG_PATH,
+# or `cdock --config <path>`).
 # Every key is optional; omitted keys use the defaults shown here.
-# ponytail: annotated sections grow with M6 (theme, terminal, keys, ui).
 
-# [theme]
-# name = "default"        # built-in theme, or "terminal" to follow the host palette
+[theme]
+name = "default"      # "default" | "terminal" (follow the host palette)
 
-# [terminal]
-# shell_mode = "auto"     # auto | login | plain
-# new_cwd = "follow"      # follow | home | current | /absolute/path
+# Per-token overrides. Colors: "#rrggbb", "rgb(r,g,b)", named ("cyan"), "reset".
+# [theme.custom]
+# accent = "#00ffff"
+# divider = "darkgray"
+# tab_bar_bg = "#14141e"
+# muted = "gray"
 
-# [keys]
-# prefix = "ctrl+b"
+[terminal]
+default_shell = ""    # empty → $SHELL → /bin/sh
+shell_mode = "auto"   # auto | login | non_login (auto: login shell on macOS)
+new_cwd = "follow"    # follow | home | current | /absolute/path
+                      # follow currently uses the launch cwd; per-pane cwd
+                      # tracking arrives with platform process info
 
-# [experimental]
-# allow_nested = false    # allow launching cdock inside a cdock pane
+[keys]
+prefix = "ctrl+b"
+# Override any action. Bare key = pressed after the prefix; a chord with
+# modifiers (e.g. "ctrl+alt+t") binds directly, without the prefix.
+# Multiple keys: next_tab = ["n", "tab"].
+# Actions: split_right, split_down, focus_left/down/up/right,
+# swap_left/down/up/right, resize_mode, zoom, close_pane, new_tab, next_tab,
+# prev_tab, rename_tab, close_tab, new_workspace, rename_workspace,
+# close_workspace, next_workspace, toggle_sidebar, help, quit.
+# prefix+1..9 always jumps to tab 1..9.
+
+# Custom bindings. type = "pane" runs in a new tab; "shell" runs silently.
+# [[keys.command]]
+# key = "g"
+# type = "pane"
+# command = "lazygit"
+# description = "open lazygit"
+
+[ui]
+sidebar_width = 24
+mouse_capture = true
+mouse_scroll_lines = 3
+confirm_close = false
+prompt_new_tab_name = false
+hide_tab_bar_when_single_tab = false
+
+[advanced]
+scrollback_limit_bytes = 10000000   # converted to lines at ~120 bytes/line
+
+[experimental]
+allow_nested = false                # allow cdock inside a cdock pane

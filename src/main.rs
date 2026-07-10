@@ -1,3 +1,4 @@
+mod config;
 mod input;
 mod logging;
 mod runtime;
@@ -32,10 +33,16 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    let (cfg, warnings) = config::load(cli.config);
+    for w in &warnings {
+        eprintln!("cdock: warning: {w}");
+    }
+
     // Nested-launch guard: panes get CDOCK_ENV=1; running cdock inside cdock
-    // is almost always a mistake. ponytail: [experimental].allow_nested lands with config in M6.
-    if std::env::var_os("CDOCK_ENV").is_some() {
+    // is almost always a mistake.
+    if std::env::var_os("CDOCK_ENV").is_some() && !cfg.experimental.allow_nested {
         eprintln!("cdock: already running inside a cdock pane (CDOCK_ENV is set); refusing to nest");
+        eprintln!("cdock: set [experimental].allow_nested = true to override");
         return ExitCode::FAILURE;
     }
 
@@ -47,6 +54,9 @@ fn main() -> ExitCode {
         }
     };
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "cdock starting");
+    for w in &warnings {
+        tracing::warn!("{w}");
+    }
 
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
@@ -57,20 +67,19 @@ fn main() -> ExitCode {
     };
 
     // ratatui::init installs panic hooks that restore the host terminal.
+    let mouse = cfg.ui.mouse_capture;
     let mut terminal = ratatui::init();
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        crossterm::event::EnableBracketedPaste,
-        crossterm::event::EnableMouseCapture
-    );
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
+    if mouse {
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
+    }
 
-    let result = rt.block_on(runtime::run(&mut terminal));
+    let result = rt.block_on(runtime::run(&mut terminal, cfg));
 
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        crossterm::event::DisableMouseCapture,
-        crossterm::event::DisableBracketedPaste
-    );
+    if mouse {
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+    }
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
     ratatui::restore();
 
     match result {

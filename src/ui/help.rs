@@ -4,11 +4,12 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::input;
+use crate::config::keys::{Bound, Keymap};
+use crate::config::theme::Theme;
 use crate::state::{InputMode, PromptKind};
 
 /// Bottom key-hint strip, overlaid (no relayout) while a mode is active.
-pub fn render_hint(mode: &InputMode, area: Rect, frame: &mut Frame) {
+pub fn render_hint(mode: &InputMode, theme: &Theme, area: Rect, frame: &mut Frame) {
     let text = match mode {
         InputMode::Terminal => return,
         InputMode::Prefix => {
@@ -20,25 +21,33 @@ pub fn render_hint(mode: &InputMode, area: Rect, frame: &mut Frame) {
     };
     let y = area.y + area.height.saturating_sub(1);
     let strip = Rect { x: area.x, y, width: area.width, height: 1 };
-    let style = Style::new().fg(Color::Black).bg(Color::Cyan);
+    let style = Style::new().fg(Color::Black).bg(theme.accent);
     frame.render_widget(Paragraph::new(text).style(style), strip);
 }
 
-/// Centered modal listing every active binding, generated from the table.
-pub fn render_help(area: Rect, frame: &mut Frame) {
+/// Centered modal listing every active binding, generated from the keymap
+/// (so user overrides and custom commands show automatically).
+pub fn render_help(keymap: &Keymap, theme: &Theme, area: Rect, frame: &mut Frame) {
     let mut lines: Vec<Line> = vec![Line::from(Span::styled(
-        "prefix = ctrl+b",
+        "prefix, then:  (1..9 = jump to tab)",
         Style::new().add_modifier(Modifier::BOLD),
     ))];
-    let mut seen = std::collections::HashSet::new();
-    for (_, label, action) in input::bindings() {
-        // Collapse the 1..9 family to one row.
-        if !seen.insert(label) {
-            continue;
-        }
+    for entry in &keymap.entries {
+        let desc = match &entry.bound {
+            Bound::Builtin(action) => action.describe().to_string(),
+            Bound::Command(cmd) => {
+                if cmd.description.is_empty() { cmd.command.clone() } else { cmd.description.clone() }
+            }
+        };
+        let key = if entry.direct {
+            format!("  {:<12}", entry.label)
+        } else {
+            format!("  prefix+{:<10}", entry.label)
+        };
         lines.push(Line::from(vec![
-            Span::styled(format!("  prefix+{label:<10}"), Style::new().fg(Color::Cyan)),
-            Span::raw(action.describe()),
+            Span::styled(key, Style::new().fg(theme.accent)),
+            Span::raw(" "),
+            Span::raw(desc),
         ]));
     }
     let h = (lines.len() as u16 + 2).min(area.height);
@@ -53,12 +62,12 @@ pub fn render_help(area: Rect, frame: &mut Frame) {
     let block = Block::new()
         .borders(Borders::ALL)
         .title(" keys ")
-        .border_style(Style::new().fg(Color::Cyan));
+        .border_style(Style::new().fg(theme.accent));
     frame.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
 /// One-line centered input prompt (rename tab/workspace).
-pub fn render_prompt(kind: PromptKind, buffer: &str, area: Rect, frame: &mut Frame) {
+pub fn render_prompt(kind: PromptKind, buffer: &str, theme: &Theme, area: Rect, frame: &mut Frame) {
     let title = match kind {
         PromptKind::RenameTab => " rename tab ",
         PromptKind::RenameWorkspace => " rename workspace ",
@@ -74,6 +83,6 @@ pub fn render_prompt(kind: PromptKind, buffer: &str, area: Rect, frame: &mut Fra
     let block = Block::new()
         .borders(Borders::ALL)
         .title(title)
-        .border_style(Style::new().fg(Color::Cyan));
+        .border_style(Style::new().fg(theme.accent));
     frame.render_widget(Paragraph::new(format!("{buffer}█")).block(block), rect);
 }
