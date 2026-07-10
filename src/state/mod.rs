@@ -6,8 +6,29 @@ pub mod layout;
 pub mod workspace;
 
 use ids::{IdGen, PaneId};
-use layout::{Dir, Node, Side};
+use layout::{Dir, Side};
 use workspace::{Tab, Workspace};
+
+/// What a rename prompt is renaming.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptKind {
+    RenameTab,
+    RenameWorkspace,
+}
+
+/// Input-mode state machine (Terminal ↔ Prefix ↔ Resize, plus modal overlays).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum InputMode {
+    #[default]
+    Terminal,
+    Prefix,
+    Resize,
+    Help,
+    Prompt {
+        kind: PromptKind,
+        buffer: String,
+    },
+}
 
 /// What a pane close did to the surrounding structure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +48,7 @@ pub struct AppState {
     pub workspaces: Vec<Workspace>,
     pub active_workspace: usize,
     pub sidebar_visible: bool,
+    pub input_mode: InputMode,
     ids: IdGen,
 }
 
@@ -38,7 +60,13 @@ impl AppState {
         let pane = ids.pane();
         let tab = Tab::new(ids.tab(), "1".to_string(), pane);
         let ws = Workspace::new(ids.workspace(), "main".to_string(), tab);
-        Self { workspaces: vec![ws], active_workspace: 0, sidebar_visible: true, ids }
+        Self {
+            workspaces: vec![ws],
+            active_workspace: 0,
+            sidebar_visible: true,
+            input_mode: InputMode::Terminal,
+            ids,
+        }
     }
 
     pub fn active_workspace(&self) -> &Workspace {
@@ -63,6 +91,7 @@ impl AppState {
     }
 
     /// All pane ids across every workspace and tab.
+    #[cfg(test)]
     pub fn all_panes(&self) -> Vec<PaneId> {
         self.workspaces
             .iter()
@@ -186,6 +215,56 @@ impl AppState {
 
     pub fn cycle_workspace(&mut self) {
         self.active_workspace = (self.active_workspace + 1) % self.workspaces.len();
+    }
+
+    pub fn jump_tab(&mut self, index: usize) {
+        let ws = self.active_workspace_mut();
+        if index < ws.tabs.len() {
+            ws.active_tab = index;
+        }
+    }
+
+    /// Resize the focused pane along `axis`; positive delta grows it.
+    pub fn resize_focused(&mut self, axis: Dir, delta: f32) -> bool {
+        let tab = self.active_tab_mut();
+        let target = tab.focused_pane;
+        tab.layout.resize(target, axis, delta)
+    }
+
+    /// Swap the focused pane with its geometric neighbor, keeping focus on the
+    /// moved pane (which now sits in the neighbor's slot).
+    pub fn swap_with_neighbor(
+        &mut self,
+        rects: &[(PaneId, ratatui::layout::Rect)],
+        side: Side,
+    ) -> bool {
+        let tab = self.active_tab_mut();
+        let focused = tab.focused_pane;
+        match layout::neighbor(rects, focused, side) {
+            Some(other) => {
+                tab.layout.swap(focused, other);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn rename_active_tab(&mut self, name: String) {
+        self.active_tab_mut().name = name;
+    }
+
+    pub fn rename_active_workspace(&mut self, name: String) {
+        self.active_workspace_mut().name = name;
+    }
+
+    /// Panes of the active tab (for close-tab: kill each, PtyExit cascades).
+    pub fn active_tab_panes(&self) -> Vec<PaneId> {
+        self.active_tab().layout.panes()
+    }
+
+    /// Panes of the active workspace (for close-workspace).
+    pub fn active_workspace_panes(&self) -> Vec<PaneId> {
+        self.active_workspace().tabs.iter().flat_map(|t| t.layout.panes()).collect()
     }
 
     /// Invariants, checked in tests and debug builds after every mutation.

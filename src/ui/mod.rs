@@ -1,3 +1,4 @@
+pub mod help;
 pub mod pane_widget;
 pub mod sidebar;
 pub mod tabbar;
@@ -56,6 +57,7 @@ pub fn render(view: &View, rt: &Runtime, frame: &mut Frame) {
 
     let focused_rect =
         view.pane_rects.iter().find(|(id, _)| *id == view.focused).map(|(_, r)| *r);
+    let full = frame.area();
     let buf = frame.buffer_mut();
     for d in &view.dividers {
         let symbol = if d.dir == Dir::Right { "│" } else { "─" };
@@ -73,6 +75,17 @@ pub fn render(view: &View, rt: &Runtime, frame: &mut Frame) {
                 }
             }
         }
+    }
+
+    // Mode overlays on top of everything.
+    let mode = rt.state.input_mode.clone();
+    help::render_hint(&mode, full, frame);
+    match &mode {
+        crate::state::InputMode::Help => help::render_help(full, frame),
+        crate::state::InputMode::Prompt { kind, buffer } => {
+            help::render_prompt(*kind, buffer, full, frame);
+        }
+        _ => {}
     }
 }
 

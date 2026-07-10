@@ -10,7 +10,7 @@ use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 
 use crate::input;
-use crate::state::layout::{Dir, Divider, Side};
+use crate::state::layout::{Dir, Divider};
 use crate::state::{AppState, CloseOutcome};
 use crate::state::ids::PaneId;
 use crate::term::emulator::Emulator;
@@ -35,12 +35,37 @@ pub struct Runtime {
     pub last_pane_rects: Vec<(PaneId, Rect)>,
     tx: mpsc::UnboundedSender<AppEvent>,
     dirty: bool,
-    /// ponytail: minimal prefix chord state; the real input-mode machine lands in M4.
-    prefix_pending: bool,
 }
 
 impl Runtime {
-    fn spawn_pane(&mut self, pane: PaneId, cols: u16, rows: u16) -> io::Result<()> {
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    /// Encode a key for the focused pane's modes and write it to its PTY.
+    pub fn send_key(&mut self, key: &crossterm::event::KeyEvent) {
+        let focused = self.state.focused_pane();
+        if let Some(p) = self.panes.get_mut(&focused) {
+            if let Some(bytes) = input::encode::encode_key(key, p.emu.term.mode()) {
+                p.pty.write(&bytes);
+            }
+        }
+    }
+
+    /// Kill a pane's child; PtyExit drives the state change (single close path).
+    pub fn kill_pane(&mut self, pane: PaneId) {
+        if let Some(p) = self.panes.get_mut(&pane) {
+            p.pty.kill();
+        }
+    }
+
+    pub fn split_focused(&mut self, dir: Dir, area: Rect) -> io::Result<()> {
+        let pane = self.state.split_focused(dir);
+        // Provisional size; compute_view corrects it before the next frame.
+        self.spawn_pane(pane, area.width.max(2) / 2, area.height.max(2) / 2)
+    }
+
+    pub fn spawn_pane(&mut self, pane: PaneId, cols: u16, rows: u16) -> io::Result<()> {
         let emu = Emulator::new(cols, rows, pane, self.tx.clone());
         let pty = pty::spawn_shell(pane, cols, rows, self.tx.clone())?;
         self.panes.insert(pane, PaneRuntime { emu, pty, last_size: (cols, rows) });
@@ -75,14 +100,8 @@ pub async fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
 
     let state = AppState::new();
     let first = state.focused_pane();
-    let mut rt = Runtime {
-        state,
-        panes: HashMap::new(),
-        last_pane_rects: Vec::new(),
-        tx,
-        dirty: true,
-        prefix_pending: false,
-    };
+    let mut rt =
+        Runtime { state, panes: HashMap::new(), last_pane_rects: Vec::new(), tx, dirty: true };
     rt.spawn_pane(first, area.width, area.height)?;
 
     spawn_input_thread(rt.tx.clone());
@@ -191,57 +210,12 @@ fn handle_input(
     terminal: &mut DefaultTerminal,
 ) -> io::Result<bool> {
     use alacritty_terminal::term::TermMode;
-    use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+    use crossterm::event::{Event, KeyEventKind};
 
     match ev {
         Event::Key(key) if key.kind != KeyEventKind::Release => {
-            let is_prefix = key.code == KeyCode::Char('b')
-                && key.modifiers.contains(KeyModifiers::CONTROL);
-
-            if rt.prefix_pending {
-                rt.prefix_pending = false;
-                rt.dirty = true;
-                let area = terminal.get_frame().area();
-                let rects = rt.last_pane_rects.clone();
-                match (key.code, is_prefix) {
-                    (_, true) => send_key(rt, &key), // double prefix → literal
-                    (KeyCode::Char('v'), _) => split(rt, Dir::Right, area)?,
-                    (KeyCode::Char('-'), _) => split(rt, Dir::Down, area)?,
-                    (KeyCode::Char('h'), _) => { rt.state.focus_neighbor(&rects, Side::Left); }
-                    (KeyCode::Char('j'), _) => { rt.state.focus_neighbor(&rects, Side::Down); }
-                    (KeyCode::Char('k'), _) => { rt.state.focus_neighbor(&rects, Side::Up); }
-                    (KeyCode::Char('l'), _) => { rt.state.focus_neighbor(&rects, Side::Right); }
-                    (KeyCode::Char('x'), _) => {
-                        // Kill only; PtyExit drives the state change (single close path).
-                        let focused = rt.state.focused_pane();
-                        if let Some(p) = rt.panes.get_mut(&focused) {
-                            p.pty.kill();
-                        }
-                    }
-                    (KeyCode::Char('z'), _) => rt.state.toggle_zoom(),
-                    (KeyCode::Char('c'), _) => {
-                        let pane = rt.state.new_tab();
-                        rt.spawn_pane(pane, area.width, area.height)?;
-                    }
-                    (KeyCode::Char('n'), _) => rt.state.next_tab(),
-                    (KeyCode::Char('p'), _) => rt.state.prev_tab(),
-                    (KeyCode::Char('N'), _) => {
-                        let pane = rt.state.new_workspace();
-                        rt.spawn_pane(pane, area.width, area.height)?;
-                    }
-                    // ponytail: temp workspace cycling until M4 bindings + M5 sidebar clicks
-                    (KeyCode::Char('o'), _) => rt.state.cycle_workspace(),
-                    (KeyCode::Char('b'), _) => {
-                        rt.state.sidebar_visible = !rt.state.sidebar_visible;
-                    }
-                    (KeyCode::Char('q'), _) => return Ok(true),
-                    _ => {} // unknown chord: swallow
-                }
-            } else if is_prefix {
-                rt.prefix_pending = true;
-            } else {
-                send_key(rt, &key);
-            }
+            let area = terminal.get_frame().area();
+            return input::handle_key(rt, key, area);
         }
         Event::Paste(text) => {
             let focused = rt.state.focused_pane();
@@ -260,21 +234,6 @@ fn handle_input(
         _ => {}
     }
     Ok(false)
-}
-
-fn split(rt: &mut Runtime, dir: Dir, area: Rect) -> io::Result<()> {
-    let pane = rt.state.split_focused(dir);
-    // Spawned at a provisional size; compute_view corrects it before the next frame.
-    rt.spawn_pane(pane, area.width.max(2) / 2, area.height.max(2) / 2)
-}
-
-fn send_key(rt: &mut Runtime, key: &crossterm::event::KeyEvent) {
-    let focused = rt.state.focused_pane();
-    if let Some(p) = rt.panes.get_mut(&focused) {
-        if let Some(bytes) = input::encode::encode_key(key, p.emu.term.mode()) {
-            p.pty.write(&bytes);
-        }
-    }
 }
 
 /// crossterm's blocking event reader on a std thread; the tokio loop consumes
