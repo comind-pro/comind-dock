@@ -20,6 +20,8 @@ use crate::state::layout::Dir;
 #[serde(tag = "cmd", rename_all = "kebab-case")]
 pub enum Req {
     PaneList,
+    /// Full runtime state in one reply: workspaces → tabs → panes.
+    Snapshot,
     /// Split a pane (default: focused) and spawn a shell or command in it.
     Split { pane: Option<u64>, direction: Option<String>, command: Option<String> },
     /// Write literal text to a pane's PTY (no Enter).
@@ -75,6 +77,7 @@ fn parse_status(s: &str) -> Option<crate::detect::Status> {
 pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWait> {
     match req {
         Req::PaneList => Ok(pane_list(rt)),
+        Req::Snapshot => Ok(snapshot(rt)),
         Req::Split { pane, direction, command } => {
             let target = pane.map(PaneId).unwrap_or_else(|| rt.state.focused_pane());
             if !rt.state.focus_pane(target) {
@@ -180,6 +183,59 @@ fn pane_list(rt: &Runtime) -> Value {
         }
     }
     json!({"ok": true, "panes": panes})
+}
+
+/// One-shot full-state reply: everything a script needs to orient itself.
+fn snapshot(rt: &Runtime) -> Value {
+    let focused = rt.state.focused_pane();
+    let workspaces: Vec<Value> = rt
+        .state
+        .workspaces
+        .iter()
+        .enumerate()
+        .map(|(wi, ws)| {
+            let tabs: Vec<Value> = ws
+                .tabs
+                .iter()
+                .enumerate()
+                .map(|(ti, tab)| {
+                    let panes: Vec<Value> = tab
+                        .layout
+                        .panes()
+                        .into_iter()
+                        .filter_map(|id| {
+                            let p = rt.panes.get(&id)?;
+                            let title = rt.titles.get(&id).map(String::as_str).unwrap_or("");
+                            Some(json!({
+                                "id": id.0,
+                                "program": p.program,
+                                "title": title,
+                                "agent": p.agent,
+                                "agent_session": rt.agent_sessions.get(&id),
+                                "status": p.effective_status().word(),
+                                "focused": id == focused,
+                            }))
+                        })
+                        .collect();
+                    json!({
+                        "id": tab.id.0,
+                        "name": tab.name,
+                        "active": ti == ws.active_tab,
+                        "panes": panes,
+                    })
+                })
+                .collect();
+            json!({
+                "id": ws.id.0,
+                "name": ws.name,
+                "cwd": ws.cwd.to_string_lossy(),
+                "branch": rt.branches.get(&ws.id),
+                "active": wi == rt.state.active_workspace,
+                "tabs": tabs,
+            })
+        })
+        .collect();
+    json!({"ok": true, "workspaces": workspaces})
 }
 
 /// Resolve parked waits: condition met, pane gone, or deadline passed.

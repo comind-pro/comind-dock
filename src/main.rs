@@ -67,6 +67,11 @@ enum Cmd {
         #[command(subcommand)]
         sub: IntegrationCmd,
     },
+    /// Raw API access.
+    Api {
+        #[command(subcommand)]
+        sub: ApiCmd,
+    },
     /// Internal hook entrypoints (called by agent CLIs, not by hand).
     #[command(hide = true)]
     Hook {
@@ -79,6 +84,12 @@ enum Cmd {
 enum IntegrationCmd {
     /// Add the cdock SessionStart hook to the agent's settings.
     Install { agent: String },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum ApiCmd {
+    /// Full runtime state: workspaces → tabs → panes, one JSON tree.
+    Snapshot,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -185,6 +196,21 @@ fn install_claude_hook() -> Result<bool, String> {
     std::fs::write(&path, pretty).map_err(|e| e.to_string())?;
     println!("installed SessionStart hook into {} (backup: .json.bak)", path.display());
     println!("restart running claude panes to activate it");
+    install_claude_skill()?;
+    Ok(true)
+}
+
+/// Materialize the cdock skill so claude agents inside panes know how to
+/// drive the runtime (spawn siblings, run, wait). Overwrites — the skill is
+/// generated, cdock's copy is canonical.
+fn install_claude_skill() -> Result<bool, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME unset".to_string())?;
+    let dir = std::path::PathBuf::from(home).join(".claude/skills/cdock");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("SKILL.md");
+    std::fs::write(&path, include_str!("integration/cdock_skill.md"))
+        .map_err(|e| e.to_string())?;
+    println!("installed agent skill at {}", path.display());
     Ok(true)
 }
 
@@ -226,6 +252,7 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 Req::WaitAgentStatus { pane: parse_pane(&pane)?, status, timeout_ms: timeout }
             }
         },
+        Cmd::Api { sub: ApiCmd::Snapshot } => Req::Snapshot,
         Cmd::Integration { sub: IntegrationCmd::Install { agent } } => {
             return match agent.as_str() {
                 "claude" => install_claude_hook(),
