@@ -21,25 +21,47 @@ struct Row {
     target: Option<Target>,
 }
 
-/// Space status dot: empty/dim — no agents; green empty — agents, all
-/// idle; green filled — an agent is working; red — an agent is blocked
-/// (blocked arrives with the Phase 3 detection engine).
+/// Space status dot: dim empty — no agents; green empty — agents, all
+/// calm; green filled — an agent is working; red filled — an agent is
+/// blocked and needs the user.
 fn space_dot(rt: &Runtime, wi: usize, theme: &Theme) -> (&'static str, Style) {
+    use crate::detect::Status;
     let ws = &rt.state.workspaces[wi];
     let mut has_agent = false;
     let mut working = false;
+    let mut blocked = false;
     for pane in ws.tabs.iter().flat_map(|t| t.layout.panes()) {
         let Some(p) = rt.panes.get(&pane) else { continue };
         let title = rt.titles.get(&pane).map(String::as_str).unwrap_or("");
         if crate::agents::detect(title, &p.program).is_some() {
             has_agent = true;
-            working |= p.working();
+            match p.effective_status() {
+                Status::Blocked => blocked = true,
+                Status::Working => working = true,
+                _ => {}
+            }
         }
     }
-    match (has_agent, working) {
-        (false, _) => ("○ ", Style::new().fg(theme.muted)),
-        (true, false) => ("○ ", Style::new().fg(Color::Green)),
-        (true, true) => ("● ", Style::new().fg(Color::Green)),
+    if blocked {
+        ("● ", Style::new().fg(Color::Red))
+    } else if working {
+        ("● ", Style::new().fg(Color::Green))
+    } else if has_agent {
+        ("○ ", Style::new().fg(Color::Green))
+    } else {
+        ("○ ", Style::new().fg(theme.muted))
+    }
+}
+
+/// Agent-row marker and colors per detection state.
+fn status_marker(status: crate::detect::Status, theme: &Theme) -> (&'static str, Style) {
+    use crate::detect::Status;
+    match status {
+        Status::Working => ("⠿ ", Style::new().fg(Color::Yellow)),
+        Status::Blocked => ("● ", Style::new().fg(Color::Red)),
+        Status::Done => ("✓ ", Style::new().fg(Color::Green)),
+        Status::Idle => ("○ ", Style::new().fg(Color::Green)),
+        Status::Unknown => ("● ", Style::new().fg(theme.muted)),
     }
 }
 
@@ -116,12 +138,9 @@ fn rows(rt: &Runtime, theme: &Theme) -> Vec<Row> {
                 // Only recognized agent CLIs live here; plain shells are not agents.
                 let Some(agent) = crate::agents::detect(title, &p.program) else { continue };
                 any_agent = true;
-                let working = p.working();
-                let (dot, dot_style, status) = if working {
-                    ("⠿ ", Style::new().fg(Color::Yellow), "working")
-                } else {
-                    ("● ", Style::new().fg(theme.muted), "idle")
-                };
+                let status = p.effective_status();
+                let (dot, dot_style) = status_marker(status, theme);
+                let status = status.word();
                 let name = if title.trim().is_empty() {
                     agent.to_string()
                 } else {

@@ -67,6 +67,9 @@ pub async fn run(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut ws_poll = tokio::time::interval(Duration::from_millis(2000));
     ws_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let manifests = crate::detect::bundled();
+    let mut agent_poll = tokio::time::interval(Duration::from_millis(500));
+    agent_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Debounced session persistence (ARCHITECTURE §6).
     let mut autosave = tokio::time::interval(Duration::from_millis(5000));
     autosave.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -124,12 +127,14 @@ pub async fn run(
                                 clients.clear();
                                 rt.save_session();
                                 if opts.exit_when_no_clients {
+                                    flush_writers().await;
                                     return Ok(());
                                 }
                             }
                             InputOutcome::Shutdown => {
                                 rt.save_session();
                                 shutdown_clients(&clients);
+                                flush_writers().await;
                                 return Ok(());
                             }
                         }
@@ -162,6 +167,7 @@ pub async fn run(
                                 // The user closed everything on purpose.
                                 crate::state::snapshot::delete();
                                 shutdown_clients(&clients);
+                                flush_writers().await;
                                 return Ok(());
                             }
                         }
@@ -191,6 +197,7 @@ pub async fn run(
                 let _ = ctl_tx.send(ClientCtl::New(stream));
             }
             _ = ws_poll.tick() => rt.poll_workspaces(),
+            _ = agent_poll.tick() => rt.poll_agent_status(&manifests),
             _ = autosave.tick() => {
                 if !clients.is_empty() || !opts.exit_when_no_clients {
                     rt.save_session();
@@ -215,6 +222,12 @@ async fn accept_next(
         Some(l) => Some(l.accept().await),
         None => std::future::pending().await,
     }
+}
+
+/// Returning from run() drops the tokio runtime and aborts the writer
+/// tasks; give them a beat to flush Detach/Shutdown to clients first.
+async fn flush_writers() {
+    tokio::time::sleep(Duration::from_millis(120)).await;
 }
 
 fn shutdown_clients(clients: &HashMap<ClientId, Client>) {

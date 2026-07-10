@@ -195,11 +195,10 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
             match rt.drag.take() {
                 Some(MouseDrag::Select { pane }) => {
                     let text = rt.panes.get(&pane).and_then(|p| p.emu.selection_text());
-                    if let Some(text) = text {
-                        if !text.is_empty() {
+                    if let Some(text) = text
+                        && !text.is_empty() {
                             rt.host_write(osc52_bytes(&text));
                         }
-                    }
                 }
                 Some(MouseDrag::Divider { .. }) => {}
                 None => {

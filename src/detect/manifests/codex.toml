@@ -1,0 +1,23 @@
+# OpenAI Codex CLI detection rules.
+id = "codex"
+
+[[rule]]
+priority = 100
+state = "blocked"
+any_of = [
+    "allow command",
+    "approve this command",
+    "yes (y)",
+    "always approve",
+    "grant access",
+]
+
+[[rule]]
+priority = 90
+state = "working"
+any_of = ["esc to interrupt", "working (", "thinking"]
+
+[[rule]]
+priority = 50
+state = "idle"
+any_of = ["⏎ send", "send   ⇧⏎ newline", "/ commands"]

@@ -104,11 +104,10 @@ pub fn hit(rt: &Runtime, x: u16, width: u16) -> Option<Hit> {
         let w = s.text.width() as u16;
         if x >= cursor && x < cursor + w {
             // The trailing " ✕ " of a tab closes it.
-            if let Some(Hit::Tab(ti)) = s.hit {
-                if x >= cursor + w.saturating_sub(3) {
+            if let Some(Hit::Tab(ti)) = s.hit
+                && x >= cursor + w.saturating_sub(3) {
                     return Some(Hit::CloseTab(ti));
                 }
-            }
             return s.hit;
         }
         cursor += w;

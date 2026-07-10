@@ -1,0 +1,18 @@
+# opencode detection rules.
+id = "opencode"
+
+[[rule]]
+priority = 100
+state = "blocked"
+any_of = ["permission required", "approve", "allow once", "always allow"]
+none_of = ["esc to interrupt", "esc interrupt"]
+
+[[rule]]
+priority = 90
+state = "working"
+any_of = ["esc interrupt", "esc to interrupt", "working..."]
+
+[[rule]]
+priority = 50
+state = "idle"
+any_of = ["ctrl+? help", "/ for commands", "tab switch agent"]

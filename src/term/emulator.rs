@@ -97,6 +97,28 @@ impl Emulator {
         mode.contains(TermMode::ALT_SCREEN) && mode.contains(TermMode::ALTERNATE_SCROLL)
     }
 
+    /// Last `max_lines` non-empty rows of the live screen (bottom buffer) —
+    /// the detection engine's input. Grid coords, so user scrolling the
+    /// viewport doesn't change what detection sees.
+    pub fn bottom_text(&self, max_lines: usize) -> Vec<String> {
+        use alacritty_terminal::index::{Column, Line};
+        let grid = self.term.grid();
+        let mut out: Vec<String> = Vec::new();
+        for l in (0..grid.screen_lines()).rev() {
+            let row = &grid[Line(l as i32)];
+            let s: String = (0..grid.columns()).map(|c| row[Column(c)].c).collect();
+            let t = s.trim_end();
+            if !t.is_empty() {
+                out.push(t.to_string());
+                if out.len() >= max_lines {
+                    break;
+                }
+            }
+        }
+        out.reverse();
+        out
+    }
+
     /// Color for an OSC query (OSC 4/10/11/12): OSC-set palette entry if any,
     /// else the standard xterm value. 256 = foreground, 257 = background.
     pub fn palette_color(&self, idx: usize) -> alacritty_terminal::vte::ansi::Rgb {

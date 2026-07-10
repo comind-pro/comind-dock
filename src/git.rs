@@ -54,11 +54,10 @@ pub fn worktrees(dir: &Path) -> Vec<(PathBuf, String)> {
             if let Some(p) = path.take() {
                 result.push((p, b.rsplit('/').next().unwrap_or(b).to_string()));
             }
-        } else if line == "detached" {
-            if let Some(p) = path.take() {
+        } else if line == "detached"
+            && let Some(p) = path.take() {
                 result.push((p, "detached".to_string()));
             }
-        }
     }
     result
 }

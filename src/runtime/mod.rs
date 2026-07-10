@@ -28,15 +28,30 @@ pub struct PaneRuntime {
     pub pty: Pty,
     /// Program shown in the agents sidebar (command or shell basename).
     pub program: String,
-    /// Last PTY output — drives the working/idle activity heuristic
-    /// (real agent detection is Phase 3).
+    /// Last PTY output — the routine "working" signal and detection fallback.
     pub last_output: std::time::Instant,
+    /// Detection-engine result for agent panes.
+    pub status: crate::detect::Status,
     last_size: (u16, u16),
 }
 
 impl PaneRuntime {
     pub fn working(&self) -> bool {
         self.last_output.elapsed() < Duration::from_secs(3)
+    }
+
+    /// Status with the activity fallback when no manifest rule matched.
+    pub fn effective_status(&self) -> crate::detect::Status {
+        match self.status {
+            crate::detect::Status::Unknown => {
+                if self.working() {
+                    crate::detect::Status::Working
+                } else {
+                    crate::detect::Status::Idle
+                }
+            }
+            s => s,
+        }
     }
 }
 
@@ -134,6 +149,7 @@ impl Runtime {
                 pty,
                 program,
                 last_output: std::time::Instant::now(),
+                status: crate::detect::Status::Unknown,
                 last_size: (cols, rows),
             },
         );
@@ -162,6 +178,34 @@ impl Runtime {
             command,
             tab_id: tab.id.to_string(),
             workspace_id: ws.id.to_string(),
+        }
+    }
+
+    /// Run the detection engine over agent panes (bottom buffer + title).
+    /// Called every ~500ms by the server; cheap — a few strings per agent.
+    pub fn poll_agent_status(&mut self, manifests: &[crate::detect::Manifest]) {
+        let ids: Vec<PaneId> = self.panes.keys().copied().collect();
+        for id in ids {
+            let title = self.titles.get(&id).cloned().unwrap_or_default();
+            let Some(p) = self.panes.get(&id) else { continue };
+            let Some(agent) = crate::agents::detect(&title, &p.program) else {
+                if self.panes.get(&id).is_some_and(|p| p.status != crate::detect::Status::Unknown)
+                    && let Some(p) = self.panes.get_mut(&id) {
+                        p.status = crate::detect::Status::Unknown;
+                    }
+                continue;
+            };
+            let status = crate::detect::manifest_for(manifests, agent)
+                .and_then(|m| {
+                    let lines = self.panes.get(&id).map(|p| p.emu.bottom_text(15))?;
+                    crate::detect::classify(m, &title, &lines)
+                })
+                .unwrap_or(crate::detect::Status::Unknown);
+            if let Some(p) = self.panes.get_mut(&id)
+                && p.status != status {
+                    p.status = status;
+                    self.dirty = true;
+                }
         }
     }
 

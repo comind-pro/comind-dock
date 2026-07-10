@@ -269,11 +269,10 @@ impl AppState {
 
     /// Rename by the folder — only while the user hasn't renamed manually.
     pub fn auto_rename_workspace(&mut self, wi: usize, name: String) {
-        if let Some(ws) = self.workspaces.get_mut(wi) {
-            if !ws.custom_name && ws.name != name {
+        if let Some(ws) = self.workspaces.get_mut(wi)
+            && !ws.custom_name && ws.name != name {
                 ws.name = name;
             }
-        }
     }
 
     /// Panes of any workspace by index (close-space from the menu).

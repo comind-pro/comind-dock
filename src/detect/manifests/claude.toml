@@ -1,0 +1,35 @@
+# Claude Code detection rules. Bottom-of-buffer text, case-insensitive.
+id = "claude"
+
+# Permission / approval dialogs — must win over the working spinner.
+[[rule]]
+priority = 100
+state = "blocked"
+any_of = [
+    "do you want to proceed",
+    "do you want to",
+    "would you like to",
+    "yes, and don't ask again",
+    "waiting for your approval",
+    "grant access",
+    "esc to cancel",
+]
+none_of = ["esc to interrupt"]
+
+[[rule]]
+priority = 90
+state = "working"
+any_of = ["esc to interrupt", "ctrl-b to run in background", "ctrl+b to run in background"]
+
+# Resting input prompt with its hint line.
+[[rule]]
+priority = 50
+state = "idle"
+any_of = [
+    "? for shortcuts",
+    "shift+tab to cycle",
+    "bypass permissions on",
+    "plan mode on",
+    "manual mode on",
+    "accept edits on",
+]

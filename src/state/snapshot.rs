@@ -167,11 +167,10 @@ impl Snapshot {
         }
         // Re-link worktree parents by saved index.
         for (i, snap_ws) in self.workspaces.iter().enumerate() {
-            if let (Some(pi), true) = (snap_ws.parent, i < workspaces.len()) {
-                if pi < workspaces.len() && pi != i {
+            if let (Some(pi), true) = (snap_ws.parent, i < workspaces.len())
+                && pi < workspaces.len() && pi != i {
                     workspaces[i].parent = Some(workspaces[pi].id);
                 }
-            }
         }
         let active_workspace = self.active_workspace.min(workspaces.len() - 1);
         let state = AppState {

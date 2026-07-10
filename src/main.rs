@@ -1,6 +1,7 @@
 mod agents;
 mod client;
 mod config;
+mod detect;
 mod git;
 mod input;
 mod logging;
