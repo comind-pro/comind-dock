@@ -38,6 +38,12 @@ pub enum MenuAction {
     NewWorktree(usize),
     ListWorktrees(usize),
     OpenWorktree(usize, std::path::PathBuf),
+    /// Open the config file in $EDITOR in a new tab.
+    OpenSettings,
+    /// The prefix+? keybinding overlay.
+    ShowKeybinds,
+    ReloadConfig,
+    Detach,
 }
 
 /// Input-mode state machine (Terminal ↔ Prefix ↔ Resize, plus modal overlays).

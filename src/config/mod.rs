@@ -210,6 +210,9 @@ impl AdvancedCfg {
     }
 }
 
+/// The annotated default config, also written on first "settings" open.
+pub const DEFAULT_CONFIG: &str = include_str!("../default_config.toml");
+
 /// Config file path: --config > CDOCK_CONFIG_PATH > XDG default.
 pub fn config_path(cli_override: Option<PathBuf>) -> Option<PathBuf> {
     if let Some(p) = cli_override {

@@ -25,6 +25,19 @@ pub fn pane_items(pane: PaneId) -> Vec<MenuItem> {
     .collect()
 }
 
+/// The sidebar "menu" button: app-level settings and session actions.
+pub fn app_items() -> Vec<MenuItem> {
+    [
+        ("settings", MenuAction::OpenSettings),
+        ("keybinds", MenuAction::ShowKeybinds),
+        ("reload config", MenuAction::ReloadConfig),
+        ("detach", MenuAction::Detach),
+    ]
+    .into_iter()
+    .map(|(label, action)| MenuItem { label: label.to_string(), action })
+    .collect()
+}
+
 pub fn space_items(wi: usize) -> Vec<MenuItem> {
     [
         ("rename", MenuAction::RenameSpace(wi)),

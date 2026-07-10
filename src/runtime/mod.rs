@@ -297,6 +297,23 @@ impl Runtime {
         }
     }
 
+    /// Re-read config, keymap, and theme from disk and repaint.
+    /// ponytail: always the default path — a --config override on the
+    /// original launch is not remembered by the server.
+    pub fn reload_config(&mut self) {
+        let (cfg, warnings) = crate::config::load(None);
+        let (keymap, kw) = crate::config::keys::build_keymap(&cfg.keys);
+        let (theme, tw) = crate::config::theme::resolve(&cfg.theme);
+        for w in warnings.iter().chain(&kw).chain(&tw) {
+            tracing::warn!("reload: {w}");
+        }
+        self.cfg = cfg;
+        self.keymap = keymap;
+        self.theme = theme;
+        self.dirty = true;
+        tracing::info!("config reloaded");
+    }
+
     /// Create a git worktree for workspace `wi` and open it as a child space.
     pub fn create_worktree(&mut self, wi: usize, branch: &str, area: Rect) {
         let Some(ws) = self.state.workspaces.get(wi) else { return };

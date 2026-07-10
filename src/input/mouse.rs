@@ -31,7 +31,7 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 rt.mark_dirty();
                 let mrect = menu::rect(x, y, &items, area);
                 if let Some(action) = menu::hit(mrect, &items, ev.column, ev.row) {
-                    run_menu_action(rt, action, x, y, area);
+                    return run_menu_action(rt, action, x, y, area);
                 }
             }
             MouseEventKind::Down(_) => {
@@ -89,6 +89,13 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                     Some(sidebar::Target::Workspace(wi)) => {
                         // Plain click switches; the menu lives on right-click.
                         rt.state.active_workspace = wi;
+                    }
+                    Some(sidebar::Target::AppMenu) => {
+                        rt.state.input_mode = InputMode::Menu {
+                            x: ev.column,
+                            y: ev.row,
+                            items: menu::app_items(),
+                        };
                     }
                     Some(sidebar::Target::Pane(pane)) => {
                         rt.state.focus_pane(pane);
@@ -297,7 +304,13 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
     InputOutcome::Continue
 }
 
-fn run_menu_action(rt: &mut Runtime, action: MenuAction, x: u16, y: u16, area: Rect) {
+fn run_menu_action(
+    rt: &mut Runtime,
+    action: MenuAction,
+    x: u16,
+    y: u16,
+    area: Rect,
+) -> InputOutcome {
     let result = match action {
         MenuAction::SplitRight(pane) => {
             rt.state.focus_pane(pane);
@@ -338,8 +351,43 @@ fn run_menu_action(rt: &mut Runtime, action: MenuAction, x: u16, y: u16, area: R
             };
             Ok(())
         }
+        MenuAction::OpenSettings => {
+            // Seed the file with the annotated defaults so $EDITOR opens
+            // something editable, then edit it in a fresh tab.
+            match crate::config::config_path(None) {
+                Some(path) => {
+                    if !path.exists() {
+                        if let Some(dir) = path.parent() {
+                            let _ = std::fs::create_dir_all(dir);
+                        }
+                        let _ = std::fs::write(&path, crate::config::DEFAULT_CONFIG);
+                    }
+                    let editor =
+                        std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+                    let pane = rt.state.new_tab();
+                    rt.spawn_pane_cmd(
+                        pane,
+                        area.width,
+                        area.height,
+                        Some(format!("{editor} {}", path.display())),
+                    )
+                }
+                None => Ok(()),
+            }
+        }
+        MenuAction::ShowKeybinds => {
+            rt.state.input_mode = InputMode::Help;
+            Ok(())
+        }
+        MenuAction::ReloadConfig => {
+            rt.reload_config();
+            Ok(())
+        }
+        MenuAction::Detach => return InputOutcome::Detach,
         MenuAction::ListWorktrees(wi) => {
-            let Some(ws) = rt.state.workspaces.get(wi) else { return };
+            let Some(ws) = rt.state.workspaces.get(wi) else {
+                return InputOutcome::Continue;
+            };
             let current = ws.cwd.clone();
             let items: Vec<MenuItem> = crate::git::worktrees(&ws.cwd)
                 .into_iter()
@@ -366,6 +414,7 @@ fn run_menu_action(rt: &mut Runtime, action: MenuAction, x: u16, y: u16, area: R
     if let Err(e) = result {
         tracing::warn!(error = %e, "menu action failed");
     }
+    InputOutcome::Continue
 }
 
 fn pane_at(rects: &[(PaneId, Rect)], pos: Position) -> Option<(PaneId, Rect)> {

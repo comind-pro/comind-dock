@@ -14,6 +14,8 @@ pub enum Target {
     Workspace(usize),
     Pane(PaneId),
     NewWorkspace,
+    /// The "≡ menu" row above spaces: app settings / session actions.
+    AppMenu,
 }
 
 struct Row {
@@ -70,6 +72,10 @@ fn status_marker(status: crate::detect::Status, theme: &Theme) -> (&'static str,
 fn rows(rt: &Runtime, theme: &Theme) -> Vec<Row> {
     let state = &rt.state;
     let mut out = vec![
+        Row {
+            line: Line::from(Span::styled(" ≡ menu", Style::new().fg(theme.muted))),
+            target: Some(Target::AppMenu),
+        },
         Row { line: Line::from(""), target: None },
         Row {
             line: Line::from(Span::styled(

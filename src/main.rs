@@ -161,7 +161,7 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
     Ok(v["ok"].as_bool().unwrap_or(false))
 }
 
-const DEFAULT_CONFIG: &str = include_str!("default_config.toml");
+use config::DEFAULT_CONFIG;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
