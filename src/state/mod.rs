@@ -3,6 +3,7 @@
 
 pub mod ids;
 pub mod layout;
+pub mod snapshot;
 pub mod workspace;
 
 use ids::{IdGen, PaneId};
@@ -30,6 +31,12 @@ pub enum InputMode {
     },
     /// y/n confirmation before killing a pane ([ui].confirm_close).
     ConfirmClose(ids::PaneId),
+    /// Right-click context menu anchored at a screen cell.
+    Menu {
+        pane: ids::PaneId,
+        x: u16,
+        y: u16,
+    },
 }
 
 /// What a pane close did to the surrounding structure.
@@ -102,13 +109,13 @@ impl AppState {
             .collect()
     }
 
-    /// Split the focused pane; the new pane becomes focused. Returns its id
-    /// so the runtime can spawn a PTY for it.
-    pub fn split_focused(&mut self, dir: Dir) -> PaneId {
+    /// Split the focused pane; the new pane becomes focused. `before` puts
+    /// it on the left/top. Returns its id so the runtime can spawn a PTY.
+    pub fn split_focused(&mut self, dir: Dir, before: bool) -> PaneId {
         let new = self.ids.pane();
         let tab = self.active_tab_mut();
         let target = tab.focused_pane;
-        tab.layout.split(target, new, dir);
+        tab.layout.split(target, new, dir, before);
         tab.focused_pane = new;
         tab.zoomed = None;
         debug_assert!(self.check_invariants());
@@ -333,9 +340,9 @@ mod tests {
     fn split_focus_close_cycle() {
         let mut s = AppState::new();
         let first = s.focused_pane();
-        let second = s.split_focused(Dir::Right);
+        let second = s.split_focused(Dir::Right, false);
         assert_eq!(s.focused_pane(), second);
-        let third = s.split_focused(Dir::Down);
+        let third = s.split_focused(Dir::Down, false);
         assert_eq!(s.all_panes().len(), 3);
 
         assert_eq!(s.close_pane(third), CloseOutcome::PaneRemoved);
@@ -358,13 +365,13 @@ mod tests {
     #[test]
     fn zoom_toggles_and_clears_on_split() {
         let mut s = AppState::new();
-        s.split_focused(Dir::Right);
+        s.split_focused(Dir::Right, false);
         s.toggle_zoom();
         assert_eq!(s.active_tab().zoomed, Some(s.focused_pane()));
         s.toggle_zoom();
         assert_eq!(s.active_tab().zoomed, None);
         s.toggle_zoom();
-        s.split_focused(Dir::Down);
+        s.split_focused(Dir::Down, false);
         assert_eq!(s.active_tab().zoomed, None, "split un-zooms");
     }
 
@@ -390,7 +397,7 @@ mod tests {
     #[test]
     fn close_zoomed_pane_clears_zoom() {
         let mut s = AppState::new();
-        let second = s.split_focused(Dir::Right);
+        let second = s.split_focused(Dir::Right, false);
         s.toggle_zoom();
         assert_eq!(s.close_pane(second), CloseOutcome::PaneRemoved);
         assert_eq!(s.active_tab().zoomed, None);

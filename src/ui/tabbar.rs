@@ -14,6 +14,8 @@ use crate::state::AppState;
 pub enum Hit {
     Tab(usize),
     NewTab,
+    /// The ✕ at the right edge: quit cdock, saving the session.
+    CloseApp,
 }
 
 struct Segment {
@@ -60,7 +62,7 @@ fn segments(rt: &Runtime) -> Vec<Segment> {
 }
 
 pub fn render(rt: &Runtime, theme: &Theme, area: Rect, frame: &mut Frame) {
-    let spans: Vec<Span> = segments(rt)
+    let mut spans: Vec<Span> = segments(rt)
         .into_iter()
         .map(|s| {
             let style = if s.active {
@@ -75,12 +77,26 @@ pub fn render(rt: &Runtime, theme: &Theme, area: Rect, frame: &mut Frame) {
             Span::styled(s.text, style)
         })
         .collect();
+    // ✕ pinned to the right edge (quit + save session).
+    use unicode_width::UnicodeWidthStr as _;
+    let used: usize = spans.iter().map(|s| s.content.width()).sum();
+    let total = area.width as usize;
+    if used + CLOSE_WIDTH <= total {
+        spans.push(Span::raw(" ".repeat(total - used - CLOSE_WIDTH)));
+        spans.push(Span::styled(" ✕ ", Style::new().fg(theme.muted)));
+    }
     let bar = Paragraph::new(Line::from(spans)).style(Style::new().bg(theme.tab_bar_bg));
     frame.render_widget(bar, area);
 }
 
-/// What sits under bar-relative column `x`.
-pub fn hit(rt: &Runtime, x: u16) -> Option<Hit> {
+/// Display width of the " ✕ " button.
+const CLOSE_WIDTH: usize = 3;
+
+/// What sits under bar-relative column `x` (`width` = bar width).
+pub fn hit(rt: &Runtime, x: u16, width: u16) -> Option<Hit> {
+    if x >= width.saturating_sub(CLOSE_WIDTH as u16) {
+        return Some(Hit::CloseApp);
+    }
     let mut cursor: u16 = 0;
     for s in segments(rt) {
         let w = s.text.width() as u16;

@@ -180,6 +180,11 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<boo
             rt.mark_dirty();
             Ok(false)
         }
+        InputMode::Menu { .. } => {
+            rt.state.input_mode = InputMode::Terminal;
+            rt.mark_dirty();
+            Ok(false)
+        }
         InputMode::ConfirmClose(pane) => {
             rt.mark_dirty();
             rt.state.input_mode = InputMode::Terminal;
@@ -232,8 +237,8 @@ fn dispatch_bound(rt: &mut Runtime, bound: crate::config::keys::Bound, area: Rec
 fn dispatch(rt: &mut Runtime, action: Action, area: Rect) -> io::Result<bool> {
     let rects = rt.last_view.as_ref().map(|v| v.pane_rects.clone()).unwrap_or_default();
     match action {
-        Action::SplitRight => rt.split_focused(Dir::Right, area)?,
-        Action::SplitDown => rt.split_focused(Dir::Down, area)?,
+        Action::SplitRight => rt.split_focused(Dir::Right, false, area)?,
+        Action::SplitDown => rt.split_focused(Dir::Down, false, area)?,
         Action::Focus(side) => {
             rt.state.focus_neighbor(&rects, side);
         }

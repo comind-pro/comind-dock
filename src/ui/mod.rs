@@ -1,4 +1,5 @@
 pub mod help;
+pub mod menu;
 pub mod pane_widget;
 pub mod sidebar;
 pub mod tabbar;
@@ -70,6 +71,9 @@ pub fn render(view: &View, rt: &Runtime, frame: &mut Frame) {
         crate::state::InputMode::Help => help::render_help(&rt.keymap, &rt.theme, full, frame),
         crate::state::InputMode::Prompt { kind, buffer } => {
             help::render_prompt(*kind, buffer, &rt.theme, full, frame);
+        }
+        crate::state::InputMode::Menu { x, y, .. } => {
+            menu::render(*x, *y, &rt.theme, full, frame);
         }
         _ => {}
     }

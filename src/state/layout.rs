@@ -68,20 +68,24 @@ impl Node {
         }
     }
 
-    /// Replace `Leaf(target)` with a split of (target, new). Returns false if absent.
-    pub fn split(&mut self, target: PaneId, new: PaneId, dir: Dir) -> bool {
+    /// Replace `Leaf(target)` with a split of (target, new). `before` puts
+    /// the new pane on the left/top side. Returns false if absent.
+    pub fn split(&mut self, target: PaneId, new: PaneId, dir: Dir, before: bool) -> bool {
         match self {
             Node::Leaf(p) if *p == target => {
+                let (first, second) = if before { (new, target) } else { (target, new) };
                 *self = Node::Split {
                     dir,
                     ratio: 0.5,
-                    a: Box::new(Node::Leaf(target)),
-                    b: Box::new(Node::Leaf(new)),
+                    a: Box::new(Node::Leaf(first)),
+                    b: Box::new(Node::Leaf(second)),
                 };
                 true
             }
             Node::Leaf(_) => false,
-            Node::Split { a, b, .. } => a.split(target, new, dir) || b.split(target, new, dir),
+            Node::Split { a, b, .. } => {
+                a.split(target, new, dir, before) || b.split(target, new, dir, before)
+            }
         }
     }
 
@@ -292,16 +296,16 @@ mod tests {
     #[test]
     fn split_replaces_leaf() {
         let mut n = Node::Leaf(p(1));
-        assert!(n.split(p(1), p(2), Dir::Right));
+        assert!(n.split(p(1), p(2), Dir::Right, false));
         assert_eq!(n.panes(), vec![p(1), p(2)]);
-        assert!(!n.split(p(99), p(3), Dir::Down));
+        assert!(!n.split(p(99), p(3), Dir::Down, false));
     }
 
     #[test]
     fn remove_promotes_sibling() {
         let mut n = Node::Leaf(p(1));
-        n.split(p(1), p(2), Dir::Right);
-        n.split(p(2), p(3), Dir::Down);
+        n.split(p(1), p(2), Dir::Right, false);
+        n.split(p(2), p(3), Dir::Down, false);
         assert!(n.remove(p(2)));
         assert_eq!(n.panes(), vec![p(1), p(3)]);
         assert!(n.remove(p(3)));
@@ -313,8 +317,8 @@ mod tests {
     #[test]
     fn swap_keeps_shape() {
         let mut n = Node::Leaf(p(1));
-        n.split(p(1), p(2), Dir::Right);
-        n.split(p(2), p(3), Dir::Down);
+        n.split(p(1), p(2), Dir::Right, false);
+        n.split(p(2), p(3), Dir::Down, false);
         let (rects_before, _) = n.layout(area());
         n.swap(p(1), p(3));
         let (rects_after, _) = n.layout(area());
@@ -327,8 +331,8 @@ mod tests {
     #[test]
     fn layout_covers_area_with_dividers() {
         let mut n = Node::Leaf(p(1));
-        n.split(p(1), p(2), Dir::Right);
-        n.split(p(2), p(3), Dir::Down);
+        n.split(p(1), p(2), Dir::Right, false);
+        n.split(p(2), p(3), Dir::Down, false);
         let (rects, dividers) = n.layout(area());
         assert_eq!(rects.len(), 3);
         assert_eq!(dividers.len(), 2);
@@ -347,7 +351,7 @@ mod tests {
     #[test]
     fn resize_adjusts_nearest_axis_ancestor() {
         let mut n = Node::Leaf(p(1));
-        n.split(p(1), p(2), Dir::Right);
+        n.split(p(1), p(2), Dir::Right, false);
         let (before, _) = n.layout(area());
         assert!(n.resize(p(1), Dir::Right, 0.1));
         let (after, _) = n.layout(area());
@@ -360,7 +364,7 @@ mod tests {
     #[test]
     fn resize_ratio_clamped() {
         let mut n = Node::Leaf(p(1));
-        n.split(p(1), p(2), Dir::Right);
+        n.split(p(1), p(2), Dir::Right, false);
         for _ in 0..100 {
             n.resize(p(1), Dir::Right, 0.1);
         }
@@ -372,8 +376,8 @@ mod tests {
     fn neighbor_finds_adjacent_with_max_overlap() {
         // [1 | 2] with 2 split into 2-over-3.
         let mut n = Node::Leaf(p(1));
-        n.split(p(1), p(2), Dir::Right);
-        n.split(p(2), p(3), Dir::Down);
+        n.split(p(1), p(2), Dir::Right, false);
+        n.split(p(2), p(3), Dir::Down, false);
         let (rects, _) = n.layout(area());
         assert_eq!(neighbor(&rects, p(1), Side::Right), Some(p(2)));
         assert_eq!(neighbor(&rects, p(2), Side::Left), Some(p(1)));
@@ -388,8 +392,8 @@ mod tests {
         // [[1|2]|3]: the outer divider separates 2 and 3; resizing it must not
         // touch the inner [1|2] split.
         let mut n = Node::Leaf(p(1));
-        n.split(p(1), p(3), Dir::Right);
-        n.split(p(1), p(2), Dir::Right);
+        n.split(p(1), p(3), Dir::Right, false);
+        n.split(p(1), p(2), Dir::Right, false);
         let inner_before = match &n {
             Node::Split { a, .. } => match &**a {
                 Node::Split { ratio, .. } => *ratio,
@@ -412,7 +416,7 @@ mod tests {
     #[test]
     fn tiny_area_degrades_gracefully() {
         let mut n = Node::Leaf(p(1));
-        n.split(p(1), p(2), Dir::Right);
+        n.split(p(1), p(2), Dir::Right, false);
         let (rects, dividers) = n.layout(Rect::new(0, 0, 2, 2));
         assert_eq!(rects.len(), 1);
         assert!(dividers.is_empty());

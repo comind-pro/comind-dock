@@ -13,6 +13,7 @@ use crate::state::ids::PaneId;
 pub enum Target {
     Workspace(usize),
     Pane(PaneId),
+    NewWorkspace,
 }
 
 struct Row {
@@ -69,6 +70,10 @@ fn rows(rt: &Runtime, theme: &Theme) -> Vec<Row> {
             target: Some(Target::Workspace(wi)),
         });
     }
+    out.push(Row {
+        line: Line::from(Span::styled("  + new space", Style::new().fg(theme.accent))),
+        target: Some(Target::NewWorkspace),
+    });
 
     out.push(Row { line: Line::from(""), target: None });
     out.push(Row {
@@ -79,22 +84,26 @@ fn rows(rt: &Runtime, theme: &Theme) -> Vec<Row> {
         target: None,
     });
 
+    let mut any_agent = false;
     for ws in &state.workspaces {
         for tab in &ws.tabs {
             for pane in tab.layout.panes() {
                 let Some(p) = rt.panes.get(&pane) else { continue };
+                let title = rt.titles.get(&pane).map(String::as_str).unwrap_or("");
+                // Only recognized agent CLIs live here; plain shells are not agents.
+                let Some(agent) = crate::agents::detect(title, &p.program) else { continue };
+                any_agent = true;
                 let working = p.working();
                 let (dot, dot_style, status) = if working {
                     ("⠿ ", Style::new().fg(Color::Yellow), "working")
                 } else {
                     ("● ", Style::new().fg(theme.muted), "idle")
                 };
-                let name = rt
-                    .titles
-                    .get(&pane)
-                    .filter(|t| !t.trim().is_empty())
-                    .map(|t| t.chars().take(16).collect::<String>())
-                    .unwrap_or_else(|| p.program.clone());
+                let name = if title.trim().is_empty() {
+                    agent.to_string()
+                } else {
+                    title.chars().take(16).collect::<String>()
+                };
                 let focused = pane == state.focused_pane();
                 let name_style = if focused {
                     Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
@@ -111,13 +120,19 @@ fn rows(rt: &Runtime, theme: &Theme) -> Vec<Row> {
                 });
                 out.push(Row {
                     line: Line::from(Span::styled(
-                        format!("    {status} · {}", p.program),
+                        format!("    {status} · {agent}"),
                         Style::new().fg(theme.muted),
                     )),
                     target: Some(Target::Pane(pane)),
                 });
             }
         }
+    }
+    if !any_agent {
+        out.push(Row {
+            line: Line::from(Span::styled("  none yet", Style::new().fg(theme.muted))),
+            target: None,
+        });
     }
     out
 }

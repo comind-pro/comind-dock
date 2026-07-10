@@ -87,8 +87,8 @@ impl Runtime {
         }
     }
 
-    pub fn split_focused(&mut self, dir: Dir, area: Rect) -> io::Result<()> {
-        let pane = self.state.split_focused(dir);
+    pub fn split_focused(&mut self, dir: Dir, before: bool, area: Rect) -> io::Result<()> {
+        let pane = self.state.split_focused(dir, before);
         // Provisional size; compute_view corrects it before the next frame.
         self.spawn_pane(pane, area.width.max(2) / 2, area.height.max(2) / 2)
     }
@@ -226,8 +226,15 @@ pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> 
         tracing::warn!("{w}");
     }
 
-    let state = AppState::new();
-    let first = state.focused_pane();
+    // Restore the last session's structure if a snapshot exists.
+    let (state, initial_panes) = match crate::state::snapshot::load().and_then(|s| s.restore()) {
+        Some((st, panes)) => (st, panes),
+        None => {
+            let st = AppState::new();
+            let first = st.focused_pane();
+            (st, vec![first])
+        }
+    };
     let mut rt = Runtime {
         state,
         panes: HashMap::new(),
@@ -242,7 +249,9 @@ pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> 
         data_tx,
         dirty: true,
     };
-    rt.spawn_pane(first, area.width, area.height)?;
+    for pane in initial_panes {
+        rt.spawn_pane(pane, area.width, area.height)?;
+    }
 
     spawn_input_thread(rt.tx.clone());
 
@@ -260,12 +269,15 @@ pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> 
                     match ev {
                         AppEvent::PtyExit(id) => {
                             if handle_pane_exit(&mut rt, id) {
+                                // The user closed everything on purpose.
+                                crate::state::snapshot::delete();
                                 return Ok(());
                             }
                         }
                         AppEvent::Term(id, tev) => handle_term_event(&mut rt, id, tev),
                         AppEvent::Input(iev) => {
                             if handle_input(&mut rt, iev, terminal)? {
+                                crate::state::snapshot::save(&rt.state);
                                 return Ok(());
                             }
                         }
@@ -391,7 +403,10 @@ fn handle_input(
             }
         }
         Event::Resize(..) => rt.dirty = true, // compute_view picks up the new size
-        Event::Mouse(m) => input::mouse::handle(rt, m),
+        Event::Mouse(m) => {
+            let area = terminal.get_frame().area();
+            return Ok(input::mouse::handle(rt, m, area));
+        }
         _ => {}
     }
     Ok(false)
