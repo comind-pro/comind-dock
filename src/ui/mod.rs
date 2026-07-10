@@ -44,7 +44,8 @@ pub fn compute_view(rt: &mut Runtime, area: Rect) -> View {
 /// Phase 2: pure drawing from the precomputed view and immutable state.
 pub fn render(view: &View, rt: &Runtime, frame: &mut Frame) {
     if view.tab_bar.height > 0 {
-        tabbar::render(&rt.state, &rt.theme, view.tab_bar, frame);
+        let title = rt.titles.get(&view.focused).map(String::as_str);
+        tabbar::render(&rt.state, &rt.theme, title, view.tab_bar, frame);
     }
     if let Some(sb) = view.sidebar {
         sidebar::render(&rt.state, &rt.theme, sb, frame);

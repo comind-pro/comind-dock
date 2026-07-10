@@ -36,8 +36,14 @@ fn segments(state: &AppState) -> Vec<Segment> {
     out
 }
 
-pub fn render(state: &AppState, theme: &Theme, area: Rect, frame: &mut Frame) {
-    let spans: Vec<Span> = segments(state)
+pub fn render(
+    state: &AppState,
+    theme: &Theme,
+    focused_title: Option<&str>,
+    area: Rect,
+    frame: &mut Frame,
+) {
+    let mut spans: Vec<Span> = segments(state)
         .into_iter()
         .map(|s| {
             let style = if s.is_ws {
@@ -52,6 +58,17 @@ pub fn render(state: &AppState, theme: &Theme, area: Rect, frame: &mut Frame) {
             Span::styled(s.text, style)
         })
         .collect();
+    // Focused pane's OSC title, right-aligned.
+    if let Some(title) = focused_title {
+        let used: usize = spans.iter().map(|s| s.content.width()).sum();
+        let title: String = title.chars().take(40).collect();
+        let tw = title.width();
+        let total = area.width as usize;
+        if used + tw + 2 <= total {
+            spans.push(Span::raw(" ".repeat(total - used - tw - 1)));
+            spans.push(Span::styled(title, Style::new().fg(theme.muted)));
+        }
+    }
     let bar = Paragraph::new(Line::from(spans)).style(Style::new().bg(theme.tab_bar_bg));
     frame.render_widget(bar, area);
 }

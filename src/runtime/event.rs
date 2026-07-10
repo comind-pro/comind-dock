@@ -1,13 +1,17 @@
 use crate::state::ids::PaneId;
 
-/// Everything the main event loop reacts to, funneled through one channel.
+/// Control events (input, emulator events, exits) — unbounded channel,
+/// always drained before PTY output so input stays responsive under load.
 pub enum AppEvent {
-    /// Raw output bytes from a pane's PTY.
-    PtyBytes(PaneId, Vec<u8>),
-    /// A pane's PTY hit EOF (process exited).
+    /// A pane's child process exited.
     PtyExit(PaneId),
     /// Event emitted by a pane's terminal emulator.
     Term(PaneId, alacritty_terminal::event::Event),
     /// Host terminal input (keys, mouse, resize, paste).
     Input(crossterm::event::Event),
 }
+
+/// PTY output travels on its own BOUNDED channel: when the main loop falls
+/// behind, reader threads block, and the kernel pty buffer throttles the
+/// child — backpressure instead of an unbounded backlog in front of input.
+pub type PtyData = (PaneId, Vec<u8>);

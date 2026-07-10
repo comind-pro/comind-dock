@@ -113,11 +113,10 @@ fn is_prefix(rt: &Runtime, key: &KeyEvent) -> bool {
 
 /// prefix+1..9 tab jumps — a fixed indexed family, not per-key configurable.
 fn jump_tab_index(key: &KeyEvent) -> Option<usize> {
-    if let KeyCode::Char(c @ '1'..='9') = key.code {
-        if key.modifiers.is_empty() {
+    if let KeyCode::Char(c @ '1'..='9') = key.code
+        && key.modifiers.is_empty() {
             return Some(c as usize - '1' as usize);
         }
-    }
     None
 }
 
@@ -181,6 +180,14 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<boo
             rt.mark_dirty();
             Ok(false)
         }
+        InputMode::ConfirmClose(pane) => {
+            rt.mark_dirty();
+            rt.state.input_mode = InputMode::Terminal;
+            if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter) {
+                rt.kill_pane(pane);
+            }
+            Ok(false)
+        }
         InputMode::Prompt { kind, mut buffer } => {
             rt.mark_dirty();
             match key.code {
@@ -235,10 +242,21 @@ fn dispatch(rt: &mut Runtime, action: Action, area: Rect) -> io::Result<bool> {
         }
         Action::ResizeMode => rt.state.input_mode = InputMode::Resize,
         Action::Zoom => rt.state.toggle_zoom(),
-        Action::ClosePane => rt.kill_pane(rt.state.focused_pane()),
+        Action::ClosePane => {
+            let focused = rt.state.focused_pane();
+            if rt.cfg.ui.confirm_close {
+                rt.state.input_mode = InputMode::ConfirmClose(focused);
+            } else {
+                rt.kill_pane(focused);
+            }
+        }
         Action::NewTab => {
             let pane = rt.state.new_tab();
             rt.spawn_pane(pane, area.width, area.height)?;
+            if rt.cfg.ui.prompt_new_tab_name {
+                rt.state.input_mode =
+                    InputMode::Prompt { kind: PromptKind::RenameTab, buffer: String::new() };
+            }
         }
         Action::NextTab => rt.state.next_tab(),
         Action::PrevTab => rt.state.prev_tab(),

@@ -19,7 +19,7 @@ use crate::state::ids::PaneId;
 use crate::term::emulator::Emulator;
 use crate::term::pty::{self, Pty};
 use crate::ui;
-use event::AppEvent;
+use event::{AppEvent, PtyData};
 
 /// Max PTY bytes fed to emulators between renders, so `cat bigfile`
 /// cannot starve input handling and the render tick.
@@ -44,11 +44,14 @@ pub struct Runtime {
     pub cfg: Config,
     pub keymap: Keymap,
     pub theme: Theme,
+    /// OSC window titles reported by pane applications.
+    pub titles: HashMap<PaneId, String>,
     /// The last computed view — neighbor focus and mouse hit testing.
     pub last_view: Option<crate::ui::view::View>,
     pub drag: Option<MouseDrag>,
     pub last_click: Option<(std::time::Instant, u16, u16)>,
     tx: mpsc::UnboundedSender<AppEvent>,
+    data_tx: mpsc::Sender<PtyData>,
     dirty: bool,
 }
 
@@ -60,11 +63,10 @@ impl Runtime {
     /// Encode a key for the focused pane's modes and write it to its PTY.
     pub fn send_key(&mut self, key: &crossterm::event::KeyEvent) {
         let focused = self.state.focused_pane();
-        if let Some(p) = self.panes.get_mut(&focused) {
-            if let Some(bytes) = input::encode::encode_key(key, p.emu.term.mode()) {
+        if let Some(p) = self.panes.get_mut(&focused)
+            && let Some(bytes) = input::encode::encode_key(key, p.emu.term.mode()) {
                 p.pty.write(&bytes);
             }
-        }
     }
 
     /// Kill a pane's child; PtyExit drives the state change (single close path).
@@ -94,7 +96,7 @@ impl Runtime {
         let scrollback = self.cfg.advanced.scrollback_lines();
         let emu = Emulator::new(cols, rows, pane, self.tx.clone(), scrollback);
         let opts = self.spawn_opts(command);
-        let pty = pty::spawn_shell(pane, cols, rows, self.tx.clone(), &opts)?;
+        let pty = pty::spawn_shell(pane, cols, rows, self.tx.clone(), self.data_tx.clone(), &opts)?;
         self.panes.insert(pane, PaneRuntime { emu, pty, last_size: (cols, rows) });
         Ok(())
     }
@@ -184,6 +186,9 @@ impl Runtime {
 
 pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+    // Small capacity on purpose: caps in-flight PTY output (~16×64 KB) so a
+    // `cat bigfile` can never queue seconds of work in front of a keystroke.
+    let (data_tx, mut data_rx) = mpsc::channel::<PtyData>(16);
     let area = terminal.get_frame().area();
 
     let (keymap, key_warnings) = crate::config::keys::build_keymap(&cfg.keys);
@@ -200,10 +205,12 @@ pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> 
         cfg,
         keymap,
         theme,
+        titles: HashMap::new(),
         last_view: None,
         drag: None,
         last_click: None,
         tx,
+        data_tx,
         dirty: true,
     };
     rt.spawn_pane(first, area.width, area.height)?;
@@ -215,19 +222,13 @@ pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> 
 
     loop {
         tokio::select! {
+            // Input and control events always win over PTY output.
+            biased;
             maybe = rx.recv() => {
                 let Some(first) = maybe else { return Ok(()) };
-                let mut budget = DRAIN_BUDGET;
                 let mut next = Some(first);
                 while let Some(ev) = next.take() {
                     match ev {
-                        AppEvent::PtyBytes(id, bytes) => {
-                            budget = budget.saturating_sub(bytes.len());
-                            if let Some(p) = rt.panes.get_mut(&id) {
-                                p.emu.feed(&bytes);
-                                rt.dirty = true;
-                            }
-                        }
                         AppEvent::PtyExit(id) => {
                             if handle_pane_exit(&mut rt, id) {
                                 return Ok(());
@@ -240,8 +241,21 @@ pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> 
                             }
                         }
                     }
+                    next = rx.try_recv().ok();
+                }
+            }
+            maybe = data_rx.recv() => {
+                let Some(first) = maybe else { return Ok(()) };
+                let mut budget = DRAIN_BUDGET;
+                let mut next = Some(first);
+                while let Some((id, bytes)) = next.take() {
+                    budget = budget.saturating_sub(bytes.len());
+                    if let Some(p) = rt.panes.get_mut(&id) {
+                        p.emu.feed(&bytes);
+                        rt.dirty = true;
+                    }
                     if budget > 0 {
-                        next = rx.try_recv().ok();
+                        next = data_rx.try_recv().ok();
                     }
                 }
             }
@@ -261,6 +275,7 @@ pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> 
 fn handle_pane_exit(rt: &mut Runtime, id: PaneId) -> bool {
     let Some(mut p) = rt.panes.remove(&id) else { return false };
     p.pty.kill();
+    rt.titles.remove(&id);
     rt.dirty = true;
     matches!(rt.state.close_pane(id), CloseOutcome::LastClosed)
 }
@@ -275,9 +290,21 @@ fn handle_term_event(rt: &mut Runtime, id: PaneId, ev: TermEvent) {
                 p.pty.write(text.as_bytes());
             }
         }
-        TermEvent::Title(title) => tracing::debug!(pane = %id, %title, "pane title"),
+        TermEvent::Title(title) => {
+            rt.titles.insert(id, title);
+            rt.dirty = true;
+        }
+        TermEvent::ResetTitle => {
+            rt.titles.remove(&id);
+            rt.dirty = true;
+        }
         TermEvent::ClipboardStore(_, data) => osc52_copy(&data),
-        // ponytail: OSC color queries answered with real palette values in M7
+        TermEvent::ColorRequest(idx, format) => {
+            if let Some(p) = rt.panes.get_mut(&id) {
+                let rgb = p.emu.palette_color(idx);
+                p.pty.write(format(rgb).as_bytes());
+            }
+        }
         _ => {}
     }
 }

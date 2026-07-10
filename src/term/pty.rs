@@ -34,6 +34,7 @@ pub fn spawn_shell(
     cols: u16,
     rows: u16,
     tx: UnboundedSender<AppEvent>,
+    data_tx: tokio::sync::mpsc::Sender<crate::runtime::event::PtyData>,
     opts: &SpawnOpts,
 ) -> io::Result<Pty> {
     let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
@@ -84,7 +85,9 @@ pub fn spawn_shell(
                     break;
                 }
                 Ok(n) => {
-                    if tx.send(AppEvent::PtyBytes(pane, buf[..n].to_vec())).is_err() {
+                    // Bounded: blocks when the main loop is behind, letting
+                    // the kernel pty buffer throttle the child (backpressure).
+                    if data_tx.blocking_send((pane, buf[..n].to_vec())).is_err() {
                         break;
                     }
                 }

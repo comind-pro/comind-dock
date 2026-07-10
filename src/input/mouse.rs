@@ -30,8 +30,8 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent) {
                 }
                 return;
             }
-            if let Some(sb) = view.sidebar {
-                if sb.contains(pos) {
+            if let Some(sb) = view.sidebar
+                && sb.contains(pos) {
                     match sidebar::hit(&rt.state, ev.row - sb.y) {
                         Some(sidebar::Target::Workspace(wi)) => rt.state.active_workspace = wi,
                         Some(sidebar::Target::Tab(wi, ti)) => {
@@ -42,7 +42,6 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent) {
                     }
                     return;
                 }
-            }
             if let Some(d) = view.dividers.iter().find(|d| d.rect.contains(pos)) {
                 let last_pos = if d.dir == Dir::Right { ev.column } else { ev.row };
                 rt.drag = Some(MouseDrag::Divider {
@@ -101,36 +100,32 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent) {
             }
             None => {
                 // Drag inside a mouse-reporting app.
-                if let Some((id, rect)) = pane_at(&view.pane_rects, pos) {
-                    if rt.panes.get(&id).is_some_and(|p| p.emu.wants_mouse()) {
+                if let Some((id, rect)) = pane_at(&view.pane_rects, pos)
+                    && rt.panes.get(&id).is_some_and(|p| p.emu.wants_mouse()) {
                         let bytes =
                             sgr(32, ev.column - rect.x, ev.row - rect.y, true, ev.modifiers);
                         send_mouse(rt, id, bytes);
                     }
-                }
             }
         },
 
         MouseEventKind::Up(MouseButton::Left) => {
             match rt.drag.take() {
                 Some(MouseDrag::Select { pane }) => {
-                    if let Some(p) = rt.panes.get(&pane) {
-                        if let Some(text) = p.emu.selection_text() {
-                            if !text.is_empty() {
+                    if let Some(p) = rt.panes.get(&pane)
+                        && let Some(text) = p.emu.selection_text()
+                            && !text.is_empty() {
                                 osc52_copy(&text);
                             }
-                        }
-                    }
                 }
                 Some(MouseDrag::Divider { .. }) => {}
                 None => {
-                    if let Some((id, rect)) = pane_at(&view.pane_rects, pos) {
-                        if rt.panes.get(&id).is_some_and(|p| p.emu.wants_mouse()) {
+                    if let Some((id, rect)) = pane_at(&view.pane_rects, pos)
+                        && rt.panes.get(&id).is_some_and(|p| p.emu.wants_mouse()) {
                             let bytes =
                                 sgr(0, ev.column - rect.x, ev.row - rect.y, false, ev.modifiers);
                             send_mouse(rt, id, bytes);
                         }
-                    }
                 }
             }
         }
@@ -155,8 +150,8 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent) {
         }
 
         MouseEventKind::Down(MouseButton::Right | MouseButton::Middle) => {
-            if let Some((id, rect)) = pane_at(&view.pane_rects, pos) {
-                if rt.panes.get(&id).is_some_and(|p| p.emu.wants_mouse()) {
+            if let Some((id, rect)) = pane_at(&view.pane_rects, pos)
+                && rt.panes.get(&id).is_some_and(|p| p.emu.wants_mouse()) {
                     let btn = if matches!(ev.kind, MouseEventKind::Down(MouseButton::Middle)) {
                         1
                     } else {
@@ -165,7 +160,6 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent) {
                     let bytes = sgr(btn, ev.column - rect.x, ev.row - rect.y, true, ev.modifiers);
                     send_mouse(rt, id, bytes);
                 }
-            }
         }
 
         _ => {}

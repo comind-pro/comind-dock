@@ -28,6 +28,8 @@ pub enum InputMode {
         kind: PromptKind,
         buffer: String,
     },
+    /// y/n confirmation before killing a pane ([ui].confirm_close).
+    ConfirmClose(ids::PaneId),
 }
 
 /// What a pane close did to the surrounding structure.

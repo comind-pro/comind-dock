@@ -18,6 +18,7 @@ pub fn render_hint(mode: &InputMode, theme: &Theme, area: Rect, frame: &mut Fram
         InputMode::Resize => " RESIZE  h/l narrower/wider  j/k taller/shorter  Esc/Enter done ",
         InputMode::Help => " any key to close ",
         InputMode::Prompt { .. } => " Enter apply  Esc cancel ",
+        InputMode::ConfirmClose(_) => " close pane? y = yes, any other key = cancel ",
     };
     let y = area.y + area.height.saturating_sub(1);
     let strip = Rect { x: area.x, y, width: area.width, height: 1 };
