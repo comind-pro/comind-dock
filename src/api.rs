@@ -34,6 +34,14 @@ pub enum Req {
     /// From the agent's SessionStart integration hook: which conversation
     /// runs in this pane (restore resumes exactly it).
     ReportAgentSession { pane: u64, session_id: String },
+    /// Worktrees of a workspace's repo (default: the active workspace).
+    WorktreeList { workspace: Option<u64> },
+    /// Create branch + worktree and open it as a child space.
+    WorktreeCreate { workspace: Option<u64>, branch: String },
+    /// Open an existing worktree (by branch) as a child space.
+    WorktreeOpen { workspace: Option<u64>, branch: String },
+    /// Remove a worktree child space: git worktree remove + close its panes.
+    WorktreeRemove { workspace: u64, #[serde(default)] force: bool },
     WaitAgentStatus { pane: u64, status: String, timeout_ms: Option<u64> },
     WaitOutput {
         pane: u64,
@@ -125,6 +133,74 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             rt.save_session(); // survive a crash between autosaves
             Ok(json!({"ok": true}))
         }
+        Req::WorktreeList { workspace } => {
+            let Some(wi) = resolve_ws(rt, workspace) else {
+                return Ok(err("no such workspace"));
+            };
+            let list: Vec<Value> = crate::git::worktrees(&rt.state.workspaces[wi].cwd)
+                .into_iter()
+                .map(|(path, branch)| json!({"path": path.to_string_lossy(), "branch": branch}))
+                .collect();
+            Ok(json!({"ok": true, "worktrees": list}))
+        }
+        Req::WorktreeCreate { workspace, branch } => {
+            let Some(wi) = resolve_ws(rt, workspace) else {
+                return Ok(err("no such workspace"));
+            };
+            let ws = &rt.state.workspaces[wi];
+            let (repo, parent_id) = (ws.cwd.clone(), ws.id);
+            match crate::git::worktree_add(&repo, &branch, &rt.cfg.worktrees.root()) {
+                Ok(path) => {
+                    rt.open_worktree(parent_id, path.clone(), area);
+                    rt.mark_dirty();
+                    Ok(json!({"ok": true, "path": path.to_string_lossy()}))
+                }
+                Err(e) => Ok(err(e)),
+            }
+        }
+        Req::WorktreeOpen { workspace, branch } => {
+            let Some(wi) = resolve_ws(rt, workspace) else {
+                return Ok(err("no such workspace"));
+            };
+            let ws = &rt.state.workspaces[wi];
+            let (cwd, parent_id) = (ws.cwd.clone(), ws.id);
+            match crate::git::worktrees(&cwd).into_iter().find(|(_, b)| *b == branch) {
+                Some((path, _)) => {
+                    rt.open_worktree(parent_id, path.clone(), area);
+                    rt.mark_dirty();
+                    Ok(json!({"ok": true, "path": path.to_string_lossy()}))
+                }
+                None => Ok(err(format!("no worktree for branch {branch:?}"))),
+            }
+        }
+        Req::WorktreeRemove { workspace, force } => {
+            let Some(wi) = rt
+                .state
+                .workspaces
+                .iter()
+                .position(|w| w.id == crate::state::ids::WorkspaceId(workspace))
+            else {
+                return Ok(err("no such workspace"));
+            };
+            let ws = &rt.state.workspaces[wi];
+            let Some(parent_id) = ws.parent else {
+                return Ok(err("not a worktree space (no parent)"));
+            };
+            let Some(repo) =
+                rt.state.workspaces.iter().find(|w| w.id == parent_id).map(|w| w.cwd.clone())
+            else {
+                return Ok(err("parent space is gone"));
+            };
+            let path = ws.cwd.clone();
+            if let Err(e) = crate::git::worktree_remove(&repo, &path, force) {
+                return Ok(err(e));
+            }
+            for pane in rt.state.workspace_panes(wi) {
+                rt.kill_pane(pane);
+            }
+            rt.mark_dirty();
+            Ok(json!({"ok": true}))
+        }
         Req::WaitAgentStatus { pane, status, timeout_ms } => {
             let Some(status) = parse_status(&status) else {
                 return Ok(err(format!("bad status {status:?}")));
@@ -134,6 +210,18 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
         Req::WaitOutput { pane, needle, timeout_ms } => {
             wait(rt, pane, WaitCond::Output(needle), timeout_ms)
         }
+    }
+}
+
+/// Workspace index by public id; None id → the active workspace.
+fn resolve_ws(rt: &Runtime, id: Option<u64>) -> Option<usize> {
+    match id {
+        None => Some(rt.state.active_workspace),
+        Some(id) => rt
+            .state
+            .workspaces
+            .iter()
+            .position(|w| w.id == crate::state::ids::WorkspaceId(id)),
     }
 }
 

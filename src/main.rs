@@ -72,6 +72,11 @@ enum Cmd {
         #[command(subcommand)]
         sub: ApiCmd,
     },
+    /// Git worktrees as child spaces.
+    Worktree {
+        #[command(subcommand)]
+        sub: WorktreeCmd,
+    },
     /// Internal hook entrypoints (called by agent CLIs, not by hand).
     #[command(hide = true)]
     Hook {
@@ -90,6 +95,34 @@ enum IntegrationCmd {
 enum ApiCmd {
     /// Full runtime state: workspaces → tabs → panes, one JSON tree.
     Snapshot,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum WorktreeCmd {
+    /// Worktrees of a workspace's repo (default: active workspace).
+    List {
+        #[arg(long)]
+        workspace: Option<u64>,
+    },
+    /// Create branch + worktree, open as a child space.
+    Create {
+        branch: String,
+        #[arg(long)]
+        workspace: Option<u64>,
+    },
+    /// Open an existing worktree by branch as a child space.
+    Open {
+        branch: String,
+        #[arg(long)]
+        workspace: Option<u64>,
+    },
+    /// git worktree remove + close the child space.
+    Remove {
+        #[arg(long)]
+        workspace: u64,
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -253,6 +286,16 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             }
         },
         Cmd::Api { sub: ApiCmd::Snapshot } => Req::Snapshot,
+        Cmd::Worktree { sub } => match sub {
+            WorktreeCmd::List { workspace } => Req::WorktreeList { workspace },
+            WorktreeCmd::Create { branch, workspace } => {
+                Req::WorktreeCreate { workspace, branch }
+            }
+            WorktreeCmd::Open { branch, workspace } => Req::WorktreeOpen { workspace, branch },
+            WorktreeCmd::Remove { workspace, force } => {
+                Req::WorktreeRemove { workspace, force }
+            }
+        },
         Cmd::Integration { sub: IntegrationCmd::Install { agent } } => {
             return match agent.as_str() {
                 "claude" => install_claude_hook(),

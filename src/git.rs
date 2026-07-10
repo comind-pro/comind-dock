@@ -96,6 +96,26 @@ pub fn worktree_add(repo_dir: &Path, branch: &str, root: &Path) -> Result<PathBu
     }
 }
 
+/// Remove a worktree (git refuses on a dirty tree unless `force`).
+pub fn worktree_remove(repo_dir: &Path, worktree: &Path, force: bool) -> Result<(), String> {
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_dir)
+        .args(&args)
+        .arg(worktree)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
