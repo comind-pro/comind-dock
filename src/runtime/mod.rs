@@ -31,6 +31,8 @@ pub struct PaneRuntime {
 pub struct Runtime {
     pub state: AppState,
     pub panes: HashMap<PaneId, PaneRuntime>,
+    /// Pane rects from the last computed view — for neighbor focus and (M5) mouse hit testing.
+    pub last_pane_rects: Vec<(PaneId, Rect)>,
     tx: mpsc::UnboundedSender<AppEvent>,
     dirty: bool,
     /// ponytail: minimal prefix chord state; the real input-mode machine lands in M4.
@@ -47,7 +49,7 @@ impl Runtime {
 
     /// Geometry phase: compute pane rects for the active tab and propagate
     /// size changes to emulators and PTYs. Mutation happens here, never in render.
-    fn compute_view(&mut self, area: Rect) -> (Vec<(PaneId, Rect)>, Vec<Divider>) {
+    pub fn compute_panes(&mut self, area: Rect) -> (Vec<(PaneId, Rect)>, Vec<Divider>) {
         let tab = self.state.active_tab();
         let (rects, dividers) = match tab.zoomed {
             Some(z) if tab.layout.contains(z) => (vec![(z, area)], Vec::new()),
@@ -73,7 +75,14 @@ pub async fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
 
     let state = AppState::new();
     let first = state.focused_pane();
-    let mut rt = Runtime { state, panes: HashMap::new(), tx, dirty: true, prefix_pending: false };
+    let mut rt = Runtime {
+        state,
+        panes: HashMap::new(),
+        last_pane_rects: Vec::new(),
+        tx,
+        dirty: true,
+        prefix_pending: false,
+    };
     rt.spawn_pane(first, area.width, area.height)?;
 
     spawn_input_thread(rt.tx.clone());
@@ -116,9 +125,8 @@ pub async fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
             _ = tick.tick() => {
                 if rt.dirty {
                     let area = terminal.get_frame().area();
-                    let (rects, dividers) = rt.compute_view(area);
-                    let focused = rt.state.focused_pane();
-                    terminal.draw(|f| ui::render_panes(f, &rects, &dividers, &rt.panes, focused))?;
+                    let view = ui::compute_view(&mut rt, area);
+                    terminal.draw(|f| ui::render(&view, &rt, f))?;
                     rt.dirty = false;
                 }
             }
@@ -194,7 +202,7 @@ fn handle_input(
                 rt.prefix_pending = false;
                 rt.dirty = true;
                 let area = terminal.get_frame().area();
-                let (rects, _) = rt.compute_view(area);
+                let rects = rt.last_pane_rects.clone();
                 match (key.code, is_prefix) {
                     (_, true) => send_key(rt, &key), // double prefix → literal
                     (KeyCode::Char('v'), _) => split(rt, Dir::Right, area)?,
@@ -214,6 +222,17 @@ fn handle_input(
                     (KeyCode::Char('c'), _) => {
                         let pane = rt.state.new_tab();
                         rt.spawn_pane(pane, area.width, area.height)?;
+                    }
+                    (KeyCode::Char('n'), _) => rt.state.next_tab(),
+                    (KeyCode::Char('p'), _) => rt.state.prev_tab(),
+                    (KeyCode::Char('N'), _) => {
+                        let pane = rt.state.new_workspace();
+                        rt.spawn_pane(pane, area.width, area.height)?;
+                    }
+                    // ponytail: temp workspace cycling until M4 bindings + M5 sidebar clicks
+                    (KeyCode::Char('o'), _) => rt.state.cycle_workspace(),
+                    (KeyCode::Char('b'), _) => {
+                        rt.state.sidebar_visible = !rt.state.sidebar_visible;
                     }
                     (KeyCode::Char('q'), _) => return Ok(true),
                     _ => {} // unknown chord: swallow

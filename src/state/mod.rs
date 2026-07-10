@@ -163,6 +163,31 @@ impl AppState {
         pane
     }
 
+    pub fn next_tab(&mut self) {
+        let ws = self.active_workspace_mut();
+        ws.active_tab = (ws.active_tab + 1) % ws.tabs.len();
+    }
+
+    pub fn prev_tab(&mut self) {
+        let ws = self.active_workspace_mut();
+        ws.active_tab = (ws.active_tab + ws.tabs.len() - 1) % ws.tabs.len();
+    }
+
+    /// New workspace with one tab/pane; becomes active. Returns the pane to spawn.
+    pub fn new_workspace(&mut self) -> PaneId {
+        let pane = self.ids.pane();
+        let tab = Tab::new(self.ids.tab(), "1".to_string(), pane);
+        let name = format!("ws{}", self.workspaces.len() + 1);
+        self.workspaces.push(Workspace::new(self.ids.workspace(), name, tab));
+        self.active_workspace = self.workspaces.len() - 1;
+        debug_assert!(self.check_invariants());
+        pane
+    }
+
+    pub fn cycle_workspace(&mut self) {
+        self.active_workspace = (self.active_workspace + 1) % self.workspaces.len();
+    }
+
     /// Invariants, checked in tests and debug builds after every mutation.
     pub fn check_invariants(&self) -> bool {
         let mut seen = std::collections::HashSet::new();
@@ -241,6 +266,25 @@ mod tests {
         s.toggle_zoom();
         s.split_focused(Dir::Down);
         assert_eq!(s.active_tab().zoomed, None, "split un-zooms");
+    }
+
+    #[test]
+    fn tab_and_workspace_navigation() {
+        let mut s = AppState::new();
+        s.new_tab();
+        s.new_tab();
+        assert_eq!(s.active_workspace().active_tab, 2);
+        s.next_tab();
+        assert_eq!(s.active_workspace().active_tab, 0);
+        s.prev_tab();
+        assert_eq!(s.active_workspace().active_tab, 2);
+
+        let p = s.new_workspace();
+        assert_eq!(s.active_workspace, 1);
+        assert_eq!(s.focused_pane(), p);
+        s.cycle_workspace();
+        assert_eq!(s.active_workspace, 0);
+        assert!(s.check_invariants());
     }
 
     #[test]
