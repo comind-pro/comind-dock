@@ -34,10 +34,11 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> bool {
                     run_menu_action(rt, action, x, y, area);
                 }
             }
-            MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+            MouseEventKind::Down(_) => {
                 rt.state.input_mode = InputMode::Terminal;
                 rt.mark_dirty();
             }
+            // Moves, releases, and trackpad scroll inertia keep the menu open.
             _ => {}
         }
         return false;
@@ -59,6 +60,18 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> bool {
                             .unwrap_or((80, 24));
                         if let Err(e) = rt.spawn_pane(pane, size.0.max(4), size.1.max(4)) {
                             tracing::warn!(error = %e, "new tab spawn failed");
+                        }
+                    }
+                    Some(tabbar::Hit::CloseTab(ti)) => {
+                        let panes = rt
+                            .state
+                            .active_workspace()
+                            .tabs
+                            .get(ti)
+                            .map(|t| t.layout.panes())
+                            .unwrap_or_default();
+                        for pane in panes {
+                            rt.kill_pane(pane);
                         }
                     }
                     Some(tabbar::Hit::CloseApp) => {

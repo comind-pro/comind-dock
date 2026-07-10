@@ -13,6 +13,8 @@ use crate::state::AppState;
 #[derive(Debug, Clone, Copy)]
 pub enum Hit {
     Tab(usize),
+    /// The ✕ inside a tab: close that tab.
+    CloseTab(usize),
     NewTab,
     /// The ✕ at the right edge: quit cdock, saving the session.
     CloseApp,
@@ -51,7 +53,7 @@ fn segments(rt: &Runtime) -> Vec<Segment> {
         let active = ti == ws.active_tab;
         let zoomed = active && ws.tabs[ti].zoomed.is_some();
         out.push(Segment {
-            text: format!("  {}{}  ", tab_label(rt, state, ti), if zoomed { " [Z]" } else { "" }),
+            text: format!("  {}{} ✕ ", tab_label(rt, state, ti), if zoomed { " [Z]" } else { "" }),
             hit: Some(Hit::Tab(ti)),
             active,
         });
@@ -101,6 +103,12 @@ pub fn hit(rt: &Runtime, x: u16, width: u16) -> Option<Hit> {
     for s in segments(rt) {
         let w = s.text.width() as u16;
         if x >= cursor && x < cursor + w {
+            // The trailing " ✕ " of a tab closes it.
+            if let Some(Hit::Tab(ti)) = s.hit {
+                if x >= cursor + w.saturating_sub(3) {
+                    return Some(Hit::CloseTab(ti));
+                }
+            }
             return s.hit;
         }
         cursor += w;
