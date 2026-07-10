@@ -1,4 +1,5 @@
 pub mod encode;
+pub mod mouse;
 
 use std::io;
 
@@ -228,7 +229,7 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<boo
 const RESIZE_STEP: f32 = 0.03;
 
 fn dispatch(rt: &mut Runtime, action: Action, area: Rect) -> io::Result<bool> {
-    let rects = rt.last_pane_rects.clone();
+    let rects = rt.last_view.as_ref().map(|v| v.pane_rects.clone()).unwrap_or_default();
     match action {
         Action::SplitRight => rt.split_focused(Dir::Right, area)?,
         Action::SplitDown => rt.split_focused(Dir::Down, area)?,

@@ -33,11 +33,13 @@ pub fn render(term: &Term<EventProxy>, area: Rect, frame: &mut Frame, focused: b
         let y = area.y + row as u16;
         let Some(cell) = buf.cell_mut((x, y)) else { continue };
 
-        // ponytail: selection highlight lands with mouse support in M5
-        let style = Style::new()
+        let mut style = Style::new()
             .fg(convert_color(indexed.cell.fg, content.colors))
             .bg(convert_color(indexed.cell.bg, content.colors))
             .add_modifier(convert_flags(flags));
+        if content.selection.is_some_and(|sel| selected(&sel, indexed.point)) {
+            style = style.add_modifier(Modifier::REVERSED);
+        }
 
         let c = indexed.cell.c;
         cell.set_char(if c == '\t' { ' ' } else { c });
@@ -50,6 +52,18 @@ pub fn render(term: &Term<EventProxy>, area: Rect, frame: &mut Frame, focused: b
         if p.line.0 >= 0 && (p.line.0 as u16) < area.height && (p.column.0 as u16) < area.width {
             frame.set_cursor_position((area.x + p.column.0 as u16, area.y + p.line.0 as u16));
         }
+    }
+}
+
+/// Buffer-space selection test (display_iter points are buffer coords too).
+fn selected(sel: &alacritty_terminal::selection::SelectionRange, p: alacritty_terminal::index::Point) -> bool {
+    if sel.is_block {
+        p.line >= sel.start.line
+            && p.line <= sel.end.line
+            && p.column >= sel.start.column
+            && p.column <= sel.end.column
+    } else {
+        p >= sel.start && p <= sel.end
     }
 }
 

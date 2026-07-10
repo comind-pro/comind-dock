@@ -58,11 +58,19 @@ fn main() -> ExitCode {
 
     // ratatui::init installs panic hooks that restore the host terminal.
     let mut terminal = ratatui::init();
-    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::event::EnableBracketedPaste,
+        crossterm::event::EnableMouseCapture
+    );
 
     let result = rt.block_on(runtime::run(&mut terminal));
 
-    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::event::DisableMouseCapture,
+        crossterm::event::DisableBracketedPaste
+    );
     ratatui::restore();
 
     match result {

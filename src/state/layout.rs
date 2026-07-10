@@ -34,8 +34,12 @@ pub struct Divider {
     pub rect: Rect,
     /// Direction of the split that owns it (Right → vertical line).
     pub dir: Dir,
-    /// Left/top pane adjacent to the divider (drag anchor for resize).
+    /// Pane adjacent on the left/top; with `after`, identifies the split.
     pub before: PaneId,
+    /// Pane adjacent on the right/bottom.
+    pub after: PaneId,
+    /// Axis size of the split's usable area — converts drag cells to ratio.
+    pub extent: u16,
 }
 
 const MIN_RATIO: f32 = 0.05;
@@ -117,6 +121,22 @@ impl Node {
         }
     }
 
+    /// Adjust the ratio of the specific split whose divider separates
+    /// `before` (in subtree a) from `after` (in subtree b) — used by border drag.
+    pub fn resize_split(&mut self, before: PaneId, after: PaneId, delta: f32) -> bool {
+        match self {
+            Node::Leaf(_) => false,
+            Node::Split { ratio, a, b, .. } => {
+                if a.contains(before) && b.contains(after) {
+                    *ratio = (*ratio + delta).clamp(MIN_RATIO, 1.0 - MIN_RATIO);
+                    true
+                } else {
+                    a.resize_split(before, after, delta) || b.resize_split(before, after, delta)
+                }
+            }
+        }
+    }
+
     /// Nudge the ratio of the nearest ancestor split of `axis` that contains
     /// `target`. Positive delta grows the side holding `target`.
     pub fn resize(&mut self, target: PaneId, axis: Dir, delta: f32) -> bool {
@@ -168,7 +188,13 @@ impl Node {
                 let dv = Rect { x: area.x + wa, width: 1, ..area };
                 let rb = Rect { x: area.x + wa + 1, width: usable - wa, ..area };
                 a.layout_into(ra, rects, dividers);
-                dividers.push(Divider { rect: dv, dir: Dir::Right, before: rightmost(a) });
+                dividers.push(Divider {
+                    rect: dv,
+                    dir: Dir::Right,
+                    before: rightmost(a),
+                    after: leftmost(b),
+                    extent: usable,
+                });
                 b.layout_into(rb, rects, dividers);
             }
             Node::Split { dir: Dir::Down, ratio, a, b } => {
@@ -182,7 +208,13 @@ impl Node {
                 let dv = Rect { y: area.y + ha, height: 1, ..area };
                 let rb = Rect { y: area.y + ha + 1, height: usable - ha, ..area };
                 a.layout_into(ra, rects, dividers);
-                dividers.push(Divider { rect: dv, dir: Dir::Down, before: rightmost(a) });
+                dividers.push(Divider {
+                    rect: dv,
+                    dir: Dir::Down,
+                    before: rightmost(a),
+                    after: leftmost(b),
+                    extent: usable,
+                });
                 b.layout_into(rb, rects, dividers);
             }
         }
@@ -194,6 +226,14 @@ fn rightmost(node: &Node) -> PaneId {
     match node {
         Node::Leaf(id) => *id,
         Node::Split { b, .. } => rightmost(b),
+    }
+}
+
+/// Top-left-most pane of a subtree.
+fn leftmost(node: &Node) -> PaneId {
+    match node {
+        Node::Leaf(id) => *id,
+        Node::Split { a, .. } => leftmost(a),
     }
 }
 
@@ -341,6 +381,32 @@ mod tests {
         assert_eq!(neighbor(&rects, p(3), Side::Up), Some(p(2)));
         assert_eq!(neighbor(&rects, p(1), Side::Left), None);
         assert_eq!(neighbor(&rects, p(1), Side::Up), None);
+    }
+
+    #[test]
+    fn resize_split_targets_exact_divider() {
+        // [[1|2]|3]: the outer divider separates 2 and 3; resizing it must not
+        // touch the inner [1|2] split.
+        let mut n = Node::Leaf(p(1));
+        n.split(p(1), p(3), Dir::Right);
+        n.split(p(1), p(2), Dir::Right);
+        let inner_before = match &n {
+            Node::Split { a, .. } => match &**a {
+                Node::Split { ratio, .. } => *ratio,
+                _ => panic!(),
+            },
+            _ => panic!(),
+        };
+        assert!(n.resize_split(p(2), p(3), 0.2));
+        let (outer_after, inner_after) = match &n {
+            Node::Split { ratio, a, .. } => match &**a {
+                Node::Split { ratio: ir, .. } => (*ratio, *ir),
+                _ => panic!(),
+            },
+            _ => panic!(),
+        };
+        assert!((outer_after - 0.7).abs() < 1e-6);
+        assert_eq!(inner_after, inner_before);
     }
 
     #[test]

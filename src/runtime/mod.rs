@@ -28,11 +28,20 @@ pub struct PaneRuntime {
     last_size: (u16, u16),
 }
 
+/// An in-progress mouse drag gesture.
+#[derive(Debug, Clone, Copy)]
+pub enum MouseDrag {
+    Divider { before: PaneId, after: PaneId, dir: Dir, extent: u16, last_pos: u16 },
+    Select { pane: PaneId },
+}
+
 pub struct Runtime {
     pub state: AppState,
     pub panes: HashMap<PaneId, PaneRuntime>,
-    /// Pane rects from the last computed view — for neighbor focus and (M5) mouse hit testing.
-    pub last_pane_rects: Vec<(PaneId, Rect)>,
+    /// The last computed view — neighbor focus and mouse hit testing.
+    pub last_view: Option<crate::ui::view::View>,
+    pub drag: Option<MouseDrag>,
+    pub last_click: Option<(std::time::Instant, u16, u16)>,
     tx: mpsc::UnboundedSender<AppEvent>,
     dirty: bool,
 }
@@ -100,8 +109,15 @@ pub async fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
 
     let state = AppState::new();
     let first = state.focused_pane();
-    let mut rt =
-        Runtime { state, panes: HashMap::new(), last_pane_rects: Vec::new(), tx, dirty: true };
+    let mut rt = Runtime {
+        state,
+        panes: HashMap::new(),
+        last_view: None,
+        drag: None,
+        last_click: None,
+        tx,
+        dirty: true,
+    };
     rt.spawn_pane(first, area.width, area.height)?;
 
     spawn_input_thread(rt.tx.clone());
@@ -178,8 +194,8 @@ fn handle_term_event(rt: &mut Runtime, id: PaneId, ev: TermEvent) {
     }
 }
 
-/// Forward an application's OSC 52 clipboard write to the host terminal.
-fn osc52_copy(data: &str) {
+/// Forward a clipboard write (app OSC 52 or mouse selection) to the host terminal.
+pub fn osc52_copy(data: &str) {
     let mut out = io::stdout();
     let _ = write!(out, "\x1b]52;c;{}\x07", base64_engine::encode(data.as_bytes()));
     let _ = out.flush();
@@ -230,7 +246,7 @@ fn handle_input(
             }
         }
         Event::Resize(..) => rt.dirty = true, // compute_view picks up the new size
-        // Mouse lands in M5.
+        Event::Mouse(m) => input::mouse::handle(rt, m),
         _ => {}
     }
     Ok(false)

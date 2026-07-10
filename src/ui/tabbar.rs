@@ -3,27 +3,67 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use unicode_width::UnicodeWidthStr;
 
 use crate::state::AppState;
 
-pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
+struct Segment {
+    text: String,
+    tab: Option<usize>,
+    active: bool,
+    is_ws: bool,
+}
+
+/// One source of truth for tab-bar content — render draws it, hit() clicks it.
+fn segments(state: &AppState) -> Vec<Segment> {
     let ws = state.active_workspace();
-    let mut spans = vec![
-        Span::styled(format!(" {} ", ws.name), Style::new().add_modifier(Modifier::BOLD).fg(Color::Cyan)),
-        Span::raw("│ "),
+    let mut out = vec![
+        Segment { text: format!(" {} ", ws.name), tab: None, active: false, is_ws: true },
+        Segment { text: "│ ".to_string(), tab: None, active: false, is_ws: false },
     ];
     for (ti, tab) in ws.tabs.iter().enumerate() {
         let active = ti == ws.active_tab;
         let zoomed = active && tab.zoomed.is_some();
-        let label = format!(" {}:{}{} ", ti + 1, tab.name, if zoomed { " [Z]" } else { "" });
-        let style = if active {
-            Style::new().fg(Color::Black).bg(Color::Cyan)
-        } else {
-            Style::new().fg(Color::Gray)
-        };
-        spans.push(Span::styled(label, style));
-        spans.push(Span::raw(" "));
+        out.push(Segment {
+            text: format!(" {}:{}{} ", ti + 1, tab.name, if zoomed { " [Z]" } else { "" }),
+            tab: Some(ti),
+            active,
+            is_ws: false,
+        });
+        out.push(Segment { text: " ".to_string(), tab: None, active: false, is_ws: false });
     }
+    out
+}
+
+pub fn render(state: &AppState, area: Rect, frame: &mut Frame) {
+    let spans: Vec<Span> = segments(state)
+        .into_iter()
+        .map(|s| {
+            let style = if s.is_ws {
+                Style::new().add_modifier(Modifier::BOLD).fg(Color::Cyan)
+            } else if s.active {
+                Style::new().fg(Color::Black).bg(Color::Cyan)
+            } else if s.tab.is_some() {
+                Style::new().fg(Color::Gray)
+            } else {
+                Style::new()
+            };
+            Span::styled(s.text, style)
+        })
+        .collect();
     let bar = Paragraph::new(Line::from(spans)).style(Style::new().bg(Color::Rgb(20, 20, 30)));
     frame.render_widget(bar, area);
+}
+
+/// Which tab (index) sits under bar-relative column `x`.
+pub fn hit(state: &AppState, x: u16) -> Option<usize> {
+    let mut cursor: u16 = 0;
+    for s in segments(state) {
+        let w = s.text.width() as u16;
+        if x >= cursor && x < cursor + w {
+            return s.tab;
+        }
+        cursor += w;
+    }
+    None
 }

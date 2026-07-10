@@ -38,7 +38,7 @@ pub fn compute_view(rt: &mut Runtime, area: Rect) -> View {
 
     let (pane_rects, dividers) = rt.compute_panes(content);
     let view = View { tab_bar, sidebar, pane_rects, dividers, focused: rt.state.focused_pane() };
-    rt.last_pane_rects = view.pane_rects.clone();
+    rt.last_view = Some(view.clone());
     view
 }
 
