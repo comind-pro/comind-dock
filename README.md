@@ -11,9 +11,20 @@ CLI/JSON API that agents themselves can use to coordinate with each other.
 
 ## Status
 
-**Specification phase.** No code yet. The documents under `docs/` define the
-full feature set and target architecture. Implementation follows the phased
-plan in [docs/ROADMAP.md](docs/ROADMAP.md).
+**Phase 1 (core multiplexer MVP) implemented.** `cdock` is a working
+single-process terminal multiplexer: PTY panes with full VT emulation,
+workspace → tab → pane split tree, prefix-key input model with a
+configurable keymap, mouse support (click focus, border drag, selection
+copy, scroll), and TOML configuration (`cdock --default-config`).
+Server/client split and persistence land in Phase 2; the full plan is in
+[docs/ROADMAP.md](docs/ROADMAP.md).
+
+Build and run:
+
+```sh
+cargo build --release
+./target/release/cdock
+```
 
 ## Core ideas
 
