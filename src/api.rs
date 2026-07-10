@@ -32,8 +32,15 @@ pub enum Req {
     Read { pane: u64, lines: Option<usize> },
     Focus { pane: u64 },
     /// Spawn an agent (or any command) in a new tab, or a split of the
-    /// focused pane when `split` is given.
-    AgentStart { command: String, split: Option<String>, workspace: Option<u64> },
+    /// focused pane when `split` is given. `env` rides into the pane
+    /// (profiles resolve to command + env on the CLI side).
+    AgentStart {
+        command: String,
+        split: Option<String>,
+        workspace: Option<u64>,
+        #[serde(default)]
+        env: Vec<(String, String)>,
+    },
     /// From the agent's SessionStart integration hook: which conversation
     /// runs in this pane (restore resumes exactly it).
     ReportAgentSession { pane: u64, session_id: String },
@@ -140,7 +147,7 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                 Ok(err(format!("no such pane %{pane}")))
             }
         }
-        Req::AgentStart { command, split, workspace } => {
+        Req::AgentStart { command, split, workspace, env } => {
             if let Some(wi) = workspace.map(|w| resolve_ws(rt, Some(w))) {
                 let Some(wi) = wi else { return Ok(err("no such workspace")) };
                 rt.state.active_workspace = wi;
@@ -150,11 +157,12 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                 Some(_) => rt.state.split_focused(Dir::Right, false),
                 None => rt.state.new_tab(),
             };
-            match rt.spawn_pane_cmd(
+            match rt.spawn_pane_env(
                 pane,
                 area.width.max(2) / 2,
                 area.height.max(2) / 2,
                 Some(command),
+                env,
             ) {
                 Ok(()) => {
                     rt.mark_dirty();

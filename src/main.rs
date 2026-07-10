@@ -7,6 +7,7 @@ mod git;
 mod input;
 mod logging;
 mod platform;
+mod profile;
 mod proto;
 mod runtime;
 mod server;
@@ -81,6 +82,11 @@ enum Cmd {
     Server {
         #[command(subcommand)]
         sub: ServerCmd,
+    },
+    /// Agent profiles: role + command + env per directory.
+    Profile {
+        #[command(subcommand)]
+        sub: ProfileCmd,
     },
     /// Internal hook entrypoints (called by agent CLIs, not by hand).
     #[command(hide = true)]
@@ -181,12 +187,30 @@ enum AgentCmd {
     /// Spawn an agent in a new tab (or a split of the focused pane).
     Start {
         /// Command to run, e.g. "claude" or "codex --model o3".
-        command: String,
+        #[arg(required_unless_present = "profile")]
+        command: Option<String>,
+        /// Launch by profile (~/.config/comind-dock/agents/<name>/).
+        #[arg(long, conflicts_with = "command")]
+        profile: Option<String>,
         /// right | down — split instead of a new tab.
         #[arg(long)]
         split: Option<String>,
         #[arg(long)]
         workspace: Option<u64>,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum ProfileCmd {
+    /// All profiles.
+    List,
+    /// Resolved profile: the exact command and env a launch would use.
+    Show { name: String },
+    /// Scaffold a new profile directory (optionally copying another).
+    New {
+        name: String,
+        #[arg(long)]
+        from: Option<String>,
     },
 }
 
@@ -294,8 +318,47 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             PaneCmd::Read { pane, lines } => Req::Read { pane: parse_pane(&pane)?, lines },
             PaneCmd::Focus { pane } => Req::Focus { pane: parse_pane(&pane)? },
         },
-        Cmd::Agent { sub: AgentCmd::Start { command, split, workspace } } => {
-            Req::AgentStart { command, split, workspace }
+        Cmd::Agent { sub: AgentCmd::Start { command, profile, split, workspace } } => {
+            let (command, env) = match profile {
+                Some(name) => profile::load(&name)?.resolve(),
+                None => (command.expect("clap: command or profile"), Vec::new()),
+            };
+            Req::AgentStart { command, split, workspace, env }
+        }
+        Cmd::Profile { sub } => {
+            return match sub {
+                ProfileCmd::List => {
+                    for name in profile::list() {
+                        println!("{name}");
+                    }
+                    Ok(true)
+                }
+                ProfileCmd::Show { name } => {
+                    let p = profile::load(&name)?;
+                    let (command, env) = p.resolve();
+                    let files: Vec<String> = ["profile.toml", "agent.md", "memory.md"]
+                        .iter()
+                        .filter(|f| p.dir.join(f).exists())
+                        .map(|f| f.to_string())
+                        .collect();
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "name": p.name,
+                            "dir": p.dir.display().to_string(),
+                            "files": files,
+                            "command": command,
+                            "env": env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(),
+                        })
+                    );
+                    Ok(true)
+                }
+                ProfileCmd::New { name, from } => {
+                    let dir = profile::scaffold(&name, from.as_deref())?;
+                    println!("created {} — edit profile.toml and agent.md", dir.display());
+                    Ok(true)
+                }
+            };
         }
         Cmd::Agent { sub: AgentCmd::List } => {
             // Agent list = pane list filtered to recognized agents.

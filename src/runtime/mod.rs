@@ -144,9 +144,21 @@ impl Runtime {
         rows: u16,
         command: Option<String>,
     ) -> io::Result<()> {
+        self.spawn_pane_env(pane, cols, rows, command, Vec::new())
+    }
+
+    pub fn spawn_pane_env(
+        &mut self,
+        pane: PaneId,
+        cols: u16,
+        rows: u16,
+        command: Option<String>,
+        env: Vec<(String, String)>,
+    ) -> io::Result<()> {
         let scrollback = self.cfg.advanced.scrollback_lines();
         let emu = Emulator::new(cols, rows, pane, self.tx.clone(), scrollback);
-        let opts = self.spawn_opts(command);
+        let mut opts = self.spawn_opts(command);
+        opts.env = env;
         let program = opts
             .command
             .as_deref()
@@ -193,6 +205,7 @@ impl Runtime {
             login,
             cwd: ws.cwd.clone(),
             command,
+            env: Vec::new(),
             tab_id: tab.id.to_string(),
             workspace_id: ws.id.to_string(),
         }

@@ -32,6 +32,8 @@ pub struct SpawnOpts {
     pub cwd: std::path::PathBuf,
     /// Some → run `shell -c command` instead of an interactive shell.
     pub command: Option<String>,
+    /// Extra environment (agent profiles).
+    pub env: Vec<(String, String)>,
     pub tab_id: String,
     pub workspace_id: String,
 }
@@ -64,6 +66,9 @@ pub fn spawn_shell(
     // Absolute path for integration hooks — panes may not have cdock in PATH.
     if let Ok(exe) = std::env::current_exe() {
         cmd.env("CDOCK_BIN", exe);
+    }
+    for (k, v) in &opts.env {
+        cmd.env(k, v);
     }
     cmd.cwd(&opts.cwd);
 
