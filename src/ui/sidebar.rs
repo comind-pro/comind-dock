@@ -17,6 +17,8 @@ pub enum Target {
     NewWorkspace,
     /// The "≡ menu" row above spaces: app settings / session actions.
     AppMenu,
+    /// "+ continue" under agents: resume any Claude session on the system.
+    ContinueAgent,
     /// The « at the menu row's right edge: hide the sidebar.
     CollapseSidebar,
 }
@@ -204,6 +206,10 @@ fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
             target: None,
         });
     }
+    out.push(Row {
+        line: Line::from(Span::styled("  + continue", Style::new().fg(theme.accent))),
+        target: Some(Target::ContinueAgent),
+    });
     out
 }
 

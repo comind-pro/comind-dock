@@ -122,6 +122,15 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                             items: menu::app_items(),
                         };
                     }
+                    Some(sidebar::Target::ContinueAgent) => {
+                        return run_menu_action(
+                            rt,
+                            MenuAction::ContinuePicker,
+                            ev.column,
+                            ev.row,
+                            area,
+                        );
+                    }
                     Some(sidebar::Target::Pane(pane)) => {
                         rt.state.focus_pane(pane);
                     }
@@ -438,6 +447,57 @@ fn run_menu_action(
                 Ok(())
             }
         },
+        MenuAction::ContinuePicker => {
+            // Sessions already open in a pane are hidden — no double resume.
+            let open: std::collections::HashSet<&String> =
+                rt.agent_sessions.values().collect();
+            let items: Vec<MenuItem> = crate::agents::recent_claude_sessions(9)
+                .into_iter()
+                .filter(|s| !open.contains(&s.id))
+                .map(|s| {
+                    let folder = s
+                        .cwd
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    MenuItem {
+                        label: format!("{} · {}", s.title, folder),
+                        action: MenuAction::ResumeClaudeSession(s.id, s.cwd),
+                    }
+                })
+                .collect();
+            if items.is_empty() {
+                tracing::info!("no resumable claude sessions found");
+            } else {
+                rt.state.input_mode = InputMode::Menu { x, y, items };
+            }
+            Ok(())
+        }
+        MenuAction::ResumeClaudeSession(id, cwd) => {
+            // Land in the space anchored at the session's folder (reuse or
+            // create) — the conversation is folder-bound.
+            let pane = match rt.state.workspaces.iter().position(|w| w.cwd == cwd) {
+                Some(wi) => {
+                    rt.state.active_workspace = wi;
+                    rt.state.new_tab()
+                }
+                None => {
+                    let name = cwd
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "/".to_string());
+                    rt.state.new_workspace(name, cwd.clone(), None)
+                }
+            };
+            rt.spawn_pane_full(
+                pane,
+                area.width.max(2) / 2,
+                area.height.max(2) / 2,
+                Some(format!("claude --resume {id}")),
+                Vec::new(),
+                Some(cwd),
+            )
+        }
         MenuAction::EditProfiles => {
             match crate::profile::profiles_dir() {
                 Some(dir) => {

@@ -44,6 +44,10 @@ pub enum MenuAction {
     /// Some(pane) → split that pane.
     AgentPicker(Option<ids::PaneId>),
     StartProfile(String, Option<ids::PaneId>),
+    /// Submenu of recent Claude Code sessions on the system.
+    ContinuePicker,
+    /// Resume conversation `id` in a space anchored at its folder.
+    ResumeClaudeSession(String, std::path::PathBuf),
     /// Open the profiles directory in $EDITOR.
     EditProfiles,
     /// The prefix+? keybinding overlay.
