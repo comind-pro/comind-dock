@@ -1,4 +1,9 @@
+mod input;
 mod logging;
+mod runtime;
+mod state;
+mod term;
+mod ui;
 
 use std::process::ExitCode;
 
@@ -43,7 +48,29 @@ fn main() -> ExitCode {
     };
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "cdock starting");
 
-    // M1: TUI event loop lands here.
-    println!("cdock {}: TUI not implemented yet (M0 skeleton)", env!("CARGO_PKG_VERSION"));
-    ExitCode::SUCCESS
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("cdock: failed to start async runtime: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // ratatui::init installs panic hooks that restore the host terminal.
+    let mut terminal = ratatui::init();
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
+
+    let result = rt.block_on(runtime::run(&mut terminal));
+
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
+    ratatui::restore();
+
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("cdock: {e}");
+            tracing::error!(error = %e, "runtime exited with error");
+            ExitCode::FAILURE
+        }
+    }
 }
