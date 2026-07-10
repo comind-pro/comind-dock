@@ -29,6 +29,9 @@ pub enum Req {
     /// Read the last non-empty screen lines of a pane.
     Read { pane: u64, lines: Option<usize> },
     Focus { pane: u64 },
+    /// From the agent's SessionStart integration hook: which conversation
+    /// runs in this pane (restore resumes exactly it).
+    ReportAgentSession { pane: u64, session_id: String },
     WaitAgentStatus { pane: u64, status: String, timeout_ms: Option<u64> },
     WaitOutput {
         pane: u64,
@@ -109,6 +112,15 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             } else {
                 Ok(err(format!("no such pane %{pane}")))
             }
+        }
+        Req::ReportAgentSession { pane, session_id } => {
+            let pane = PaneId(pane);
+            if !rt.panes.contains_key(&pane) {
+                return Ok(err(format!("no such pane {pane}")));
+            }
+            rt.agent_sessions.insert(pane, session_id);
+            rt.save_session(); // survive a crash between autosaves
+            Ok(json!({"ok": true}))
         }
         Req::WaitAgentStatus { pane, status, timeout_ms } => {
             let Some(status) = parse_status(&status) else {

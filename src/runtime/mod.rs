@@ -79,6 +79,9 @@ pub struct Runtime {
     pub titles: HashMap<PaneId, String>,
     /// Git branch per workspace (polled with cwd tracking).
     pub branches: HashMap<crate::state::ids::WorkspaceId, String>,
+    /// Agent conversation ids reported by SessionStart integration hooks —
+    /// lets restore resume each pane's own conversation.
+    pub agent_sessions: HashMap<PaneId, String>,
     /// The last computed view — neighbor focus and mouse hit testing.
     pub last_view: Option<crate::ui::view::View>,
     /// Sidebar scroll offset in rows (mouse wheel over the sidebar).
@@ -344,7 +347,12 @@ impl Runtime {
         let mut agents = HashMap::new();
         for (id, p) in &self.panes {
             if let Some(agent) = p.agent {
-                agents.insert(*id, agent.to_string());
+                // "agent:session-id" when the integration hook reported one.
+                let ident = match self.agent_sessions.get(id) {
+                    Some(s) => format!("{agent}:{s}"),
+                    None => agent.to_string(),
+                };
+                agents.insert(*id, ident);
             }
         }
         crate::state::snapshot::save(&self.state, &agents);
@@ -442,6 +450,7 @@ pub fn build(
         theme,
         titles: HashMap::new(),
         branches: HashMap::new(),
+        agent_sessions: HashMap::new(),
         last_view: None,
         sidebar_scroll: 0,
         drag: None,
@@ -496,6 +505,7 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
     let Some(mut p) = rt.panes.remove(&id) else { return };
     p.pty.kill();
     rt.titles.remove(&id);
+    rt.agent_sessions.remove(&id);
     rt.dirty = true;
     if matches!(rt.state.close_pane(id), CloseOutcome::LastClosed) {
         let name = rt.workspace_name();

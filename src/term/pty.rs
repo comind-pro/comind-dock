@@ -54,6 +54,10 @@ pub fn spawn_shell(
     cmd.env("CDOCK_PANE_ID", pane.to_string());
     cmd.env("CDOCK_TAB_ID", &opts.tab_id);
     cmd.env("CDOCK_WORKSPACE_ID", &opts.workspace_id);
+    // Absolute path for integration hooks — panes may not have cdock in PATH.
+    if let Ok(exe) = std::env::current_exe() {
+        cmd.env("CDOCK_BIN", exe);
+    }
     cmd.cwd(&opts.cwd);
 
     let mut child = pair.slave.spawn_command(cmd).map_err(err)?;

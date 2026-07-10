@@ -22,6 +22,15 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
     let pos = Position::new(ev.column, ev.row);
     let scroll_lines = rt.cfg.ui.mouse_scroll_lines.max(1) as i32;
 
+    // The help overlay closes on any click (keys already close it).
+    if rt.state.input_mode == InputMode::Help {
+        if matches!(ev.kind, MouseEventKind::Down(_)) {
+            rt.state.input_mode = InputMode::Terminal;
+            rt.mark_dirty();
+        }
+        return InputOutcome::Continue;
+    }
+
     // An open context menu captures clicks. Releases and moves (including
     // the release of the click that opened it) keep it open.
     if let InputMode::Menu { x, y, items } = rt.state.input_mode.clone() {

@@ -8,13 +8,21 @@ const KNOWN: &[&str] = &[
     "droid", "qwen", "crush",
 ];
 
-/// Command that relaunches an agent after a restart. Session pickers, not
-/// --continue: "continue latest in this cwd" grabs whatever conversation was
-/// touched last anywhere in that folder (including ones outside cdock), and
-/// two restored panes in one cwd would resume the same conversation twice.
-/// ponytail: real per-pane session ids via integration hooks are Phase 5.
-pub fn resume_command(agent: &str) -> String {
-    match agent {
+/// Command that relaunches an agent after a restart. `ident` is either a
+/// bare agent id ("claude") or "agent:session-id" reported by the
+/// SessionStart integration hook — with an id the pane resumes exactly its
+/// own conversation; without one it opens the CLI's session picker
+/// (--continue would silently grab whatever conversation was touched last
+/// in that cwd, including ones that never ran in cdock).
+pub fn resume_command(ident: &str) -> String {
+    if let Some((agent, session)) = ident.split_once(':') {
+        return match agent {
+            "claude" => format!("claude --resume {session}"),
+            "codex" => format!("codex resume {session}"),
+            other => other.to_string(),
+        };
+    }
+    match ident {
         "claude" => "claude --resume".to_string(),
         "codex" => "codex resume".to_string(),
         other => other.to_string(),
@@ -48,6 +56,14 @@ mod tests {
         // "pi" must not match inside other words
         assert_eq!(detect("copying files", "bash"), None);
         assert_eq!(detect("pi", "zsh"), Some("pi"));
+    }
+
+    #[test]
+    fn resume_uses_reported_session_id() {
+        assert_eq!(resume_command("claude:abc-123"), "claude --resume abc-123");
+        assert_eq!(resume_command("codex:xyz"), "codex resume xyz");
+        assert_eq!(resume_command("claude"), "claude --resume"); // no id → picker
+        assert_eq!(resume_command("goose"), "goose");
     }
 
     /// Child exe paths are matched as titles; the version segment is noise —

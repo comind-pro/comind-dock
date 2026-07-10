@@ -62,6 +62,29 @@ enum Cmd {
         #[command(subcommand)]
         sub: WaitCmd,
     },
+    /// Install per-agent integration hooks (session identity).
+    Integration {
+        #[command(subcommand)]
+        sub: IntegrationCmd,
+    },
+    /// Internal hook entrypoints (called by agent CLIs, not by hand).
+    #[command(hide = true)]
+    Hook {
+        #[command(subcommand)]
+        sub: HookCmd,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum IntegrationCmd {
+    /// Add the cdock SessionStart hook to the agent's settings.
+    Install { agent: String },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum HookCmd {
+    /// Claude Code SessionStart hook: stdin JSON → report session id.
+    ClaudeSession,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -117,6 +140,54 @@ enum WaitCmd {
     },
 }
 
+/// Merge the cdock SessionStart hook into ~/.claude/settings.json so Claude
+/// Code reports which conversation runs in which pane. Idempotent; backs the
+/// file up first. The command guards on CDOCK_PANE_ID, so the hook is inert
+/// outside cdock panes.
+fn install_claude_hook() -> Result<bool, String> {
+    const MARKER: &str = "hook claude-session";
+    let home = std::env::var("HOME").map_err(|_| "HOME unset".to_string())?;
+    let path = std::path::PathBuf::from(home).join(".claude/settings.json");
+    let mut root: serde_json::Value = match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text)
+            .map_err(|e| format!("{} is not valid JSON ({e}); not touching it", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+
+    let starts = root
+        .as_object_mut()
+        .ok_or("settings.json root is not an object")?
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or("settings.json \"hooks\" is not an object")?
+        .entry("SessionStart")
+        .or_insert_with(|| serde_json::json!([]));
+    let arr = starts.as_array_mut().ok_or("\"SessionStart\" is not an array")?;
+    if arr.iter().any(|e| e.to_string().contains(MARKER)) {
+        println!("claude integration already installed");
+        return Ok(true);
+    }
+    arr.push(serde_json::json!({
+        "hooks": [{
+            "type": "command",
+            "command": "[ -z \"$CDOCK_PANE_ID\" ] || \"$CDOCK_BIN\" hook claude-session"
+        }]
+    }));
+
+    if path.exists() {
+        let _ = std::fs::copy(&path, path.with_extension("json.bak"));
+    } else if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let pretty = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
+    std::fs::write(&path, pretty).map_err(|e| e.to_string())?;
+    println!("installed SessionStart hook into {} (backup: .json.bak)", path.display());
+    println!("restart running claude panes to activate it");
+    Ok(true)
+}
+
 /// "%3" or "3" → 3.
 fn parse_pane(s: &str) -> Result<u64, String> {
     s.trim_start_matches('%').parse().map_err(|_| format!("bad pane id {s:?}"))
@@ -155,6 +226,31 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 Req::WaitAgentStatus { pane: parse_pane(&pane)?, status, timeout_ms: timeout }
             }
         },
+        Cmd::Integration { sub: IntegrationCmd::Install { agent } } => {
+            return match agent.as_str() {
+                "claude" => install_claude_hook(),
+                other => Err(format!("no integration for {other:?} yet (only claude)")),
+            };
+        }
+        Cmd::Hook { sub: HookCmd::ClaudeSession } => {
+            // Quietly a no-op outside a cdock pane — the hook is installed
+            // globally but only means something here.
+            let Some(pane) = std::env::var("CDOCK_PANE_ID").ok().and_then(|p| parse_pane(&p).ok())
+            else {
+                return Ok(true);
+            };
+            let mut input = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)
+                .map_err(|e| e.to_string())?;
+            let v: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| format!("bad hook input: {e}"))?;
+            let Some(session_id) = v["session_id"].as_str() else {
+                return Ok(true); // nothing to report
+            };
+            api::request(&Req::ReportAgentSession { pane, session_id: session_id.to_string() })
+                .map_err(|e| e.to_string())?;
+            return Ok(true);
+        }
     };
     let v = api::request(&req).map_err(|e| e.to_string())?;
     println!("{v}");
