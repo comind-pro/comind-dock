@@ -1,11 +1,10 @@
 pub mod event;
 
 use std::collections::HashMap;
-use std::io::{self, Write};
+use std::io;
 use std::time::Duration;
 
 use alacritty_terminal::event::Event as TermEvent;
-use ratatui::DefaultTerminal;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 
@@ -18,7 +17,6 @@ use crate::state::{AppState, CloseOutcome};
 use crate::state::ids::PaneId;
 use crate::term::emulator::Emulator;
 use crate::term::pty::{self, Pty};
-use crate::ui;
 use event::{AppEvent, PtyData};
 
 /// Max PTY bytes fed to emulators between renders, so `cat bigfile`
@@ -65,12 +63,23 @@ pub struct Runtime {
     pub last_click: Option<(std::time::Instant, u16, u16)>,
     tx: mpsc::UnboundedSender<AppEvent>,
     data_tx: mpsc::Sender<PtyData>,
+    /// Bytes for the host terminal(s) outside the frame pipeline (OSC 52).
+    raw_out: mpsc::UnboundedSender<Vec<u8>>,
     dirty: bool,
 }
 
 impl Runtime {
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
+    }
+
+    pub fn take_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty)
+    }
+
+    /// Send raw bytes to every attached host terminal (e.g. OSC 52 copy).
+    pub fn host_write(&self, bytes: Vec<u8>) {
+        let _ = self.raw_out.send(bytes);
     }
 
     /// Encode a key for the focused pane's modes and write it to its PTY.
@@ -288,13 +297,15 @@ impl Runtime {
     }
 }
 
-pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> {
-    let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
-    // Small capacity on purpose: caps in-flight PTY output (~16×64 KB) so a
-    // `cat bigfile` can never queue seconds of work in front of a keystroke.
-    let (data_tx, mut data_rx) = mpsc::channel::<PtyData>(16);
-    let area = terminal.get_frame().area();
-
+/// Build the runtime: config resolution, snapshot restore (or a fresh
+/// state), and the initial pane spawns. `area` is the first client's size.
+pub fn build(
+    cfg: Config,
+    tx: mpsc::UnboundedSender<AppEvent>,
+    data_tx: mpsc::Sender<PtyData>,
+    raw_out: mpsc::UnboundedSender<Vec<u8>>,
+    area: Rect,
+) -> io::Result<Runtime> {
     let (keymap, key_warnings) = crate::config::keys::build_keymap(&cfg.keys);
     let (theme, theme_warnings) = crate::config::theme::resolve(&cfg.theme);
     for w in key_warnings.iter().chain(&theme_warnings) {
@@ -324,75 +335,26 @@ pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> 
         last_click: None,
         tx,
         data_tx,
+        raw_out,
         dirty: true,
     };
     for (pane, agent) in initial_panes {
         let resume = agent.as_deref().map(crate::agents::resume_command);
         rt.spawn_pane_cmd(pane, area.width, area.height, resume)?;
     }
+    Ok(rt)
+}
 
-    spawn_input_thread(rt.tx.clone());
-
-    let mut tick = tokio::time::interval(Duration::from_millis(16));
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut ws_poll = tokio::time::interval(Duration::from_millis(2000));
-    ws_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-    loop {
-        tokio::select! {
-            // Input and control events always win over PTY output.
-            biased;
-            maybe = rx.recv() => {
-                let Some(first) = maybe else { return Ok(()) };
-                let mut next = Some(first);
-                while let Some(ev) = next.take() {
-                    match ev {
-                        AppEvent::PtyExit(id) => {
-                            if handle_pane_exit(&mut rt, id) {
-                                // The user closed everything on purpose.
-                                crate::state::snapshot::delete();
-                                return Ok(());
-                            }
-                        }
-                        AppEvent::Term(id, tev) => handle_term_event(&mut rt, id, tev),
-                        AppEvent::Input(iev) => {
-                            if handle_input(&mut rt, iev, terminal)? {
-                                rt.save_session();
-                                return Ok(());
-                            }
-                        }
-                    }
-                    next = rx.try_recv().ok();
-                }
-            }
-            maybe = data_rx.recv() => {
-                let Some(first) = maybe else { return Ok(()) };
-                let mut budget = DRAIN_BUDGET;
-                let mut next = Some(first);
-                while let Some((id, bytes)) = next.take() {
-                    budget = budget.saturating_sub(bytes.len());
-                    if let Some(p) = rt.panes.get_mut(&id) {
-                        p.emu.feed(&bytes);
-                        p.last_output = std::time::Instant::now();
-                        rt.dirty = true;
-                    }
-                    if budget > 0 {
-                        next = data_rx.try_recv().ok();
-                    }
-                }
-            }
-            _ = ws_poll.tick() => rt.poll_workspaces(),
-            _ = tick.tick() => {
-                if rt.dirty {
-                    let area = terminal.get_frame().area();
-                    let view = ui::compute_view(&mut rt, area);
-                    terminal.draw(|f| ui::render(&view, &rt, f))?;
-                    rt.dirty = false;
-                }
-            }
-        }
+/// Feed a batch of PTY output within the drain budget.
+pub fn feed_pty(rt: &mut Runtime, id: PaneId, bytes: &[u8]) {
+    if let Some(p) = rt.panes.get_mut(&id) {
+        p.emu.feed(bytes);
+        p.last_output = std::time::Instant::now();
+        rt.dirty = true;
     }
 }
+
+pub const PTY_DRAIN_BUDGET: usize = DRAIN_BUDGET;
 
 /// Where new panes spawn, per [terminal].new_cwd.
 fn resolve_cwd(t: &crate::config::TerminalCfg) -> std::path::PathBuf {
@@ -412,7 +374,7 @@ fn folder_name(p: &std::path::Path) -> String {
 }
 
 /// A pane's process exited: drop its runtime, cascade the close. True → quit app.
-fn handle_pane_exit(rt: &mut Runtime, id: PaneId) -> bool {
+pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId) -> bool {
     let Some(mut p) = rt.panes.remove(&id) else { return false };
     p.pty.kill();
     rt.titles.remove(&id);
@@ -420,7 +382,7 @@ fn handle_pane_exit(rt: &mut Runtime, id: PaneId) -> bool {
     matches!(rt.state.close_pane(id), CloseOutcome::LastClosed)
 }
 
-fn handle_term_event(rt: &mut Runtime, id: PaneId, ev: TermEvent) {
+pub fn handle_term_event(rt: &mut Runtime, id: PaneId, ev: TermEvent) {
     match ev {
         TermEvent::Wakeup | TermEvent::MouseCursorDirty | TermEvent::CursorBlinkingChange => {
             rt.dirty = true;
@@ -438,7 +400,9 @@ fn handle_term_event(rt: &mut Runtime, id: PaneId, ev: TermEvent) {
             rt.titles.remove(&id);
             rt.dirty = true;
         }
-        TermEvent::ClipboardStore(_, data) => osc52_copy(&data),
+        TermEvent::ClipboardStore(_, data) => {
+            rt.host_write(osc52_bytes(&data));
+        }
         TermEvent::ColorRequest(idx, format) => {
             if let Some(p) = rt.panes.get_mut(&id) {
                 let rgb = p.emu.palette_color(idx);
@@ -449,11 +413,9 @@ fn handle_term_event(rt: &mut Runtime, id: PaneId, ev: TermEvent) {
     }
 }
 
-/// Forward a clipboard write (app OSC 52 or mouse selection) to the host terminal.
-pub fn osc52_copy(data: &str) {
-    let mut out = io::stdout();
-    let _ = write!(out, "\x1b]52;c;{}\x07", base64_engine::encode(data.as_bytes()));
-    let _ = out.flush();
+/// OSC 52 clipboard-write escape for the host terminal.
+pub fn osc52_bytes(data: &str) -> Vec<u8> {
+    format!("\x1b]52;c;{}\x07", base64_engine::encode(data.as_bytes())).into_bytes()
 }
 
 /// ponytail: minimal base64 (RFC 4648) — only needed for OSC 52; not worth a dependency.
@@ -474,18 +436,27 @@ mod base64_engine {
     }
 }
 
-/// Host input. Returns Ok(true) to quit the app.
-fn handle_input(
+/// What handling one input event asks of the server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputOutcome {
+    Continue,
+    /// Detach clients; the server keeps running (prefix+q).
+    Detach,
+    /// Save and stop the server (tab-bar ✕).
+    Shutdown,
+}
+
+/// Host input from a client, applied at that client's screen size.
+pub fn handle_input(
     rt: &mut Runtime,
     ev: crossterm::event::Event,
-    terminal: &mut DefaultTerminal,
-) -> io::Result<bool> {
+    area: Rect,
+) -> io::Result<InputOutcome> {
     use alacritty_terminal::term::TermMode;
     use crossterm::event::{Event, KeyEventKind};
 
     match ev {
         Event::Key(key) if key.kind != KeyEventKind::Release => {
-            let area = terminal.get_frame().area();
             return input::handle_key(rt, key, area);
         }
         Event::Paste(text) => {
@@ -501,32 +472,8 @@ fn handle_input(
             }
         }
         Event::Resize(..) => rt.dirty = true, // compute_view picks up the new size
-        Event::Mouse(m) => {
-            let area = terminal.get_frame().area();
-            return Ok(input::mouse::handle(rt, m, area));
-        }
+        Event::Mouse(m) => return Ok(input::mouse::handle(rt, m, area)),
         _ => {}
     }
-    Ok(false)
-}
-
-/// crossterm's blocking event reader on a std thread; the tokio loop consumes
-/// via the same channel as PTY bytes. ponytail: simpler than the event-stream
-/// feature + futures dependency.
-fn spawn_input_thread(tx: mpsc::UnboundedSender<AppEvent>) {
-    std::thread::spawn(move || {
-        loop {
-            match crossterm::event::read() {
-                Ok(ev) => {
-                    if tx.send(AppEvent::Input(ev)).is_err() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "input read failed");
-                    break;
-                }
-            }
-        }
-    });
+    Ok(InputOutcome::Continue)
 }

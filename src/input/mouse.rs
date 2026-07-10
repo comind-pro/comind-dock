@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
-use crate::runtime::{MouseDrag, Runtime, osc52_copy};
+use crate::runtime::{InputOutcome, MouseDrag, Runtime, osc52_bytes};
 use crate::state::ids::PaneId;
 use crate::state::layout::Dir;
 use crate::state::{InputMode, MenuAction, MenuItem, PromptKind};
@@ -16,9 +16,9 @@ use crate::ui::{menu, sidebar, tabbar};
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
-/// Handle a mouse event. Returns true to quit the app (✕ button).
-pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> bool {
-    let Some(view) = rt.last_view.clone() else { return false };
+/// Handle a mouse event.
+pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
+    let Some(view) = rt.last_view.clone() else { return InputOutcome::Continue };
     let pos = Position::new(ev.column, ev.row);
     let scroll_lines = rt.cfg.ui.mouse_scroll_lines.max(1) as i32;
 
@@ -41,7 +41,7 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> bool {
             // Moves, releases, and trackpad scroll inertia keep the menu open.
             _ => {}
         }
-        return false;
+        return InputOutcome::Continue;
     }
 
     match ev.kind {
@@ -75,12 +75,11 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> bool {
                         }
                     }
                     Some(tabbar::Hit::CloseApp) => {
-                        rt.save_session();
-                        return true;
+                        return InputOutcome::Shutdown;
                     }
                     None => {}
                 }
-                return false;
+                return InputOutcome::Continue;
             }
             if let Some(sb) = view.sidebar
                 && sb.contains(pos)
@@ -114,7 +113,7 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> bool {
                     }
                     None => {}
                 }
-                return false;
+                return InputOutcome::Continue;
             }
             if let Some(d) = view.dividers.iter().find(|d| d.rect.contains(pos)) {
                 let last_pos = if d.dir == Dir::Right { ev.column } else { ev.row };
@@ -125,13 +124,13 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> bool {
                     extent: d.extent,
                     last_pos,
                 });
-                return false;
+                return InputOutcome::Continue;
             }
             if let Some((id, rect)) = pane_at(&view.pane_rects, pos) {
                 rt.state.active_tab_mut().focused_pane = id;
                 let inner = crate::ui::content_rect(rect);
                 if !inner.contains(pos) {
-                    return false; // border click: focus only
+                    return InputOutcome::Continue; // border click: focus only
                 }
                 let (col, row) = (ev.column - inner.x, ev.row - inner.y);
                 let semantic = rt
@@ -195,11 +194,12 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> bool {
         MouseEventKind::Up(MouseButton::Left) => {
             match rt.drag.take() {
                 Some(MouseDrag::Select { pane }) => {
-                    if let Some(p) = rt.panes.get(&pane)
-                        && let Some(text) = p.emu.selection_text()
-                            && !text.is_empty() {
-                                osc52_copy(&text);
-                            }
+                    let text = rt.panes.get(&pane).and_then(|p| p.emu.selection_text());
+                    if let Some(text) = text {
+                        if !text.is_empty() {
+                            rt.host_write(osc52_bytes(&text));
+                        }
+                    }
                 }
                 Some(MouseDrag::Divider { .. }) => {}
                 None => {
@@ -222,10 +222,10 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> bool {
             if let Some((id, rect)) = pane_at(&view.pane_rects, pos) {
                 let inner = crate::ui::content_rect(rect);
                 if !inner.contains(pos) {
-                    return false;
+                    return InputOutcome::Continue;
                 }
                 let (col, row) = (ev.column - inner.x, ev.row - inner.y);
-                let Some(p) = rt.panes.get_mut(&id) else { return false };
+                let Some(p) = rt.panes.get_mut(&id) else { return InputOutcome::Continue };
                 if p.emu.wants_mouse() {
                     let bytes = sgr(if up { 64 } else { 65 }, col, row, true, ev.modifiers);
                     send_mouse(rt, id, bytes);
@@ -267,7 +267,7 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> bool {
 
         _ => {}
     }
-    false
+    InputOutcome::Continue
 }
 
 fn run_menu_action(rt: &mut Runtime, action: MenuAction, x: u16, y: u16, area: Rect) {

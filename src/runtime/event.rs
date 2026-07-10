@@ -7,8 +7,6 @@ pub enum AppEvent {
     PtyExit(PaneId),
     /// Event emitted by a pane's terminal emulator.
     Term(PaneId, alacritty_terminal::event::Event),
-    /// Host terminal input (keys, mouse, resize, paste).
-    Input(crossterm::event::Event),
 }
 
 /// PTY output travels on its own BOUNDED channel: when the main loop falls

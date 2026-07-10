@@ -6,7 +6,7 @@ use std::io;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 
-use crate::runtime::Runtime;
+use crate::runtime::{InputOutcome, Runtime};
 use crate::state::layout::{Dir, Side};
 use crate::state::{InputMode, PromptKind};
 
@@ -122,7 +122,7 @@ fn jump_tab_index(key: &KeyEvent) -> Option<usize> {
 
 /// Handle one key event according to the input-mode machine.
 /// Returns Ok(true) to quit the app.
-pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<bool> {
+pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<InputOutcome> {
     match rt.state.input_mode.clone() {
         InputMode::Terminal => {
             if let Some(entry) = rt.keymap.lookup_direct(key.code, key.modifiers).cloned() {
@@ -135,22 +135,22 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<boo
             } else {
                 rt.send_key(&key);
             }
-            Ok(false)
+            Ok(InputOutcome::Continue)
         }
         InputMode::Prefix => {
             rt.state.input_mode = InputMode::Terminal;
             rt.mark_dirty();
             if is_prefix(rt, &key) {
                 rt.send_key(&key); // double prefix → literal
-                return Ok(false);
+                return Ok(InputOutcome::Continue);
             }
             if let Some(ti) = jump_tab_index(&key) {
                 rt.state.jump_tab(ti);
-                return Ok(false);
+                return Ok(InputOutcome::Continue);
             }
             match rt.keymap.lookup_prefixed(key.code, key.modifiers).cloned() {
                 Some(entry) => dispatch_bound(rt, entry.bound, area),
-                None => Ok(false), // unknown chord: swallow
+                None => Ok(InputOutcome::Continue), // unknown chord: swallow
             }
         }
         InputMode::Resize => {
@@ -173,17 +173,17 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<boo
                 }
                 _ => {}
             }
-            Ok(false)
+            Ok(InputOutcome::Continue)
         }
         InputMode::Help => {
             rt.state.input_mode = InputMode::Terminal;
             rt.mark_dirty();
-            Ok(false)
+            Ok(InputOutcome::Continue)
         }
         InputMode::Menu { .. } => {
             rt.state.input_mode = InputMode::Terminal;
             rt.mark_dirty();
-            Ok(false)
+            Ok(InputOutcome::Continue)
         }
         InputMode::ConfirmClose(pane) => {
             rt.mark_dirty();
@@ -191,7 +191,7 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<boo
             if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter) {
                 rt.kill_pane(pane);
             }
-            Ok(false)
+            Ok(InputOutcome::Continue)
         }
         InputMode::Prompt { kind, mut buffer } => {
             rt.mark_dirty();
@@ -205,7 +205,7 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<boo
                             PromptKind::WorktreeBranch(wi) => {
                                 rt.state.input_mode = InputMode::Terminal;
                                 rt.create_worktree(wi, &name, area);
-                                return Ok(false);
+                                return Ok(InputOutcome::Continue);
                             }
                         }
                     }
@@ -222,24 +222,24 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<boo
                 }
                 _ => {}
             }
-            Ok(false)
+            Ok(InputOutcome::Continue)
         }
     }
 }
 
 const RESIZE_STEP: f32 = 0.03;
 
-fn dispatch_bound(rt: &mut Runtime, bound: crate::config::keys::Bound, area: Rect) -> io::Result<bool> {
+fn dispatch_bound(rt: &mut Runtime, bound: crate::config::keys::Bound, area: Rect) -> io::Result<InputOutcome> {
     match bound {
         crate::config::keys::Bound::Builtin(action) => dispatch(rt, action, area),
         crate::config::keys::Bound::Command(cmd) => {
             rt.run_custom_command(&cmd, area)?;
-            Ok(false)
+            Ok(InputOutcome::Continue)
         }
     }
 }
 
-fn dispatch(rt: &mut Runtime, action: Action, area: Rect) -> io::Result<bool> {
+fn dispatch(rt: &mut Runtime, action: Action, area: Rect) -> io::Result<InputOutcome> {
     let rects = rt.last_view.as_ref().map(|v| v.pane_rects.clone()).unwrap_or_default();
     match action {
         Action::SplitRight => rt.split_focused(Dir::Right, false, area)?,
@@ -297,7 +297,7 @@ fn dispatch(rt: &mut Runtime, action: Action, area: Rect) -> io::Result<bool> {
         Action::CycleWorkspace => rt.state.cycle_workspace(),
         Action::ToggleSidebar => rt.state.sidebar_visible = !rt.state.sidebar_visible,
         Action::Help => rt.state.input_mode = InputMode::Help,
-        Action::Quit => return Ok(true),
+        Action::Quit => return Ok(InputOutcome::Detach),
     }
-    Ok(false)
+    Ok(InputOutcome::Continue)
 }

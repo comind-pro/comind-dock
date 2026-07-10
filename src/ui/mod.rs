@@ -79,6 +79,16 @@ pub fn render(view: &View, rt: &Runtime, frame: &mut Frame) {
     }
 }
 
+/// Host-cursor position for the focused pane (server-side renderer).
+pub fn cursor_for(view: &View, rt: &Runtime) -> Option<(u16, u16)> {
+    if !matches!(rt.state.input_mode, crate::state::InputMode::Terminal) {
+        return None;
+    }
+    let (_, rect) = view.pane_rects.iter().find(|(id, _)| *id == view.focused)?;
+    let p = rt.panes.get(&view.focused)?;
+    pane_widget::cursor_position(&p.emu.term, content_rect(*rect))
+}
+
 /// The terminal-content area inside a pane's border frame.
 pub fn content_rect(rect: Rect) -> Rect {
     Rect {

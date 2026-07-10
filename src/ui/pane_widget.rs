@@ -11,6 +11,21 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::term::emulator::EventProxy;
 
+/// Where the host cursor should sit for this pane (content-area absolute
+/// coords), if the app wants it shown and the viewport is at the bottom.
+pub fn cursor_position(term: &Term<EventProxy>, area: Rect) -> Option<(u16, u16)> {
+    let content = term.renderable_content();
+    if !content.mode.contains(TermMode::SHOW_CURSOR) || content.display_offset != 0 {
+        return None;
+    }
+    let p = content.cursor.point;
+    if p.line.0 >= 0 && (p.line.0 as u16) < area.height && (p.column.0 as u16) < area.width {
+        Some((area.x + p.column.0 as u16, area.y + p.line.0 as u16))
+    } else {
+        None
+    }
+}
+
 /// Draw a pane as a bordered box: rounded frame (accent when focused),
 /// title in the frame, terminal content inside. Only the focused pane
 /// positions the host cursor.
