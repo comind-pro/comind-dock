@@ -82,6 +82,8 @@ pub struct Runtime {
     /// Agent conversation ids reported by SessionStart integration hooks —
     /// lets restore resume each pane's own conversation.
     pub agent_sessions: HashMap<PaneId, String>,
+    /// In-app notification toasts (top-right overlay, click jumps to pane).
+    pub toasts: Vec<Toast>,
     /// The last computed view — neighbor focus and mouse hit testing.
     pub last_view: Option<crate::ui::view::View>,
     /// Sidebar scroll offset in rows (mouse wheel over the sidebar).
@@ -451,6 +453,7 @@ pub fn build(
         titles: HashMap::new(),
         branches: HashMap::new(),
         agent_sessions: HashMap::new(),
+        toasts: Vec::new(),
         last_view: None,
         sidebar_scroll: 0,
         drag: None,
@@ -649,6 +652,7 @@ pub fn build_from_handoff(
         titles: h.titles.into_iter().collect(),
         branches: HashMap::new(),
         agent_sessions: h.agent_sessions.into_iter().collect(),
+        toasts: Vec::new(),
         last_view: None,
         sidebar_scroll: 0,
         drag: None,
@@ -697,6 +701,46 @@ pub fn build_from_handoff(
     }
     rt.poll_workspaces();
     Ok(rt)
+}
+
+/// An in-app toast: one overlay line, click focuses the pane.
+#[derive(Debug, Clone)]
+pub struct Toast {
+    pub pane: PaneId,
+    pub kind: NoticeKind,
+    pub text: String,
+    pub until: std::time::Instant,
+}
+
+impl Runtime {
+    pub fn add_toast(&mut self, notice: &Notice) {
+        let text = match notice.kind {
+            NoticeKind::Blocked => format!("● {} needs input", notice.name),
+            NoticeKind::Done => format!("✓ {} finished", notice.name),
+        };
+        self.toasts.push(Toast {
+            pane: notice.pane,
+            kind: notice.kind,
+            text,
+            until: std::time::Instant::now() + Duration::from_secs(6),
+        });
+        if self.toasts.len() > 4 {
+            self.toasts.remove(0);
+        }
+        self.dirty = true;
+    }
+
+    /// Drop expired toasts; true when the screen needs a repaint.
+    pub fn expire_toasts(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        let before = self.toasts.len();
+        self.toasts.retain(|t| t.until > now);
+        let changed = self.toasts.len() != before;
+        if changed {
+            self.dirty = true;
+        }
+        changed
+    }
 }
 
 /// A status transition worth telling the user about.

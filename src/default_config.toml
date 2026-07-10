@@ -51,7 +51,7 @@ hide_tab_bar_when_single_tab = false
 enabled = true        # terminal bell + system sound; CDOCK_DISABLE_SOUND kills all
 
 [ui.toast]
-delivery = "system"   # system | off
+delivery = "both"     # app | system | both | off; app toasts click-to-jump
 
 [worktrees]
 directory = "~/.comind-dock/worktrees"   # <dir>/<repo>/<branch-slug>

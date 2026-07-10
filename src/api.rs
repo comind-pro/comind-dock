@@ -31,6 +31,9 @@ pub enum Req {
     /// Read the last non-empty screen lines of a pane.
     Read { pane: u64, lines: Option<usize> },
     Focus { pane: u64 },
+    /// Spawn an agent (or any command) in a new tab, or a split of the
+    /// focused pane when `split` is given.
+    AgentStart { command: String, split: Option<String>, workspace: Option<u64> },
     /// From the agent's SessionStart integration hook: which conversation
     /// runs in this pane (restore resumes exactly it).
     ReportAgentSession { pane: u64, session_id: String },
@@ -135,6 +138,29 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                 Ok(json!({"ok": true}))
             } else {
                 Ok(err(format!("no such pane %{pane}")))
+            }
+        }
+        Req::AgentStart { command, split, workspace } => {
+            if let Some(wi) = workspace.map(|w| resolve_ws(rt, Some(w))) {
+                let Some(wi) = wi else { return Ok(err("no such workspace")) };
+                rt.state.active_workspace = wi;
+            }
+            let pane = match split.as_deref() {
+                Some("down") => rt.state.split_focused(Dir::Down, false),
+                Some(_) => rt.state.split_focused(Dir::Right, false),
+                None => rt.state.new_tab(),
+            };
+            match rt.spawn_pane_cmd(
+                pane,
+                area.width.max(2) / 2,
+                area.height.max(2) / 2,
+                Some(command),
+            ) {
+                Ok(()) => {
+                    rt.mark_dirty();
+                    Ok(json!({"ok": true, "pane": pane.0}))
+                }
+                Err(e) => Ok(err(e)),
             }
         }
         Req::ReportAgentSession { pane, session_id } => {

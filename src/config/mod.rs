@@ -150,13 +150,13 @@ impl Default for SoundCfg {
 #[derive(Debug, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct ToastCfg {
-    /// system | off
+    /// app | system | both | off. "app" toasts are clickable (jump to pane).
     pub delivery: String,
 }
 
 impl Default for ToastCfg {
     fn default() -> Self {
-        Self { delivery: "system".to_string() }
+        Self { delivery: "both".to_string() }
     }
 }
 

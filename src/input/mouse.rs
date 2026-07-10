@@ -57,6 +57,16 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
         MouseEventKind::Down(MouseButton::Left) => {
             rt.mark_dirty();
 
+            // Toasts float above all chrome: click = jump to the pane.
+            if let Some(i) = crate::ui::toast::rects(rt, area)
+                .iter()
+                .position(|(r, _)| r.contains(pos))
+            {
+                let pane = rt.toasts.remove(i).pane;
+                rt.state.focus_pane(pane);
+                return InputOutcome::Continue;
+            }
+
             if view.tab_bar.contains(pos) {
                 match tabbar::hit(rt, ev.column - view.tab_bar.x, view.tab_bar.width) {
                     Some(tabbar::Hit::Tab(ti)) => rt.state.jump_tab(ti),

@@ -231,6 +231,7 @@ pub async fn run(
             },
             _ = ws_poll.tick() => rt.poll_workspaces(),
             _ = agent_poll.tick() => {
+                rt.expire_toasts();
                 let notices = rt.poll_agent_status(&manifests);
                 // After the poll — waiters must see fresh statuses.
                 api::check_waiters(&rt, &mut waiters);
@@ -238,7 +239,7 @@ pub async fn run(
                     // Suppress for the pane the user is looking at right now.
                     let visible = !clients.is_empty() && rt.state.focused_pane() == notice.pane;
                     if !visible {
-                        notify(&rt, &clients, &notice);
+                        notify(&mut rt, &clients, &notice);
                     }
                 }
             }
@@ -268,9 +269,13 @@ async fn accept_next(
     }
 }
 
-/// Sound + system toast for an agent transition (ARCHITECTURE: toasts and
-/// sounds are Phase 3 notifications; app-internal toasts come later).
-fn notify(rt: &Runtime, clients: &HashMap<ClientId, Client>, notice: &runtime::Notice) {
+/// Sound + toast for an agent transition. Delivery: "app" (clickable
+/// top-right overlay), "system" (OS notification), "both", "off".
+fn notify(rt: &mut Runtime, clients: &HashMap<ClientId, Client>, notice: &runtime::Notice) {
+    let delivery = rt.cfg.ui.toast.delivery.clone();
+    if matches!(delivery.as_str(), "app" | "both") {
+        rt.add_toast(notice);
+    }
     let sound_on = rt.cfg.ui.sound.enabled && std::env::var_os("CDOCK_DISABLE_SOUND").is_none();
     if sound_on {
         // Terminal bell for attached clients (dock bounce / tab highlight)…
@@ -293,7 +298,7 @@ fn notify(rt: &Runtime, clients: &HashMap<ClientId, Client>, notice: &runtime::N
         }
     }
 
-    if rt.cfg.ui.toast.delivery == "system" {
+    if matches!(delivery.as_str(), "system" | "both") {
         let text = match notice.kind {
             runtime::NoticeKind::Blocked => format!("{} needs your input", notice.name),
             runtime::NoticeKind::Done => format!("{} finished", notice.name),

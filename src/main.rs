@@ -178,6 +178,16 @@ enum PaneCmd {
 enum AgentCmd {
     /// List agent panes only.
     List,
+    /// Spawn an agent in a new tab (or a split of the focused pane).
+    Start {
+        /// Command to run, e.g. "claude" or "codex --model o3".
+        command: String,
+        /// right | down — split instead of a new tab.
+        #[arg(long)]
+        split: Option<String>,
+        #[arg(long)]
+        workspace: Option<u64>,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -284,6 +294,9 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             PaneCmd::Read { pane, lines } => Req::Read { pane: parse_pane(&pane)?, lines },
             PaneCmd::Focus { pane } => Req::Focus { pane: parse_pane(&pane)? },
         },
+        Cmd::Agent { sub: AgentCmd::Start { command, split, workspace } } => {
+            Req::AgentStart { command, split, workspace }
+        }
         Cmd::Agent { sub: AgentCmd::List } => {
             // Agent list = pane list filtered to recognized agents.
             let mut v = api::request(&Req::PaneList).map_err(|e| e.to_string())?;

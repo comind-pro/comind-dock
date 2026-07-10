@@ -3,6 +3,7 @@ pub mod menu;
 pub mod pane_widget;
 pub mod sidebar;
 pub mod tabbar;
+pub mod toast;
 pub mod view;
 
 use ratatui::Frame;
@@ -63,6 +64,7 @@ pub fn render(view: &View, rt: &Runtime, frame: &mut Frame) {
         }
     }
     let full = frame.area();
+    toast::render(rt, full, frame);
 
     // Mode overlays on top of everything.
     let mode = rt.state.input_mode.clone();
