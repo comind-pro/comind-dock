@@ -88,6 +88,25 @@ enum Cmd {
         #[command(subcommand)]
         sub: ProfileCmd,
     },
+    /// Stream server events as JSON lines (agent-status, output).
+    Events {
+        /// Only events for this pane.
+        #[arg(long)]
+        pane: Option<String>,
+        /// Comma-separated kinds: agent-status,output (default: all).
+        #[arg(long)]
+        only: Option<String>,
+    },
+    /// Workspaces: focus, create, close (list via `api snapshot`).
+    Workspace {
+        #[command(subcommand)]
+        sub: WorkspaceCmd,
+    },
+    /// Tabs: focus, create, close.
+    Tab {
+        #[command(subcommand)]
+        sub: TabCmd,
+    },
     /// Internal hook entrypoints (called by agent CLIs, not by hand).
     #[command(hide = true)]
     Hook {
@@ -106,6 +125,8 @@ enum IntegrationCmd {
 enum ApiCmd {
     /// Full runtime state: workspaces → tabs → panes, one JSON tree.
     Snapshot,
+    /// The socket API reference: one example request per command.
+    Reference,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -178,6 +199,8 @@ enum PaneCmd {
         lines: Option<usize>,
     },
     Focus { pane: String },
+    /// Stream a pane's raw output to stdout until Ctrl-C.
+    Observe { pane: String },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -198,6 +221,28 @@ enum AgentCmd {
         #[arg(long)]
         workspace: Option<u64>,
     },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum WorkspaceCmd {
+    Focus { workspace: u64 },
+    /// New workspace ([terminal].new_cwd unless --cwd).
+    Create {
+        #[arg(long)]
+        cwd: Option<String>,
+    },
+    /// Kill every pane in the workspace.
+    Close { workspace: u64 },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum TabCmd {
+    Focus { tab: u64 },
+    Create {
+        #[arg(long)]
+        workspace: Option<u64>,
+    },
+    Close { tab: u64 },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -317,6 +362,19 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             PaneCmd::SendText { pane, text } => Req::SendText { pane: parse_pane(&pane)?, text },
             PaneCmd::Read { pane, lines } => Req::Read { pane: parse_pane(&pane)?, lines },
             PaneCmd::Focus { pane } => Req::Focus { pane: parse_pane(&pane)? },
+            PaneCmd::Observe { pane } => {
+                let pane = parse_pane(&pane)?;
+                let spec =
+                    api::SubSpec { events: vec!["output".to_string()], pane: Some(pane) };
+                api::subscribe(&spec, |v| {
+                    if let Some(data) = v["data"].as_str() {
+                        print!("{data}");
+                        let _ = std::io::Write::flush(&mut std::io::stdout());
+                    }
+                })
+                .map_err(|e| e.to_string())?;
+                return Ok(true);
+            }
         },
         Cmd::Agent { sub: AgentCmd::Start { command, profile, split, workspace } } => {
             let (command, env) = match profile {
@@ -325,6 +383,26 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             };
             Req::AgentStart { command, split, workspace, env }
         }
+        Cmd::Events { pane, only } => {
+            let spec = api::SubSpec {
+                events: only
+                    .map(|o| o.split(',').map(|s| s.trim().to_string()).collect())
+                    .unwrap_or_default(),
+                pane: pane.as_deref().map(parse_pane).transpose()?,
+            };
+            api::subscribe(&spec, |v| println!("{v}")).map_err(|e| e.to_string())?;
+            return Ok(true);
+        }
+        Cmd::Workspace { sub } => match sub {
+            WorkspaceCmd::Focus { workspace } => Req::WorkspaceFocus { workspace },
+            WorkspaceCmd::Create { cwd } => Req::WorkspaceCreate { cwd },
+            WorkspaceCmd::Close { workspace } => Req::WorkspaceClose { workspace },
+        },
+        Cmd::Tab { sub } => match sub {
+            TabCmd::Focus { tab } => Req::TabFocus { tab },
+            TabCmd::Create { workspace } => Req::TabCreate { workspace },
+            TabCmd::Close { tab } => Req::TabClose { tab },
+        },
         Cmd::Profile { sub } => {
             return match sub {
                 ProfileCmd::List => {
@@ -378,6 +456,10 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             }
         },
         Cmd::Api { sub: ApiCmd::Snapshot } => Req::Snapshot,
+        Cmd::Api { sub: ApiCmd::Reference } => {
+            println!("{}", api::REFERENCE.trim());
+            return Ok(true);
+        }
         Cmd::Server { sub } => match sub {
             ServerCmd::ReloadManifests => Req::ReloadManifests,
             ServerCmd::ReloadConfig => Req::ReloadConfig,

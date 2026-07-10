@@ -217,9 +217,13 @@ impl Runtime {
     /// Called every ~500ms by the server. Marks dirty whenever the DISPLAYED
     /// status changes (including activity-fallback flips, so the sidebar is
     /// reactive without input) and returns the transitions worth notifying.
-    pub fn poll_agent_status(&mut self, manifests: &[crate::detect::Manifest]) -> Vec<Notice> {
+    pub fn poll_agent_status(
+        &mut self,
+        manifests: &[crate::detect::Manifest],
+    ) -> (Vec<Notice>, Vec<StatusChange>) {
         use crate::detect::Status;
         let mut notices = Vec::new();
+        let mut changes = Vec::new();
         let ids: Vec<PaneId> = self.panes.keys().copied().collect();
         for id in ids {
             let title = self.titles.get(&id).cloned().unwrap_or_default();
@@ -259,6 +263,7 @@ impl Runtime {
             p.last_shown = eff;
             p.status_since = std::time::Instant::now();
             self.dirty = true;
+            changes.push(StatusChange { pane: id, agent, from: prev, to: eff });
 
             let Some(agent) = agent else { continue };
             let name = if title.trim().is_empty() {
@@ -276,7 +281,7 @@ impl Runtime {
                 notices.push(Notice { pane: id, kind: NoticeKind::Done, name });
             }
         }
-        notices
+        (notices, changes)
     }
 
     /// Track each space's folder from its focused pane's shell: update cwd,
@@ -754,6 +759,15 @@ impl Runtime {
         }
         changed
     }
+}
+
+/// Any displayed-status transition — the event-subscription feed.
+#[derive(Debug, Clone, Copy)]
+pub struct StatusChange {
+    pub pane: PaneId,
+    pub agent: Option<&'static str>,
+    pub from: crate::detect::Status,
+    pub to: crate::detect::Status,
 }
 
 /// A status transition worth telling the user about.

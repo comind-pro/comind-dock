@@ -51,6 +51,16 @@ pub enum Req {
     ReloadConfig,
     /// exec() the current binary in place: same pid, panes survive.
     Handoff,
+    /// Focus a workspace / tab by public id.
+    WorkspaceFocus { workspace: u64 },
+    /// Close a workspace: kill every pane in it (cascade does the rest).
+    WorkspaceClose { workspace: u64 },
+    /// New workspace (cwd defaults to [terminal].new_cwd policy).
+    WorkspaceCreate { cwd: Option<String> },
+    TabFocus { tab: u64 },
+    TabClose { tab: u64 },
+    /// New tab in a workspace (default: the active one).
+    TabCreate { workspace: Option<u64> },
     /// Worktrees of a workspace's repo (default: the active workspace).
     WorktreeList { workspace: Option<u64> },
     /// Create branch + worktree and open it as a child space.
@@ -80,6 +90,47 @@ pub struct PendingWait {
 }
 
 pub type Replier = oneshot::Sender<Value>;
+
+/// What a subscription wants: which event kinds ("agent-status", "output";
+/// empty = all) and optionally a single pane.
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SubSpec {
+    pub events: Vec<String>,
+    pub pane: Option<u64>,
+}
+
+impl SubSpec {
+    pub fn wants(&self, kind: &str, pane: Option<u64>) -> bool {
+        (self.events.is_empty() || self.events.iter().any(|e| e == kind))
+            && (self.pane.is_none() || self.pane == pane)
+    }
+}
+
+/// One message from an API connection to the server loop.
+pub enum ConnMsg {
+    Req(Req, Replier),
+    /// `{"cmd":"subscribe",...}`: the connection becomes an event stream.
+    Sub(SubSpec, mpsc::UnboundedSender<Value>),
+}
+
+/// Push `event` to every live subscriber that wants it; prunes dead ones.
+pub fn emit(
+    subs: &mut Vec<(SubSpec, mpsc::UnboundedSender<Value>)>,
+    kind: &str,
+    pane: Option<u64>,
+    event: &Value,
+) {
+    subs.retain(|(spec, tx)| {
+        if spec.wants(kind, pane) { tx.send(event.clone()).is_ok() } else { !tx.is_closed() }
+    });
+}
+
+/// True when at least one subscriber wants this kind (skip building events
+/// nobody reads — output events fire on every PTY chunk).
+pub fn wanted(subs: &[(SubSpec, mpsc::UnboundedSender<Value>)], kind: &str) -> bool {
+    subs.iter().any(|(spec, _)| spec.events.is_empty() || spec.events.iter().any(|e| e == kind))
+}
 
 fn err(msg: impl std::fmt::Display) -> Value {
     json!({"ok": false, "error": msg.to_string()})
@@ -180,6 +231,84 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             rt.save_session(); // survive a crash between autosaves
             Ok(json!({"ok": true}))
         }
+        Req::WorkspaceFocus { workspace } => {
+            let Some(wi) = resolve_ws(rt, Some(workspace)) else {
+                return Ok(err("no such workspace"));
+            };
+            rt.state.active_workspace = wi;
+            rt.mark_dirty();
+            Ok(json!({"ok": true}))
+        }
+        Req::WorkspaceClose { workspace } => {
+            let Some(wi) = resolve_ws(rt, Some(workspace)) else {
+                return Ok(err("no such workspace"));
+            };
+            for pane in rt.state.workspace_panes(wi) {
+                rt.kill_pane(pane);
+            }
+            Ok(json!({"ok": true}))
+        }
+        Req::WorkspaceCreate { cwd } => {
+            let cwd = match cwd {
+                Some(c) => std::path::PathBuf::from(c),
+                None => rt.new_space_cwd(),
+            };
+            let name =
+                cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let pane = rt.state.new_workspace(name, cwd, None);
+            match rt.spawn_pane(pane, area.width.max(4), area.height.max(4)) {
+                Ok(()) => {
+                    rt.mark_dirty();
+                    let ws = rt.state.active_workspace();
+                    Ok(json!({"ok": true, "workspace": ws.id.0, "pane": pane.0}))
+                }
+                Err(e) => Ok(err(e)),
+            }
+        }
+        Req::TabFocus { tab } => {
+            let target = crate::state::ids::TabId(tab);
+            for (wi, ws) in rt.state.workspaces.iter().enumerate() {
+                if let Some(ti) = ws.tabs.iter().position(|t| t.id == target) {
+                    rt.state.active_workspace = wi;
+                    rt.state.workspaces[wi].active_tab = ti;
+                    rt.mark_dirty();
+                    return Ok(json!({"ok": true}));
+                }
+            }
+            Ok(err("no such tab"))
+        }
+        Req::TabClose { tab } => {
+            let target = crate::state::ids::TabId(tab);
+            let panes: Vec<PaneId> = rt
+                .state
+                .workspaces
+                .iter()
+                .flat_map(|w| w.tabs.iter())
+                .filter(|t| t.id == target)
+                .flat_map(|t| t.layout.panes())
+                .collect();
+            if panes.is_empty() {
+                return Ok(err("no such tab"));
+            }
+            for pane in panes {
+                rt.kill_pane(pane);
+            }
+            Ok(json!({"ok": true}))
+        }
+        Req::TabCreate { workspace } => {
+            let Some(wi) = resolve_ws(rt, workspace) else {
+                return Ok(err("no such workspace"));
+            };
+            rt.state.active_workspace = wi;
+            let pane = rt.state.new_tab();
+            match rt.spawn_pane(pane, area.width.max(4), area.height.max(4)) {
+                Ok(()) => {
+                    rt.mark_dirty();
+                    Ok(json!({"ok": true, "pane": pane.0}))
+                }
+                Err(e) => Ok(err(e)),
+            }
+        }
         Req::WorktreeList { workspace } => {
             let Some(wi) = resolve_ws(rt, workspace) else {
                 return Ok(err("no such workspace"));
@@ -259,6 +388,37 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
         }
     }
 }
+
+/// Machine-readable API reference: one valid example request per command
+/// (`cdock api reference`). The unit test parses every example — the
+/// reference cannot silently drift from the enum.
+pub const REFERENCE: &str = r#"[
+  {"cmd":"pane-list"},
+  {"cmd":"snapshot"},
+  {"cmd":"split","pane":1,"direction":"right","command":"cargo test"},
+  {"cmd":"send-text","pane":1,"text":"hello"},
+  {"cmd":"run","pane":1,"command":"ls"},
+  {"cmd":"read","pane":1,"lines":30},
+  {"cmd":"focus","pane":1},
+  {"cmd":"agent-start","command":"claude","split":"right","workspace":3,"env":[["K","V"]]},
+  {"cmd":"report-agent-session","pane":1,"session_id":"uuid"},
+  {"cmd":"reload-manifests"},
+  {"cmd":"reload-config"},
+  {"cmd":"handoff"},
+  {"cmd":"workspace-focus","workspace":3},
+  {"cmd":"workspace-close","workspace":3},
+  {"cmd":"workspace-create","cwd":"/tmp"},
+  {"cmd":"tab-focus","tab":2},
+  {"cmd":"tab-close","tab":2},
+  {"cmd":"tab-create","workspace":3},
+  {"cmd":"worktree-list","workspace":3},
+  {"cmd":"worktree-create","workspace":3,"branch":"feature"},
+  {"cmd":"worktree-open","workspace":3,"branch":"feature"},
+  {"cmd":"worktree-remove","workspace":6,"force":false},
+  {"cmd":"wait-agent-status","pane":1,"status":"idle","timeout_ms":60000},
+  {"cmd":"wait-output","pane":1,"match":"done","timeout_ms":60000},
+  {"cmd":"subscribe","events":["agent-status","output"],"pane":1}
+]"#;
 
 /// Workspace index by public id; None id → the active workspace.
 fn resolve_ws(rt: &Runtime, id: Option<u64>) -> Option<usize> {
@@ -410,7 +570,8 @@ pub fn socket_path() -> Option<std::path::PathBuf> {
 }
 
 /// Serve one API connection: NDJSON lines in, one reply line per request.
-pub fn spawn_conn(stream: tokio::net::UnixStream, tx: mpsc::UnboundedSender<(Req, Replier)>) {
+/// A `subscribe` request flips the connection into a one-way event stream.
+pub fn spawn_conn(stream: tokio::net::UnixStream, tx: mpsc::UnboundedSender<ConnMsg>) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     tokio::spawn(async move {
         let (r, mut w) = stream.into_split();
@@ -419,10 +580,36 @@ pub fn spawn_conn(stream: tokio::net::UnixStream, tx: mpsc::UnboundedSender<(Req
             if line.trim().is_empty() {
                 continue;
             }
-            let reply = match serde_json::from_str::<Req>(&line) {
+            let v: Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(e) => {
+                    let out = format!("{}\n", err(format!("bad request: {e}")));
+                    if w.write_all(out.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
+            };
+            if v["cmd"] == "subscribe" {
+                let spec: SubSpec = serde_json::from_value(v).unwrap_or_default();
+                let (etx, mut erx) = mpsc::unbounded_channel::<Value>();
+                if tx.send(ConnMsg::Sub(spec, etx)).is_err() {
+                    return;
+                }
+                let _ = w.write_all(b"{\"ok\":true,\"subscribed\":true}\n").await;
+                while let Some(event) = erx.recv().await {
+                    let mut out = event.to_string();
+                    out.push('\n');
+                    if w.write_all(out.as_bytes()).await.is_err() {
+                        return; // reader gone; sender side prunes on next emit
+                    }
+                }
+                return;
+            }
+            let reply = match serde_json::from_value::<Req>(v) {
                 Ok(req) => {
                     let (rtx, rrx) = oneshot::channel();
-                    if tx.send((req, rtx)).is_err() {
+                    if tx.send(ConnMsg::Req(req, rtx)).is_err() {
                         break;
                     }
                     rrx.await.unwrap_or_else(|_| err("server shutting down"))
@@ -436,6 +623,30 @@ pub fn spawn_conn(stream: tokio::net::UnixStream, tx: mpsc::UnboundedSender<(Req
             }
         }
     });
+}
+
+/// Blocking subscription from the CLI: prints a line per event via `f`,
+/// until the server goes away.
+pub fn subscribe(spec: &SubSpec, mut f: impl FnMut(Value)) -> std::io::Result<()> {
+    let sock = socket_path().ok_or_else(|| std::io::Error::other("cannot determine state dir"))?;
+    let mut stream = std::os::unix::net::UnixStream::connect(&sock).map_err(|e| {
+        std::io::Error::other(format!("no cdock server on {sock:?} ({e}); start `cdock` first"))
+    })?;
+    let mut line = serde_json::to_string(&serde_json::json!({
+        "cmd": "subscribe", "events": spec.events, "pane": spec.pane,
+    }))?;
+    line.push('\n');
+    stream.write_all(line.as_bytes())?;
+    let reader = std::io::BufReader::new(stream);
+    for line in std::io::BufRead::lines(reader) {
+        let line = line?;
+        match serde_json::from_str::<Value>(&line) {
+            Ok(v) if v["subscribed"] == true => {}
+            Ok(v) => f(v),
+            Err(_) => {}
+        }
+    }
+    Ok(())
 }
 
 /// Blocking one-shot request from the CLI side.
@@ -455,6 +666,26 @@ pub fn request(req: &Req) -> std::io::Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every example in the published reference must parse as a real
+    /// request ("subscribe" is connection-level, checked by shape).
+    #[test]
+    fn reference_examples_parse() {
+        let examples: Vec<serde_json::Value> =
+            serde_json::from_str(REFERENCE).expect("reference is valid JSON");
+        assert!(examples.len() >= 25);
+        for ex in examples {
+            if ex["cmd"] == "subscribe" {
+                assert!(serde_json::from_value::<SubSpec>(ex).is_ok());
+            } else {
+                let text = ex.to_string();
+                assert!(
+                    serde_json::from_value::<Req>(ex).is_ok(),
+                    "reference example does not parse: {text}"
+                );
+            }
+        }
+    }
 
     /// The wire format is public API for scripts — keep it stable.
     #[test]

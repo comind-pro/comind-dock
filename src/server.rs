@@ -74,9 +74,11 @@ pub async fn run(
 
     let mut clients: HashMap<ClientId, Client> = HashMap::new();
     let mut next_client: ClientId = 1;
-    // Automation API: parked wait-* requests resolve on the agent poll.
-    let (api_tx, mut api_rx) = mpsc::unbounded_channel::<(api::Req, api::Replier)>();
+    // Automation API: parked wait-* requests resolve on the agent poll;
+    // subscribers get pushed events (agent-status, output).
+    let (api_tx, mut api_rx) = mpsc::unbounded_channel::<api::ConnMsg>();
     let mut waiters: Vec<(api::PendingWait, api::Replier)> = Vec::new();
+    let mut subs: Vec<(api::SubSpec, mpsc::UnboundedSender<serde_json::Value>)> = Vec::new();
     let mut term = Terminal::new(TestBackend::new(area.width, area.height)).expect("test backend is infallible");
 
     for stream in initial {
@@ -195,10 +197,17 @@ pub async fn run(
             }
             maybe = data_rx.recv() => {
                 let Some(first) = maybe else { return Ok(RunOutcome::Exit) };
+                let stream_output = api::wanted(&subs, "output");
                 let mut budget = runtime::PTY_DRAIN_BUDGET;
                 let mut next = Some(first);
                 while let Some((id, bytes)) = next.take() {
                     budget = budget.saturating_sub(bytes.len());
+                    if stream_output {
+                        api::emit(&mut subs, "output", Some(id.0), &serde_json::json!({
+                            "event": "output", "pane": id.0,
+                            "data": String::from_utf8_lossy(&bytes),
+                        }));
+                    }
                     runtime::feed_pty(&mut rt, id, &bytes);
                     if budget > 0 {
                         next = data_rx.try_recv().ok();
@@ -211,7 +220,12 @@ pub async fn run(
             Some(Ok((stream, _))) = accept_next(&api_listener) => {
                 api::spawn_conn(stream, api_tx.clone());
             }
-            Some((req, reply)) = api_rx.recv() => match req {
+            Some(conn) = api_rx.recv() => match conn {
+                api::ConnMsg::Sub(spec, tx) => {
+                    tracing::info!(?spec.events, pane = ?spec.pane, "event subscriber");
+                    subs.push((spec, tx));
+                }
+                api::ConnMsg::Req(req, reply) => match req {
                 // The loop owns the manifest set and the exec decision.
                 api::Req::ReloadManifests => {
                     manifests = crate::detect::load_all();
@@ -224,15 +238,22 @@ pub async fn run(
                     flush_writers().await; // let the reply reach the CLI
                     return Ok(RunOutcome::Handoff(Box::new(h)));
                 }
-                req => match api::handle(&mut rt, area, req) {
-                    Ok(v) => { let _ = reply.send(v); }
-                    Err(pending) => waiters.push((pending, reply)),
-                }
+                    req => match api::handle(&mut rt, area, req) {
+                        Ok(v) => { let _ = reply.send(v); }
+                        Err(pending) => waiters.push((pending, reply)),
+                    }
+                },
             },
             _ = ws_poll.tick() => rt.poll_workspaces(),
             _ = agent_poll.tick() => {
                 rt.expire_toasts();
-                let notices = rt.poll_agent_status(&manifests);
+                let (notices, changes) = rt.poll_agent_status(&manifests);
+                for ch in &changes {
+                    api::emit(&mut subs, "agent-status", Some(ch.pane.0), &serde_json::json!({
+                        "event": "agent-status", "pane": ch.pane.0, "agent": ch.agent,
+                        "from": ch.from.word(), "to": ch.to.word(),
+                    }));
+                }
                 // After the poll — waiters must see fresh statuses.
                 api::check_waiters(&rt, &mut waiters);
                 for notice in notices {

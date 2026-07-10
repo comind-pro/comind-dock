@@ -38,6 +38,23 @@ substring of the visible screen.
 "$CDOCK_BIN" api snapshot     # workspaces → tabs → panes, one JSON tree
 "$CDOCK_BIN" pane list        # flat pane list with statuses
 "$CDOCK_BIN" agent list       # only recognized agent panes
+"$CDOCK_BIN" api reference    # every socket API command with an example
+```
+
+## Watch instead of polling
+
+```bash
+"$CDOCK_BIN" events --only agent-status         # JSON line per transition
+"$CDOCK_BIN" pane observe 7                     # raw output stream of a pane
+```
+
+## Structure
+
+```bash
+"$CDOCK_BIN" tab create                          # new tab, reply has pane id
+"$CDOCK_BIN" workspace create --cwd ~/proj/x     # new space in a folder
+"$CDOCK_BIN" agent start "claude" --split right  # spawn an agent
+"$CDOCK_BIN" agent start --profile reviewer      # spawn by profile
 ```
 
 ## Coordinate with other agents
