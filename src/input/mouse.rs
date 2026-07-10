@@ -85,7 +85,8 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> bool {
                         rt.state.focus_pane(pane);
                     }
                     Some(sidebar::Target::NewWorkspace) => {
-                        let pane = rt.state.new_workspace();
+                        let name = rt.workspace_name();
+                        let pane = rt.state.new_workspace(name);
                         let size = view
                             .pane_rects
                             .first()

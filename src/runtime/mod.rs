@@ -141,15 +141,7 @@ impl Runtime {
             ShellMode::Login => true,
             ShellMode::NonLogin => false,
         };
-        let cwd = match t.new_cwd.as_str() {
-            "home" => std::env::var_os("HOME").map(std::path::PathBuf::from),
-            p if p.starts_with('/') => Some(std::path::PathBuf::from(p)),
-            // ponytail: "follow" = launch cwd until per-pane cwd tracking
-            // (platform process info) lands; "current" is the same today.
-            _ => None,
-        }
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| std::path::PathBuf::from("/"));
+        let cwd = resolve_cwd(&self.cfg.terminal);
 
         // The tab/workspace that contain this pane (just created in the active ones).
         let ws = self.state.active_workspace();
@@ -162,6 +154,11 @@ impl Runtime {
             tab_id: tab.id.to_string(),
             workspace_id: ws.id.to_string(),
         }
+    }
+
+    /// Default workspace name: the folder new panes spawn in.
+    pub fn workspace_name(&self) -> String {
+        folder_name(&resolve_cwd(&self.cfg.terminal))
     }
 
     /// `[[keys.command]]`: pane → run in a new tab; shell → silent background run.
@@ -230,7 +227,7 @@ pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> 
     let (state, initial_panes) = match crate::state::snapshot::load().and_then(|s| s.restore()) {
         Some((st, panes)) => (st, panes),
         None => {
-            let st = AppState::new();
+            let st = AppState::new(folder_name(&resolve_cwd(&cfg.terminal)));
             let first = st.focused_pane();
             (st, vec![first])
         }
@@ -311,6 +308,23 @@ pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> 
             }
         }
     }
+}
+
+/// Where new panes spawn, per [terminal].new_cwd.
+fn resolve_cwd(t: &crate::config::TerminalCfg) -> std::path::PathBuf {
+    match t.new_cwd.as_str() {
+        "home" => std::env::var_os("HOME").map(std::path::PathBuf::from),
+        p if p.starts_with('/') => Some(std::path::PathBuf::from(p)),
+        // ponytail: "follow" = launch cwd until per-pane cwd tracking
+        // (platform process info) lands; "current" is the same today.
+        _ => None,
+    }
+    .or_else(|| std::env::current_dir().ok())
+    .unwrap_or_else(|| std::path::PathBuf::from("/"))
+}
+
+fn folder_name(p: &std::path::Path) -> String {
+    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "/".to_string())
 }
 
 /// A pane's process exited: drop its runtime, cascade the close. True → quit app.

@@ -188,11 +188,11 @@ mod tests {
 
     #[test]
     fn snapshot_round_trip_preserves_structure() {
-        let mut s = AppState::new();
+        let mut s = AppState::new("main".into());
         s.split_focused(Dir::Right, false);
         s.split_focused(Dir::Down, false);
         s.new_tab();
-        s.new_workspace();
+        s.new_workspace("x".into());
         s.rename_active_workspace("proj".into());
 
         let snap = Snapshot::of(&s);

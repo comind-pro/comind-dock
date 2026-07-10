@@ -63,12 +63,12 @@ pub struct AppState {
 
 impl AppState {
     /// State with one workspace, one tab, one pane (the initial pane id is returned
-    /// via `focused_pane`).
-    pub fn new() -> Self {
+    /// via `focused_pane`). Workspaces are named after their folder.
+    pub fn new(workspace_name: String) -> Self {
         let mut ids = IdGen::default();
         let pane = ids.pane();
         let tab = Tab::new(ids.tab(), "1".to_string(), pane);
-        let ws = Workspace::new(ids.workspace(), "main".to_string(), tab);
+        let ws = Workspace::new(ids.workspace(), workspace_name, tab);
         Self {
             workspaces: vec![ws],
             active_workspace: 0,
@@ -212,10 +212,9 @@ impl AppState {
     }
 
     /// New workspace with one tab/pane; becomes active. Returns the pane to spawn.
-    pub fn new_workspace(&mut self) -> PaneId {
+    pub fn new_workspace(&mut self, name: String) -> PaneId {
         let pane = self.ids.pane();
         let tab = Tab::new(self.ids.tab(), "1".to_string(), pane);
-        let name = format!("ws{}", self.workspaces.len() + 1);
         self.workspaces.push(Workspace::new(self.ids.workspace(), name, tab));
         self.active_workspace = self.workspaces.len() - 1;
         debug_assert!(self.check_invariants());
@@ -331,14 +330,14 @@ mod tests {
 
     #[test]
     fn new_state_is_valid() {
-        let s = AppState::new();
+        let s = AppState::new("main".into());
         assert!(s.check_invariants());
         assert_eq!(s.all_panes().len(), 1);
     }
 
     #[test]
     fn split_focus_close_cycle() {
-        let mut s = AppState::new();
+        let mut s = AppState::new("main".into());
         let first = s.focused_pane();
         let second = s.split_focused(Dir::Right, false);
         assert_eq!(s.focused_pane(), second);
@@ -353,7 +352,7 @@ mod tests {
 
     #[test]
     fn tab_close_cascades() {
-        let mut s = AppState::new();
+        let mut s = AppState::new("main".into());
         let first = s.focused_pane();
         let in_tab2 = s.new_tab();
         assert_eq!(s.active_workspace().tabs.len(), 2);
@@ -364,7 +363,7 @@ mod tests {
 
     #[test]
     fn zoom_toggles_and_clears_on_split() {
-        let mut s = AppState::new();
+        let mut s = AppState::new("main".into());
         s.split_focused(Dir::Right, false);
         s.toggle_zoom();
         assert_eq!(s.active_tab().zoomed, Some(s.focused_pane()));
@@ -377,7 +376,7 @@ mod tests {
 
     #[test]
     fn tab_and_workspace_navigation() {
-        let mut s = AppState::new();
+        let mut s = AppState::new("main".into());
         s.new_tab();
         s.new_tab();
         assert_eq!(s.active_workspace().active_tab, 2);
@@ -386,7 +385,7 @@ mod tests {
         s.prev_tab();
         assert_eq!(s.active_workspace().active_tab, 2);
 
-        let p = s.new_workspace();
+        let p = s.new_workspace("proj".into());
         assert_eq!(s.active_workspace, 1);
         assert_eq!(s.focused_pane(), p);
         s.cycle_workspace();
@@ -396,7 +395,7 @@ mod tests {
 
     #[test]
     fn close_zoomed_pane_clears_zoom() {
-        let mut s = AppState::new();
+        let mut s = AppState::new("main".into());
         let second = s.split_focused(Dir::Right, false);
         s.toggle_zoom();
         assert_eq!(s.close_pane(second), CloseOutcome::PaneRemoved);
