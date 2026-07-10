@@ -299,15 +299,19 @@ impl Runtime {
         (notices, changes)
     }
 
-    /// Track each space's folder: the space follows the cwd MOST of its
-    /// panes live in (majority vote, ties keep the current anchor) — one tab
-    /// cd-ing elsewhere must not drag the whole space with it. Also
-    /// auto-rename (unless renamed manually) and refresh the git branch.
+    /// Track each space's folder. The anchor is sticky: as long as at least
+    /// one pane (terminal or agent) still lives in the anchor folder or its
+    /// subtree, the space stays put — tabs exploring elsewhere never drag it.
+    /// Only when every pane has left does the space move (to the folder most
+    /// panes are in now). Also auto-rename (unless renamed manually) and
+    /// refresh the git branch.
     pub fn poll_workspaces(&mut self) {
         for wi in 0..self.state.workspaces.len() {
             let ws = &self.state.workspaces[wi];
             let ws_id = ws.id;
+            let current = ws.cwd.clone();
             let mut votes: HashMap<std::path::PathBuf, usize> = HashMap::new();
+            let mut anchor_alive = false;
             for pane in ws.tabs.iter().flat_map(|t| t.layout.panes()) {
                 if let Some(cwd) = self
                     .panes
@@ -315,15 +319,15 @@ impl Runtime {
                     .and_then(|p| p.pty.child_pid)
                     .and_then(crate::platform::process_cwd)
                 {
+                    anchor_alive |= cwd.starts_with(&current);
                     *votes.entry(cwd).or_default() += 1;
                 }
             }
-            let current = ws.cwd.clone();
-            let winner = votes
-                .into_iter()
-                // Strict max; the current anchor wins ties.
-                .max_by_key(|(cwd, n)| (*n, *cwd == current))
-                .map(|(cwd, _)| cwd);
+            let winner = if anchor_alive {
+                None // somebody is still home — the space stays
+            } else {
+                votes.into_iter().max_by_key(|(_, n)| *n).map(|(cwd, _)| cwd)
+            };
             if let Some(cwd) = winner {
                 let ws = &mut self.state.workspaces[wi];
                 if ws.cwd != cwd {
