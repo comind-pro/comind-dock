@@ -60,7 +60,15 @@ pub fn render(view: &View, rt: &Runtime, frame: &mut Frame) {
                 .filter(|t| !t.trim().is_empty())
                 .cloned()
                 .unwrap_or_else(|| p.program.clone());
-            pane_widget::render(&p.emu.term, *rect, frame, *id == view.focused, &title, &rt.theme);
+            pane_widget::render(
+                &p.emu.term,
+                *rect,
+                frame,
+                *id == view.focused,
+                &title,
+                &rt.theme,
+                if *id == view.focused { p.emu.focused_match() } else { None },
+            );
         }
     }
     let full = frame.area();
@@ -73,6 +81,9 @@ pub fn render(view: &View, rt: &Runtime, frame: &mut Frame) {
         crate::state::InputMode::Help => help::render_help(&rt.keymap, &rt.theme, full, frame),
         crate::state::InputMode::Prompt { kind, buffer } => {
             help::render_prompt(*kind, buffer, &rt.theme, full, frame);
+        }
+        crate::state::InputMode::Search { buffer } => {
+            help::render_search(buffer, &rt.theme, full, frame);
         }
         crate::state::InputMode::Menu { x, y, items } => {
             menu::render(*x, *y, items, &rt.theme, full, frame);

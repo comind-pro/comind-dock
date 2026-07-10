@@ -64,6 +64,12 @@ pub enum InputMode {
         kind: PromptKind,
         buffer: String,
     },
+    /// Scrollback search: typing the query.
+    Search {
+        buffer: String,
+    },
+    /// Scrollback search: hopping between matches (n / N).
+    SearchNav,
     /// y/n confirmation before killing a pane ([ui].confirm_close).
     ConfirmClose(ids::PaneId),
     /// Context menu anchored at a screen cell.

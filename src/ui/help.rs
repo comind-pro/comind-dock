@@ -18,6 +18,8 @@ pub fn render_hint(mode: &InputMode, theme: &Theme, area: Rect, frame: &mut Fram
         InputMode::Resize => " RESIZE  h/l narrower/wider  j/k taller/shorter  Esc/Enter done ",
         InputMode::Help => " any key to close ",
         InputMode::Prompt { .. } => " Enter apply  Esc cancel ",
+        InputMode::Search { .. } => " SEARCH (regex)  Enter find  Esc cancel ",
+        InputMode::SearchNav => " MATCH  n older  N newer  / new search  Esc done ",
         InputMode::ConfirmClose(_) => " close pane? y = yes, any other key = cancel ",
         InputMode::Menu { .. } => " click an option · click elsewhere / any key to dismiss ",
     };
@@ -75,6 +77,15 @@ pub fn render_prompt(kind: PromptKind, buffer: &str, theme: &Theme, area: Rect, 
         PromptKind::RenameWorkspace => " rename space ",
         PromptKind::WorktreeBranch(_) => " new worktree: branch name ",
     };
+    render_input_box(title, buffer, theme, area, frame);
+}
+
+/// Scrollback-search query box.
+pub fn render_search(buffer: &str, theme: &Theme, area: Rect, frame: &mut Frame) {
+    render_input_box(" search scrollback (regex) ", buffer, theme, area, frame);
+}
+
+fn render_input_box(title: &str, buffer: &str, theme: &Theme, area: Rect, frame: &mut Frame) {
     let w = 40.min(area.width);
     let rect = Rect {
         x: area.x + (area.width - w) / 2,

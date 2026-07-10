@@ -36,6 +36,7 @@ pub fn render(
     focused: bool,
     title: &str,
     theme: &crate::config::theme::Theme,
+    search_match: Option<&alacritty_terminal::term::search::Match>,
 ) {
     use ratatui::widgets::{Block, BorderType, Borders};
 
@@ -83,6 +84,9 @@ pub fn render(
             .add_modifier(convert_flags(flags));
         if content.selection.is_some_and(|sel| selected(&sel, indexed.point)) {
             style = style.add_modifier(Modifier::REVERSED);
+        }
+        if search_match.is_some_and(|m| m.contains(&indexed.point)) {
+            style = Style::new().fg(Color::Black).bg(Color::Yellow);
         }
 
         let c = indexed.cell.c;

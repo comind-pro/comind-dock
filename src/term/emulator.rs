@@ -2,8 +2,9 @@
 
 use alacritty_terminal::event::{Event as TermEvent, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::index::{Boundary, Column, Direction, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
+use alacritty_terminal::term::search::{Match, RegexSearch};
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{self, Term, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
@@ -25,9 +26,16 @@ impl EventListener for EventProxy {
     }
 }
 
+/// An active scrollback search: the compiled regex and the focused match.
+pub struct SearchState {
+    dfas: RegexSearch,
+    pub focused: Option<Match>,
+}
+
 pub struct Emulator {
     pub term: Term<EventProxy>,
     processor: Processor,
+    search: Option<SearchState>,
 }
 
 impl Emulator {
@@ -41,7 +49,58 @@ impl Emulator {
         let config = term::Config { scrolling_history: scrollback_lines, ..Default::default() };
         let size = TermSize::new(cols.max(1) as usize, rows.max(1) as usize);
         let term = Term::new(config, &size, EventProxy { pane, tx });
-        Self { term, processor: Processor::new() }
+        Self { term, processor: Processor::new(), search: None }
+    }
+
+    /// Start a scrollback search (regex, case-sensitive as typed): jump to
+    /// the nearest match at-or-above the bottom of the buffer. False → no
+    /// match or a bad pattern.
+    pub fn start_search(&mut self, query: &str) -> bool {
+        let Ok(mut dfas) = RegexSearch::new(query) else { return false };
+        let origin = Point::new(self.term.bottommost_line(), self.term.last_column());
+        let focused = self.term.search_next(&mut dfas, origin, Direction::Left, Side::Left, None);
+        match focused {
+            Some(m) => {
+                self.scroll_to(m.start().line);
+                self.search = Some(SearchState { dfas, focused: Some(m) });
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Move to the next match: `older` walks up the scrollback, else down.
+    /// Wraps around (alacritty's search is circular).
+    pub fn search_step(&mut self, older: bool) {
+        let Some(st) = &mut self.search else { return };
+        let Some(cur) = &st.focused else { return };
+        let (origin, dir) = if older {
+            (cur.start().sub(&self.term, Boundary::Grid, 1), Direction::Left)
+        } else {
+            (cur.end().add(&self.term, Boundary::Grid, 1), Direction::Right)
+        };
+        if let Some(m) = self.term.search_next(&mut st.dfas, origin, dir, Side::Left, None) {
+            let line = m.start().line;
+            st.focused = Some(m);
+            self.scroll_to(line);
+        }
+    }
+
+    pub fn clear_search(&mut self) {
+        self.search = None;
+        self.term.scroll_display(Scroll::Bottom);
+    }
+
+    pub fn focused_match(&self) -> Option<&Match> {
+        self.search.as_ref().and_then(|s| s.focused.as_ref())
+    }
+
+    /// Scroll so `line` sits mid-screen.
+    fn scroll_to(&mut self, line: Line) {
+        let screen = self.term.screen_lines() as i32;
+        let offset = self.term.grid().display_offset() as i32;
+        let target = (-(line.0) + screen / 2).max(0);
+        self.term.scroll_display(Scroll::Delta(target - offset));
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
@@ -160,5 +219,40 @@ impl Emulator {
             257 => Rgb { r: 30, g: 30, b: 30 },
             _ => Rgb { r: 229, g: 229, b: 229 },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn emu() -> Emulator {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        Emulator::new(40, 5, PaneId(1), tx, 1000)
+    }
+
+    #[test]
+    fn search_scrolls_steps_and_clears() {
+        let mut e = emu();
+        for i in 0..40 {
+            e.feed(format!("row number {i}\r\n").as_bytes());
+        }
+        // Unique hit far up in the scrollback.
+        assert!(e.start_search("row number 17"), "finds the one matching row");
+        assert!(e.focused_match().is_some());
+        assert!(e.term.grid().display_offset() > 0, "viewport scrolled up to the match");
+
+        // Circular stepping lands back on the same single match.
+        let m = e.focused_match().unwrap().clone();
+        e.search_step(true);
+        assert_eq!(e.focused_match().unwrap(), &m);
+
+        e.clear_search();
+        assert!(e.focused_match().is_none());
+        assert_eq!(e.term.grid().display_offset(), 0, "back at the live bottom");
+
+        // Bad regex and misses report false.
+        assert!(!e.start_search("["));
+        assert!(!e.start_search("no such text anywhere"));
     }
 }

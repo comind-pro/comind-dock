@@ -31,6 +31,7 @@ pub enum Action {
     CloseWorkspace,
     CycleWorkspace,
     ToggleSidebar,
+    Search,
     Help,
     Quit,
 }
@@ -61,6 +62,7 @@ impl Action {
             Action::CloseWorkspace => "close workspace",
             Action::CycleWorkspace => "next workspace",
             Action::ToggleSidebar => "toggle sidebar",
+            Action::Search => "search scrollback",
             Action::Help => "help",
             Action::Quit => "quit",
         }
@@ -100,6 +102,7 @@ pub fn default_actions() -> Vec<(&'static str, &'static [&'static str], Action)>
         ("close_workspace", &["D"], Action::CloseWorkspace),
         ("next_workspace", &["o"], Action::CycleWorkspace),
         ("toggle_sidebar", &["b"], Action::ToggleSidebar),
+        ("search", &["/"], Action::Search),
         ("help", &["?"], Action::Help),
         ("quit", &["q"], Action::Quit),
     ]
@@ -183,6 +186,59 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<Inp
         InputMode::Menu { .. } => {
             rt.state.input_mode = InputMode::Terminal;
             rt.mark_dirty();
+            Ok(InputOutcome::Continue)
+        }
+        InputMode::Search { mut buffer } => {
+            rt.mark_dirty();
+            match key.code {
+                KeyCode::Enter => {
+                    let focused = rt.state.focused_pane();
+                    let found = !buffer.trim().is_empty()
+                        && rt
+                            .panes
+                            .get_mut(&focused)
+                            .is_some_and(|p| p.emu.start_search(buffer.trim()));
+                    rt.state.input_mode =
+                        if found { InputMode::SearchNav } else { InputMode::Terminal };
+                }
+                KeyCode::Esc => rt.state.input_mode = InputMode::Terminal,
+                KeyCode::Backspace => {
+                    buffer.pop();
+                    rt.state.input_mode = InputMode::Search { buffer };
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    buffer.push(c);
+                    rt.state.input_mode = InputMode::Search { buffer };
+                }
+                _ => {}
+            }
+            Ok(InputOutcome::Continue)
+        }
+        InputMode::SearchNav => {
+            rt.mark_dirty();
+            let focused = rt.state.focused_pane();
+            match key.code {
+                KeyCode::Char('n') => {
+                    if let Some(p) = rt.panes.get_mut(&focused) {
+                        p.emu.search_step(true);
+                    }
+                }
+                KeyCode::Char('N') | KeyCode::Char('p') => {
+                    if let Some(p) = rt.panes.get_mut(&focused) {
+                        p.emu.search_step(false);
+                    }
+                }
+                KeyCode::Char('/') => {
+                    rt.state.input_mode = InputMode::Search { buffer: String::new() };
+                }
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                    if let Some(p) = rt.panes.get_mut(&focused) {
+                        p.emu.clear_search();
+                    }
+                    rt.state.input_mode = InputMode::Terminal;
+                }
+                _ => {}
+            }
             Ok(InputOutcome::Continue)
         }
         InputMode::ConfirmClose(pane) => {
@@ -296,6 +352,7 @@ fn dispatch(rt: &mut Runtime, action: Action, area: Rect) -> io::Result<InputOut
         }
         Action::CycleWorkspace => rt.state.cycle_workspace(),
         Action::ToggleSidebar => rt.state.sidebar_visible = !rt.state.sidebar_visible,
+        Action::Search => rt.state.input_mode = InputMode::Search { buffer: String::new() },
         Action::Help => rt.state.input_mode = InputMode::Help,
         Action::Quit => return Ok(InputOutcome::Detach),
     }
