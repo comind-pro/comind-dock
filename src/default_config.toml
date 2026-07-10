@@ -1,0 +1,17 @@
+# comind-dock default configuration.
+# Location: $XDG_CONFIG_HOME/comind-dock/config.toml (or CDOCK_CONFIG_PATH).
+# Every key is optional; omitted keys use the defaults shown here.
+# ponytail: annotated sections grow with M6 (theme, terminal, keys, ui).
+
+# [theme]
+# name = "default"        # built-in theme, or "terminal" to follow the host palette
+
+# [terminal]
+# shell_mode = "auto"     # auto | login | plain
+# new_cwd = "follow"      # follow | home | current | /absolute/path
+
+# [keys]
+# prefix = "ctrl+b"
+
+# [experimental]
+# allow_nested = false    # allow launching cdock inside a cdock pane
