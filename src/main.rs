@@ -7,6 +7,7 @@ mod git;
 mod input;
 mod logging;
 mod platform;
+mod plugin;
 mod profile;
 mod proto;
 mod runtime;
@@ -97,6 +98,11 @@ enum Cmd {
     Skill {
         #[command(subcommand)]
         sub: SkillCmd,
+    },
+    /// Plugins: out-of-process actions from linked directories.
+    Plugin {
+        #[command(subcommand)]
+        sub: PluginCmd,
     },
     /// Stream server events as JSON lines (agent-status, output).
     Events {
@@ -230,6 +236,21 @@ enum AgentCmd {
         split: Option<String>,
         #[arg(long)]
         workspace: Option<u64>,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum PluginCmd {
+    /// Installed plugins with their actions.
+    List,
+    /// Symlink a local plugin directory (must contain plugin.toml).
+    Link { path: String },
+    /// Remove a linked plugin (refuses to delete real directories).
+    Unlink { id: String },
+    /// Run a plugin action in the foreground.
+    Action {
+        plugin: String,
+        action: String,
     },
 }
 
@@ -408,6 +429,30 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 None => (command.expect("clap: command or profile"), Vec::new()),
             };
             Req::AgentStart { command, split, workspace, env }
+        }
+        Cmd::Plugin { sub } => {
+            return match sub {
+                PluginCmd::List => {
+                    for p in plugin::list() {
+                        println!("{}\t{}\t{}", p.manifest.id, p.manifest.name, p.dir.display());
+                        for a in &p.manifest.actions {
+                            println!("  {}:{}\t{}", p.manifest.id, a.id, a.label);
+                        }
+                    }
+                    Ok(true)
+                }
+                PluginCmd::Link { path } => {
+                    let id = plugin::link(&path)?;
+                    println!("linked {id}");
+                    Ok(true)
+                }
+                PluginCmd::Unlink { id } => {
+                    plugin::unlink(&id)?;
+                    println!("unlinked {id}");
+                    Ok(true)
+                }
+                PluginCmd::Action { plugin, action } => plugin::invoke(&plugin, &action),
+            };
         }
         Cmd::Skill { sub } => {
             return match sub {

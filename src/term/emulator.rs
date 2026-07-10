@@ -156,6 +156,26 @@ impl Emulator {
         mode.contains(TermMode::ALT_SCREEN) && mode.contains(TermMode::ALTERNATE_SCROLL)
     }
 
+    /// The whole buffer — scrollback history plus the live screen — as
+    /// plain text (per-line trailing blanks stripped, one trailing newline).
+    pub fn scrollback_text(&self) -> String {
+        let grid = self.term.grid();
+        let top = self.term.topmost_line().0;
+        let bottom = self.term.bottommost_line().0;
+        let mut out = String::new();
+        for l in top..=bottom {
+            let row = &grid[Line(l)];
+            let s: String = (0..grid.columns()).map(|c| row[Column(c)].c).collect();
+            out.push_str(s.trim_end());
+            out.push('\n');
+        }
+        // Blank tail below the last prompt is noise in an editor.
+        let trimmed_len = out.trim_end().len();
+        out.truncate(trimmed_len);
+        out.push('\n');
+        out
+    }
+
     /// Last `max_lines` non-empty rows of the live screen (bottom buffer) —
     /// the detection engine's input. Grid coords, so user scrolling the
     /// viewport doesn't change what detection sees.
@@ -229,6 +249,19 @@ mod tests {
     fn emu() -> Emulator {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         Emulator::new(40, 5, PaneId(1), tx, 1000)
+    }
+
+    #[test]
+    fn scrollback_text_covers_history() {
+        let mut e = emu();
+        for i in 0..30 {
+            e.feed(format!("line {i}\r\n").as_bytes());
+        }
+        let text = e.scrollback_text();
+        // Screen height is 5 — early lines live only in the scrollback.
+        assert!(text.contains("line 0\n"));
+        assert!(text.contains("line 29"));
+        assert!(!text.contains("line 29 ")); // trailing blanks stripped
     }
 
     #[test]

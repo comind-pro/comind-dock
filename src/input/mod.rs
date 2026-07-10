@@ -32,6 +32,7 @@ pub enum Action {
     CycleWorkspace,
     ToggleSidebar,
     Search,
+    ScrollbackEditor,
     Help,
     Quit,
 }
@@ -63,6 +64,7 @@ impl Action {
             Action::CycleWorkspace => "next workspace",
             Action::ToggleSidebar => "toggle sidebar",
             Action::Search => "search scrollback",
+            Action::ScrollbackEditor => "scrollback in $EDITOR",
             Action::Help => "help",
             Action::Quit => "quit",
         }
@@ -103,6 +105,7 @@ pub fn default_actions() -> Vec<(&'static str, &'static [&'static str], Action)>
         ("next_workspace", &["o"], Action::CycleWorkspace),
         ("toggle_sidebar", &["b"], Action::ToggleSidebar),
         ("search", &["/"], Action::Search),
+        ("scrollback_editor", &["e"], Action::ScrollbackEditor),
         ("help", &["?"], Action::Help),
         ("quit", &["q"], Action::Quit),
     ]
@@ -353,6 +356,26 @@ fn dispatch(rt: &mut Runtime, action: Action, area: Rect) -> io::Result<InputOut
         Action::CycleWorkspace => rt.state.cycle_workspace(),
         Action::ToggleSidebar => rt.state.sidebar_visible = !rt.state.sidebar_visible,
         Action::Search => rt.state.input_mode = InputMode::Search { buffer: String::new() },
+        Action::ScrollbackEditor => {
+            let focused = rt.state.focused_pane();
+            if let Some(p) = rt.panes.get(&focused) {
+                let text = p.emu.scrollback_text();
+                let path = std::env::temp_dir().join(format!("cdock-scrollback-{}.txt", focused.0));
+                match std::fs::write(&path, text) {
+                    Ok(()) => {
+                        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+                        let pane = rt.state.new_tab();
+                        rt.spawn_pane_cmd(
+                            pane,
+                            area.width,
+                            area.height,
+                            Some(format!("{editor} {}", path.display())),
+                        )?;
+                    }
+                    Err(e) => tracing::warn!(error = %e, "scrollback dump failed"),
+                }
+            }
+        }
         Action::Help => rt.state.input_mode = InputMode::Help,
         Action::Quit => return Ok(InputOutcome::Detach),
     }
