@@ -197,7 +197,15 @@ pub async fn run(
                 let _ = ctl_tx.send(ClientCtl::New(stream));
             }
             _ = ws_poll.tick() => rt.poll_workspaces(),
-            _ = agent_poll.tick() => rt.poll_agent_status(&manifests),
+            _ = agent_poll.tick() => {
+                for notice in rt.poll_agent_status(&manifests) {
+                    // Suppress for the pane the user is looking at right now.
+                    let visible = !clients.is_empty() && rt.state.focused_pane() == notice.pane;
+                    if !visible {
+                        notify(&rt, &clients, &notice);
+                    }
+                }
+            }
             _ = autosave.tick() => {
                 if !clients.is_empty() || !opts.exit_when_no_clients {
                     rt.save_session();
@@ -222,6 +230,62 @@ async fn accept_next(
         Some(l) => Some(l.accept().await),
         None => std::future::pending().await,
     }
+}
+
+/// Sound + system toast for an agent transition (ARCHITECTURE: toasts and
+/// sounds are Phase 3 notifications; app-internal toasts come later).
+fn notify(rt: &Runtime, clients: &HashMap<ClientId, Client>, notice: &runtime::Notice) {
+    let sound_on = rt.cfg.ui.sound.enabled && std::env::var_os("CDOCK_DISABLE_SOUND").is_none();
+    if sound_on {
+        // Terminal bell for attached clients (dock bounce / tab highlight)…
+        for c in clients.values() {
+            let _ = c.tx.send(ServerMsg::Frame(b"\x07".to_vec()));
+        }
+        // …and an audible system sound on macOS.
+        #[cfg(target_os = "macos")]
+        {
+            let file = match notice.kind {
+                runtime::NoticeKind::Blocked => "/System/Library/Sounds/Basso.aiff",
+                runtime::NoticeKind::Done => "/System/Library/Sounds/Glass.aiff",
+            };
+            let _ = std::process::Command::new("afplay")
+                .arg(file)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+    }
+
+    if rt.cfg.ui.toast.delivery == "system" {
+        let text = match notice.kind {
+            runtime::NoticeKind::Blocked => format!("{} needs your input", notice.name),
+            runtime::NoticeKind::Done => format!("{} finished", notice.name),
+        };
+        #[cfg(target_os = "macos")]
+        {
+            let script =
+                format!("display notification \"{}\" with title \"cdock\"", text.replace('\"', ""));
+            let _ = std::process::Command::new("osascript")
+                .args(["-e", &script])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let _ = std::process::Command::new("notify-send")
+                .args(["cdock", &text])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let _ = text;
+    }
+    tracing::info!(pane = %notice.pane, kind = ?notice.kind, "notified");
 }
 
 /// Returning from run() drops the tokio runtime and aborts the writer

@@ -46,6 +46,13 @@ confirm_close = false
 prompt_new_tab_name = false
 hide_tab_bar_when_single_tab = false
 
+# Agent notifications: blocked (needs your input) and finished.
+[ui.sound]
+enabled = true        # terminal bell + system sound; CDOCK_DISABLE_SOUND kills all
+
+[ui.toast]
+delivery = "system"   # system | off
+
 [worktrees]
 directory = "~/.comind-dock/worktrees"   # <dir>/<repo>/<branch-slug>
 

@@ -32,6 +32,10 @@ pub struct PaneRuntime {
     pub last_output: std::time::Instant,
     /// Detection-engine result for agent panes.
     pub status: crate::detect::Status,
+    /// Last status the UI showed — drives redraws and notifications.
+    pub last_shown: crate::detect::Status,
+    /// When `last_shown` last changed.
+    pub status_since: std::time::Instant,
     last_size: (u16, u16),
 }
 
@@ -150,6 +154,8 @@ impl Runtime {
                 program,
                 last_output: std::time::Instant::now(),
                 status: crate::detect::Status::Unknown,
+                last_shown: crate::detect::Status::Unknown,
+                status_since: std::time::Instant::now(),
                 last_size: (cols, rows),
             },
         );
@@ -183,30 +189,55 @@ impl Runtime {
 
     /// Run the detection engine over agent panes (bottom buffer + title).
     /// Called every ~500ms by the server; cheap — a few strings per agent.
-    pub fn poll_agent_status(&mut self, manifests: &[crate::detect::Manifest]) {
+    /// Run the detection engine over agent panes (bottom buffer + title).
+    /// Called every ~500ms by the server. Marks dirty whenever the DISPLAYED
+    /// status changes (including activity-fallback flips, so the sidebar is
+    /// reactive without input) and returns the transitions worth notifying.
+    pub fn poll_agent_status(&mut self, manifests: &[crate::detect::Manifest]) -> Vec<Notice> {
+        use crate::detect::Status;
+        let mut notices = Vec::new();
         let ids: Vec<PaneId> = self.panes.keys().copied().collect();
         for id in ids {
             let title = self.titles.get(&id).cloned().unwrap_or_default();
             let Some(p) = self.panes.get(&id) else { continue };
-            let Some(agent) = crate::agents::detect(&title, &p.program) else {
-                if self.panes.get(&id).is_some_and(|p| p.status != crate::detect::Status::Unknown)
-                    && let Some(p) = self.panes.get_mut(&id) {
-                        p.status = crate::detect::Status::Unknown;
-                    }
-                continue;
-            };
-            let status = crate::detect::manifest_for(manifests, agent)
+            let agent = crate::agents::detect(&title, &p.program);
+            let status = agent
+                .and_then(|a| crate::detect::manifest_for(manifests, a))
                 .and_then(|m| {
                     let lines = self.panes.get(&id).map(|p| p.emu.bottom_text(15))?;
                     crate::detect::classify(m, &title, &lines)
                 })
-                .unwrap_or(crate::detect::Status::Unknown);
-            if let Some(p) = self.panes.get_mut(&id)
-                && p.status != status {
-                    p.status = status;
-                    self.dirty = true;
-                }
+                .unwrap_or(Status::Unknown);
+
+            let Some(p) = self.panes.get_mut(&id) else { continue };
+            p.status = status;
+            let eff = p.effective_status();
+            if eff == p.last_shown {
+                continue;
+            }
+            let prev = p.last_shown;
+            let prev_lasted = p.status_since.elapsed();
+            p.last_shown = eff;
+            p.status_since = std::time::Instant::now();
+            self.dirty = true;
+
+            let Some(agent) = agent else { continue };
+            let name = if title.trim().is_empty() {
+                agent.to_string()
+            } else {
+                title.chars().take(24).collect()
+            };
+            if eff == Status::Blocked {
+                notices.push(Notice { pane: id, kind: NoticeKind::Blocked, name });
+            } else if prev == Status::Working
+                && matches!(eff, Status::Idle | Status::Done)
+                && prev_lasted >= Duration::from_secs(5)
+            {
+                // Finished a real stretch of work — not spinner flicker.
+                notices.push(Notice { pane: id, kind: NoticeKind::Done, name });
+            }
         }
+        notices
     }
 
     /// Track each space's folder from its focused pane's shell: update cwd,
@@ -478,6 +509,22 @@ mod base64_engine {
         }
         out
     }
+}
+
+/// A status transition worth telling the user about.
+#[derive(Debug, Clone)]
+pub struct Notice {
+    pub pane: PaneId,
+    pub kind: NoticeKind,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeKind {
+    /// The agent waits on the user.
+    Blocked,
+    /// The agent finished a stretch of work.
+    Done,
 }
 
 /// What handling one input event asks of the server.

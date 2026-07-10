@@ -115,6 +115,8 @@ pub struct UiCfg {
     pub confirm_close: bool,
     pub prompt_new_tab_name: bool,
     pub hide_tab_bar_when_single_tab: bool,
+    pub sound: SoundCfg,
+    pub toast: ToastCfg,
 }
 
 impl Default for UiCfg {
@@ -126,7 +128,35 @@ impl Default for UiCfg {
             confirm_close: false,
             prompt_new_tab_name: false,
             hide_tab_bar_when_single_tab: false,
+            sound: SoundCfg::default(),
+            toast: ToastCfg::default(),
         }
+    }
+}
+
+#[derive(Debug, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct SoundCfg {
+    /// Also killed globally by the CDOCK_DISABLE_SOUND env var.
+    pub enabled: bool,
+}
+
+impl Default for SoundCfg {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+#[derive(Debug, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct ToastCfg {
+    /// system | off
+    pub delivery: String,
+}
+
+impl Default for ToastCfg {
+    fn default() -> Self {
+        Self { delivery: "system".to_string() }
     }
 }
 
