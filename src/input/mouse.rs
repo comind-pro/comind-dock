@@ -9,10 +9,9 @@ use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
 use crate::runtime::{MouseDrag, Runtime, osc52_copy};
-use crate::state::InputMode;
 use crate::state::ids::PaneId;
 use crate::state::layout::Dir;
-use crate::ui::menu::MenuAction;
+use crate::state::{InputMode, MenuAction, MenuItem, PromptKind};
 use crate::ui::{menu, sidebar, tabbar};
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
@@ -23,28 +22,23 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> bool {
     let pos = Position::new(ev.column, ev.row);
     let scroll_lines = rt.cfg.ui.mouse_scroll_lines.max(1) as i32;
 
-    // An open context menu captures the next click.
-    if let InputMode::Menu { pane, x, y } = rt.state.input_mode.clone() {
-        rt.state.input_mode = InputMode::Terminal;
-        rt.mark_dirty();
-        if let MouseEventKind::Down(MouseButton::Left) = ev.kind {
-            let mrect = menu::rect(x, y, area);
-            if let Some(action) = menu::hit(mrect, ev.column, ev.row) {
-                rt.state.focus_pane(pane);
-                let result = match action {
-                    MenuAction::SplitRight => rt.split_focused(Dir::Right, false, area),
-                    MenuAction::SplitLeft => rt.split_focused(Dir::Right, true, area),
-                    MenuAction::SplitDown => rt.split_focused(Dir::Down, false, area),
-                    MenuAction::SplitUp => rt.split_focused(Dir::Down, true, area),
-                    MenuAction::ClosePane => {
-                        rt.kill_pane(pane);
-                        Ok(())
-                    }
-                };
-                if let Err(e) = result {
-                    tracing::warn!(error = %e, "menu action failed");
+    // An open context menu captures clicks. Releases and moves (including
+    // the release of the click that opened it) keep it open.
+    if let InputMode::Menu { x, y, items } = rt.state.input_mode.clone() {
+        match ev.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                rt.state.input_mode = InputMode::Terminal;
+                rt.mark_dirty();
+                let mrect = menu::rect(x, y, &items, area);
+                if let Some(action) = menu::hit(mrect, &items, ev.column, ev.row) {
+                    run_menu_action(rt, action, x, y, area);
                 }
             }
+            MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                rt.state.input_mode = InputMode::Terminal;
+                rt.mark_dirty();
+            }
+            _ => {}
         }
         return false;
     }
@@ -80,13 +74,22 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> bool {
             {
                 let theme = rt.theme;
                 match sidebar::hit(rt, &theme, ev.row - sb.y) {
-                    Some(sidebar::Target::Workspace(wi)) => rt.state.active_workspace = wi,
+                    Some(sidebar::Target::Workspace(wi)) => {
+                        // Select the space and open its menu (mockup behavior).
+                        rt.state.active_workspace = wi;
+                        rt.state.input_mode = InputMode::Menu {
+                            x: ev.column,
+                            y: ev.row,
+                            items: menu::space_items(wi),
+                        };
+                    }
                     Some(sidebar::Target::Pane(pane)) => {
                         rt.state.focus_pane(pane);
                     }
                     Some(sidebar::Target::NewWorkspace) => {
                         let name = rt.workspace_name();
-                        let pane = rt.state.new_workspace(name);
+                        let cwd = rt.new_space_cwd();
+                        let pane = rt.state.new_workspace(name, cwd, None);
                         let size = view
                             .pane_rects
                             .first()
@@ -228,7 +231,11 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> bool {
             // Right-click on a pane opens the context menu.
             if let Some((id, _)) = pane_at(&view.pane_rects, pos) {
                 rt.state.active_tab_mut().focused_pane = id;
-                rt.state.input_mode = InputMode::Menu { pane: id, x: ev.column, y: ev.row };
+                rt.state.input_mode = InputMode::Menu {
+                    x: ev.column,
+                    y: ev.row,
+                    items: menu::pane_items(id),
+                };
                 rt.mark_dirty();
             }
         }
@@ -248,6 +255,77 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> bool {
         _ => {}
     }
     false
+}
+
+fn run_menu_action(rt: &mut Runtime, action: MenuAction, x: u16, y: u16, area: Rect) {
+    let result = match action {
+        MenuAction::SplitRight(pane) => {
+            rt.state.focus_pane(pane);
+            rt.split_focused(Dir::Right, false, area)
+        }
+        MenuAction::SplitLeft(pane) => {
+            rt.state.focus_pane(pane);
+            rt.split_focused(Dir::Right, true, area)
+        }
+        MenuAction::SplitDown(pane) => {
+            rt.state.focus_pane(pane);
+            rt.split_focused(Dir::Down, false, area)
+        }
+        MenuAction::SplitUp(pane) => {
+            rt.state.focus_pane(pane);
+            rt.split_focused(Dir::Down, true, area)
+        }
+        MenuAction::ClosePane(pane) => {
+            rt.kill_pane(pane);
+            Ok(())
+        }
+        MenuAction::RenameSpace(wi) => {
+            rt.state.active_workspace = wi.min(rt.state.workspaces.len().saturating_sub(1));
+            rt.state.input_mode =
+                InputMode::Prompt { kind: PromptKind::RenameWorkspace, buffer: String::new() };
+            Ok(())
+        }
+        MenuAction::CloseSpace(wi) => {
+            for pane in rt.state.workspace_panes(wi) {
+                rt.kill_pane(pane);
+            }
+            Ok(())
+        }
+        MenuAction::NewWorktree(wi) => {
+            rt.state.input_mode = InputMode::Prompt {
+                kind: PromptKind::WorktreeBranch(wi),
+                buffer: String::new(),
+            };
+            Ok(())
+        }
+        MenuAction::ListWorktrees(wi) => {
+            let Some(ws) = rt.state.workspaces.get(wi) else { return };
+            let current = ws.cwd.clone();
+            let items: Vec<MenuItem> = crate::git::worktrees(&ws.cwd)
+                .into_iter()
+                .filter(|(path, _)| *path != current)
+                .map(|(path, branch)| MenuItem {
+                    label: branch,
+                    action: MenuAction::OpenWorktree(wi, path),
+                })
+                .collect();
+            if items.is_empty() {
+                tracing::info!("no other worktrees to open");
+            } else {
+                rt.state.input_mode = InputMode::Menu { x, y, items };
+            }
+            Ok(())
+        }
+        MenuAction::OpenWorktree(wi, path) => {
+            if let Some(parent_id) = rt.state.workspaces.get(wi).map(|w| w.id) {
+                rt.open_worktree(parent_id, path, area);
+            }
+            Ok(())
+        }
+    };
+    if let Err(e) = result {
+        tracing::warn!(error = %e, "menu action failed");
+    }
 }
 
 fn pane_at(rects: &[(PaneId, Rect)], pos: Position) -> Option<(PaneId, Rect)> {

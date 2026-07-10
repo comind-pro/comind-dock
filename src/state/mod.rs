@@ -15,6 +15,29 @@ use workspace::{Tab, Workspace};
 pub enum PromptKind {
     RenameTab,
     RenameWorkspace,
+    /// Branch name for a new worktree of workspace `wi`.
+    WorktreeBranch(usize),
+}
+
+/// One context-menu entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuItem {
+    pub label: String,
+    pub action: MenuAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MenuAction {
+    SplitRight(ids::PaneId),
+    SplitLeft(ids::PaneId),
+    SplitDown(ids::PaneId),
+    SplitUp(ids::PaneId),
+    ClosePane(ids::PaneId),
+    RenameSpace(usize),
+    CloseSpace(usize),
+    NewWorktree(usize),
+    ListWorktrees(usize),
+    OpenWorktree(usize, std::path::PathBuf),
 }
 
 /// Input-mode state machine (Terminal ↔ Prefix ↔ Resize, plus modal overlays).
@@ -31,11 +54,11 @@ pub enum InputMode {
     },
     /// y/n confirmation before killing a pane ([ui].confirm_close).
     ConfirmClose(ids::PaneId),
-    /// Right-click context menu anchored at a screen cell.
+    /// Context menu anchored at a screen cell.
     Menu {
-        pane: ids::PaneId,
         x: u16,
         y: u16,
+        items: Vec<MenuItem>,
     },
 }
 
@@ -64,11 +87,11 @@ pub struct AppState {
 impl AppState {
     /// State with one workspace, one tab, one pane (the initial pane id is returned
     /// via `focused_pane`). Workspaces are named after their folder.
-    pub fn new(workspace_name: String) -> Self {
+    pub fn new(workspace_name: String, cwd: std::path::PathBuf) -> Self {
         let mut ids = IdGen::default();
         let pane = ids.pane();
         let tab = Tab::new(ids.tab(), "1".to_string(), pane);
-        let ws = Workspace::new(ids.workspace(), workspace_name, tab);
+        let ws = Workspace::new(ids.workspace(), workspace_name, cwd, tab);
         Self {
             workspaces: vec![ws],
             active_workspace: 0,
@@ -212,13 +235,53 @@ impl AppState {
     }
 
     /// New workspace with one tab/pane; becomes active. Returns the pane to spawn.
-    pub fn new_workspace(&mut self, name: String) -> PaneId {
+    pub fn new_workspace(
+        &mut self,
+        name: String,
+        cwd: std::path::PathBuf,
+        parent: Option<ids::WorkspaceId>,
+    ) -> PaneId {
         let pane = self.ids.pane();
         let tab = Tab::new(self.ids.tab(), "1".to_string(), pane);
-        self.workspaces.push(Workspace::new(self.ids.workspace(), name, tab));
-        self.active_workspace = self.workspaces.len() - 1;
+        let mut ws = Workspace::new(self.ids.workspace(), name, cwd, tab);
+        ws.parent = parent;
+        // Children group right after their parent; plain spaces go last.
+        let insert_at = match parent {
+            Some(pid) => self
+                .workspaces
+                .iter()
+                .position(|w| w.id == pid)
+                .map(|i| {
+                    let mut end = i + 1;
+                    while end < self.workspaces.len() && self.workspaces[end].parent == Some(pid) {
+                        end += 1;
+                    }
+                    end
+                })
+                .unwrap_or(self.workspaces.len()),
+            None => self.workspaces.len(),
+        };
+        self.workspaces.insert(insert_at, ws);
+        self.active_workspace = insert_at;
         debug_assert!(self.check_invariants());
         pane
+    }
+
+    /// Rename by the folder — only while the user hasn't renamed manually.
+    pub fn auto_rename_workspace(&mut self, wi: usize, name: String) {
+        if let Some(ws) = self.workspaces.get_mut(wi) {
+            if !ws.custom_name && ws.name != name {
+                ws.name = name;
+            }
+        }
+    }
+
+    /// Panes of any workspace by index (close-space from the menu).
+    pub fn workspace_panes(&self, wi: usize) -> Vec<PaneId> {
+        self.workspaces
+            .get(wi)
+            .map(|w| w.tabs.iter().flat_map(|t| t.layout.panes()).collect())
+            .unwrap_or_default()
     }
 
     pub fn cycle_workspace(&mut self) {
@@ -262,7 +325,9 @@ impl AppState {
     }
 
     pub fn rename_active_workspace(&mut self, name: String) {
-        self.active_workspace_mut().name = name;
+        let ws = self.active_workspace_mut();
+        ws.name = name;
+        ws.custom_name = true;
     }
 
     /// Panes of the active tab (for close-tab: kill each, PtyExit cascades).
@@ -330,14 +395,14 @@ mod tests {
 
     #[test]
     fn new_state_is_valid() {
-        let s = AppState::new("main".into());
+        let s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
         assert!(s.check_invariants());
         assert_eq!(s.all_panes().len(), 1);
     }
 
     #[test]
     fn split_focus_close_cycle() {
-        let mut s = AppState::new("main".into());
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
         let first = s.focused_pane();
         let second = s.split_focused(Dir::Right, false);
         assert_eq!(s.focused_pane(), second);
@@ -352,7 +417,7 @@ mod tests {
 
     #[test]
     fn tab_close_cascades() {
-        let mut s = AppState::new("main".into());
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
         let first = s.focused_pane();
         let in_tab2 = s.new_tab();
         assert_eq!(s.active_workspace().tabs.len(), 2);
@@ -363,7 +428,7 @@ mod tests {
 
     #[test]
     fn zoom_toggles_and_clears_on_split() {
-        let mut s = AppState::new("main".into());
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
         s.split_focused(Dir::Right, false);
         s.toggle_zoom();
         assert_eq!(s.active_tab().zoomed, Some(s.focused_pane()));
@@ -376,7 +441,7 @@ mod tests {
 
     #[test]
     fn tab_and_workspace_navigation() {
-        let mut s = AppState::new("main".into());
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
         s.new_tab();
         s.new_tab();
         assert_eq!(s.active_workspace().active_tab, 2);
@@ -385,7 +450,7 @@ mod tests {
         s.prev_tab();
         assert_eq!(s.active_workspace().active_tab, 2);
 
-        let p = s.new_workspace("proj".into());
+        let p = s.new_workspace("proj".into(), std::path::PathBuf::from("/tmp"), None);
         assert_eq!(s.active_workspace, 1);
         assert_eq!(s.focused_pane(), p);
         s.cycle_workspace();
@@ -395,7 +460,7 @@ mod tests {
 
     #[test]
     fn close_zoomed_pane_clears_zoom() {
-        let mut s = AppState::new("main".into());
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
         let second = s.split_focused(Dir::Right, false);
         s.toggle_zoom();
         assert_eq!(s.close_pane(second), CloseOutcome::PaneRemoved);

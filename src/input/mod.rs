@@ -202,6 +202,11 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<boo
                         match kind {
                             PromptKind::RenameTab => rt.state.rename_active_tab(name),
                             PromptKind::RenameWorkspace => rt.state.rename_active_workspace(name),
+                            PromptKind::WorktreeBranch(wi) => {
+                                rt.state.input_mode = InputMode::Terminal;
+                                rt.create_worktree(wi, &name, area);
+                                return Ok(false);
+                            }
                         }
                     }
                     rt.state.input_mode = InputMode::Terminal;
@@ -276,7 +281,8 @@ fn dispatch(rt: &mut Runtime, action: Action, area: Rect) -> io::Result<bool> {
         }
         Action::NewWorkspace => {
             let name = rt.workspace_name();
-            let pane = rt.state.new_workspace(name);
+            let cwd = rt.new_space_cwd();
+            let pane = rt.state.new_workspace(name, cwd, None);
             rt.spawn_pane(pane, area.width, area.height)?;
         }
         Action::RenameWorkspace => {

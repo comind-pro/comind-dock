@@ -57,6 +57,8 @@ pub struct Runtime {
     pub theme: Theme,
     /// OSC window titles reported by pane applications.
     pub titles: HashMap<PaneId, String>,
+    /// Git branch per workspace (polled with cwd tracking).
+    pub branches: HashMap<crate::state::ids::WorkspaceId, String>,
     /// The last computed view — neighbor focus and mouse hit testing.
     pub last_view: Option<crate::ui::view::View>,
     pub drag: Option<MouseDrag>,
@@ -141,18 +143,77 @@ impl Runtime {
             ShellMode::Login => true,
             ShellMode::NonLogin => false,
         };
-        let cwd = resolve_cwd(&self.cfg.terminal);
-
-        // The tab/workspace that contain this pane (just created in the active ones).
+        // Panes spawn in their workspace's folder (worktree spaces have their own).
         let ws = self.state.active_workspace();
         let tab = ws.active_tab();
         pty::SpawnOpts {
             shell,
             login,
-            cwd,
+            cwd: ws.cwd.clone(),
             command,
             tab_id: tab.id.to_string(),
             workspace_id: ws.id.to_string(),
+        }
+    }
+
+    /// Track each space's folder from its focused pane's shell: update cwd,
+    /// auto-rename (unless renamed manually), refresh the git branch.
+    pub fn poll_workspaces(&mut self) {
+        for wi in 0..self.state.workspaces.len() {
+            let ws = &self.state.workspaces[wi];
+            let ws_id = ws.id;
+            let pane = ws.active_tab().focused_pane;
+            let pid = self.panes.get(&pane).and_then(|p| p.pty.child_pid);
+            if let Some(cwd) = pid.and_then(crate::platform::process_cwd) {
+                let ws = &mut self.state.workspaces[wi];
+                if ws.cwd != cwd {
+                    ws.cwd = cwd.clone();
+                    self.dirty = true;
+                }
+                let name = folder_name(&cwd);
+                if !ws.custom_name && ws.name != name {
+                    self.state.auto_rename_workspace(wi, name);
+                    self.dirty = true;
+                }
+            }
+            let branch = crate::git::branch(&self.state.workspaces[wi].cwd);
+            let old = self.branches.get(&ws_id);
+            if branch.as_ref() != old {
+                match branch {
+                    Some(b) => {
+                        self.branches.insert(ws_id, b);
+                    }
+                    None => {
+                        self.branches.remove(&ws_id);
+                    }
+                }
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// Create a git worktree for workspace `wi` and open it as a child space.
+    pub fn create_worktree(&mut self, wi: usize, branch: &str, area: Rect) {
+        let Some(ws) = self.state.workspaces.get(wi) else { return };
+        let (repo_cwd, parent_id) = (ws.cwd.clone(), ws.id);
+        let root = self.cfg.worktrees.root();
+        match crate::git::worktree_add(&repo_cwd, branch, &root) {
+            Ok(path) => self.open_worktree(parent_id, path, area),
+            Err(e) => tracing::warn!(error = %e, branch, "worktree add failed"),
+        }
+    }
+
+    /// Open an existing worktree path as a child space of `parent_id`.
+    pub fn open_worktree(
+        &mut self,
+        parent_id: crate::state::ids::WorkspaceId,
+        path: std::path::PathBuf,
+        area: Rect,
+    ) {
+        let name = folder_name(&path);
+        let pane = self.state.new_workspace(name, path, Some(parent_id));
+        if let Err(e) = self.spawn_pane(pane, area.width.max(4), area.height.max(4)) {
+            tracing::warn!(error = %e, "worktree space spawn failed");
         }
     }
 
@@ -171,6 +232,11 @@ impl Runtime {
     /// Default workspace name: the folder new panes spawn in.
     pub fn workspace_name(&self) -> String {
         folder_name(&resolve_cwd(&self.cfg.terminal))
+    }
+
+    /// Folder for a brand-new space (per [terminal].new_cwd).
+    pub fn new_space_cwd(&self) -> std::path::PathBuf {
+        resolve_cwd(&self.cfg.terminal)
     }
 
     /// `[[keys.command]]`: pane → run in a new tab; shell → silent background run.
@@ -239,7 +305,8 @@ pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> 
     let (state, initial_panes) = match crate::state::snapshot::load().and_then(|s| s.restore()) {
         Some((st, panes)) => (st, panes),
         None => {
-            let st = AppState::new(folder_name(&resolve_cwd(&cfg.terminal)));
+            let cwd = resolve_cwd(&cfg.terminal);
+            let st = AppState::new(folder_name(&cwd), cwd);
             let first = st.focused_pane();
             (st, vec![(first, None)])
         }
@@ -251,6 +318,7 @@ pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> 
         keymap,
         theme,
         titles: HashMap::new(),
+        branches: HashMap::new(),
         last_view: None,
         drag: None,
         last_click: None,
@@ -267,6 +335,8 @@ pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> 
 
     let mut tick = tokio::time::interval(Duration::from_millis(16));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut ws_poll = tokio::time::interval(Duration::from_millis(2000));
+    ws_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -311,6 +381,7 @@ pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> 
                     }
                 }
             }
+            _ = ws_poll.tick() => rt.poll_workspaces(),
             _ = tick.tick() => {
                 if rt.dirty {
                     let area = terminal.get_frame().area();

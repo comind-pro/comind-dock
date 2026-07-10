@@ -72,7 +72,8 @@ pub fn render_help(keymap: &Keymap, theme: &Theme, area: Rect, frame: &mut Frame
 pub fn render_prompt(kind: PromptKind, buffer: &str, theme: &Theme, area: Rect, frame: &mut Frame) {
     let title = match kind {
         PromptKind::RenameTab => " rename tab ",
-        PromptKind::RenameWorkspace => " rename workspace ",
+        PromptKind::RenameWorkspace => " rename space ",
+        PromptKind::WorktreeBranch(_) => " new worktree: branch name ",
     };
     let w = 40.min(area.width);
     let rect = Rect {

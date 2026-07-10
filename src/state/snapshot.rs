@@ -24,6 +24,13 @@ pub struct Snapshot {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WsSnap {
     pub name: String,
+    #[serde(default)]
+    pub cwd: String,
+    #[serde(default)]
+    pub custom_name: bool,
+    /// Index of the parent workspace (worktree grouping).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<usize>,
     pub active_tab: usize,
     pub tabs: Vec<TabSnap>,
 }
@@ -97,6 +104,11 @@ impl Snapshot {
                 .iter()
                 .map(|ws| WsSnap {
                     name: ws.name.clone(),
+                    cwd: ws.cwd.to_string_lossy().into_owned(),
+                    custom_name: ws.custom_name,
+                    parent: ws
+                        .parent
+                        .and_then(|pid| state.workspaces.iter().position(|w| w.id == pid)),
                     active_tab: ws.active_tab,
                     tabs: ws
                         .tabs
@@ -135,15 +147,31 @@ impl Snapshot {
                 continue;
             }
             let active_tab = ws.active_tab.min(tabs.len() - 1);
+            let cwd = if ws.cwd.is_empty() {
+                std::env::current_dir().unwrap_or_else(|_| "/".into())
+            } else {
+                std::path::PathBuf::from(&ws.cwd)
+            };
             workspaces.push(Workspace {
                 id: ids.workspace(),
                 name: ws.name.clone(),
+                cwd,
+                custom_name: ws.custom_name,
+                parent: None, // linked below by saved index
                 tabs,
                 active_tab,
             });
         }
         if workspaces.is_empty() {
             return None;
+        }
+        // Re-link worktree parents by saved index.
+        for (i, snap_ws) in self.workspaces.iter().enumerate() {
+            if let (Some(pi), true) = (snap_ws.parent, i < workspaces.len()) {
+                if pi < workspaces.len() && pi != i {
+                    workspaces[i].parent = Some(workspaces[pi].id);
+                }
+            }
         }
         let active_workspace = self.active_workspace.min(workspaces.len() - 1);
         let state = AppState {
@@ -204,11 +232,11 @@ mod tests {
 
     #[test]
     fn snapshot_round_trip_preserves_structure() {
-        let mut s = AppState::new("main".into());
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
         s.split_focused(Dir::Right, false);
         s.split_focused(Dir::Down, false);
         s.new_tab();
-        s.new_workspace("x".into());
+        s.new_workspace("x".into(), std::path::PathBuf::from("/tmp"), None);
         s.rename_active_workspace("proj".into());
 
         // Mark the focused pane of ws1/tab1 as a claude pane.

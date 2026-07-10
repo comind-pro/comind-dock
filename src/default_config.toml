@@ -46,6 +46,9 @@ confirm_close = false
 prompt_new_tab_name = false
 hide_tab_bar_when_single_tab = false
 
+[worktrees]
+directory = "~/.comind-dock/worktrees"   # <dir>/<repo>/<branch-slug>
+
 [advanced]
 scrollback_limit_bytes = 10000000   # converted to lines at ~120 bytes/line
 

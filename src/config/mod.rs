@@ -18,6 +18,7 @@ pub struct Config {
     pub terminal: TerminalCfg,
     pub keys: KeysCfg,
     pub ui: UiCfg,
+    pub worktrees: WorktreesCfg,
     pub advanced: AdvancedCfg,
     pub experimental: ExperimentalCfg,
 }
@@ -126,6 +127,31 @@ impl Default for UiCfg {
             prompt_new_tab_name: false,
             hide_tab_bar_when_single_tab: false,
         }
+    }
+}
+
+#[derive(Debug, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct WorktreesCfg {
+    /// Checkout root, laid out as `<dir>/<repo>/<branch-slug>`.
+    pub directory: String,
+}
+
+impl Default for WorktreesCfg {
+    fn default() -> Self {
+        Self { directory: "~/.comind-dock/worktrees".to_string() }
+    }
+}
+
+impl WorktreesCfg {
+    pub fn root(&self) -> std::path::PathBuf {
+        let d = &self.directory;
+        if let Some(rest) = d.strip_prefix("~/") {
+            if let Some(home) = std::env::var_os("HOME") {
+                return std::path::PathBuf::from(home).join(rest);
+            }
+        }
+        std::path::PathBuf::from(d)
     }
 }
 

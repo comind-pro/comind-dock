@@ -10,6 +10,8 @@ pub struct Pty {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
+    /// Shell pid — its cwd drives space cwd tracking.
+    pub child_pid: Option<u32>,
 }
 
 fn err(e: impl std::fmt::Display) -> io::Error {
@@ -57,6 +59,7 @@ pub fn spawn_shell(
     let mut child = pair.slave.spawn_command(cmd).map_err(err)?;
     drop(pair.slave);
     let killer = child.clone_killer();
+    let child_pid = child.process_id();
 
     let mut reader = pair.master.try_clone_reader().map_err(err)?;
     let writer = pair.master.take_writer().map_err(err)?;
@@ -95,7 +98,7 @@ pub fn spawn_shell(
         }
     });
 
-    Ok(Pty { master: pair.master, writer, killer })
+    Ok(Pty { master: pair.master, writer, killer, child_pid })
 }
 
 impl Pty {

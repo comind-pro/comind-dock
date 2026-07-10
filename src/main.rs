@@ -1,7 +1,9 @@
 mod agents;
 mod config;
+mod git;
 mod input;
 mod logging;
+mod platform;
 mod runtime;
 mod state;
 mod term;

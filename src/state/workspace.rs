@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use super::ids::{PaneId, TabId, WorkspaceId};
 use super::layout::Node;
 
@@ -20,13 +22,20 @@ impl Tab {
 pub struct Workspace {
     pub id: WorkspaceId,
     pub name: String,
+    /// Folder this space lives in; new panes spawn here. Tracked from the
+    /// focused pane's shell, so `cd` moves the space.
+    pub cwd: PathBuf,
+    /// The user renamed it — stop auto-renaming after the folder.
+    pub custom_name: bool,
+    /// Worktree spaces group under their parent in the sidebar.
+    pub parent: Option<WorkspaceId>,
     pub tabs: Vec<Tab>,
     pub active_tab: usize,
 }
 
 impl Workspace {
-    pub fn new(id: WorkspaceId, name: String, tab: Tab) -> Self {
-        Self { id, name, tabs: vec![tab], active_tab: 0 }
+    pub fn new(id: WorkspaceId, name: String, cwd: PathBuf, tab: Tab) -> Self {
+        Self { id, name, cwd, custom_name: false, parent: None, tabs: vec![tab], active_tab: 0 }
     }
 
     pub fn active_tab(&self) -> &Tab {

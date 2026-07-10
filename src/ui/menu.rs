@@ -1,44 +1,55 @@
-//! Right-click context menu for a pane.
+//! Context menus (pane right-click, space click) — data-driven from
+//! `InputMode::Menu { items }`.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 use crate::config::theme::Theme;
+use crate::state::ids::PaneId;
+use crate::state::{MenuAction, MenuItem};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MenuAction {
-    SplitRight,
-    SplitLeft,
-    SplitDown,
-    SplitUp,
-    ClosePane,
+pub fn pane_items(pane: PaneId) -> Vec<MenuItem> {
+    [
+        ("new pane right", MenuAction::SplitRight(pane)),
+        ("new pane left", MenuAction::SplitLeft(pane)),
+        ("new pane below", MenuAction::SplitDown(pane)),
+        ("new pane above", MenuAction::SplitUp(pane)),
+        ("close pane", MenuAction::ClosePane(pane)),
+    ]
+    .into_iter()
+    .map(|(label, action)| MenuItem { label: label.to_string(), action })
+    .collect()
 }
 
-pub const ITEMS: &[(&str, MenuAction)] = &[
-    ("new pane right", MenuAction::SplitRight),
-    ("new pane left", MenuAction::SplitLeft),
-    ("new pane below", MenuAction::SplitDown),
-    ("new pane above", MenuAction::SplitUp),
-    ("close pane", MenuAction::ClosePane),
-];
-
-const WIDTH: u16 = 20;
+pub fn space_items(wi: usize) -> Vec<MenuItem> {
+    [
+        ("rename", MenuAction::RenameSpace(wi)),
+        ("close", MenuAction::CloseSpace(wi)),
+        ("new worktree", MenuAction::NewWorktree(wi)),
+        ("open worktree...", MenuAction::ListWorktrees(wi)),
+    ]
+    .into_iter()
+    .map(|(label, action)| MenuItem { label: label.to_string(), action })
+    .collect()
+}
 
 /// Menu box for an anchor cell, clamped into `area`. Deterministic — the
 /// mouse handler recomputes the same rect for hit testing.
-pub fn rect(x: u16, y: u16, area: Rect) -> Rect {
-    let h = ITEMS.len() as u16 + 2;
-    let w = WIDTH.min(area.width);
+pub fn rect(x: u16, y: u16, items: &[MenuItem], area: Rect) -> Rect {
+    let label_w = items.iter().map(|i| i.label.width()).max().unwrap_or(10) as u16;
+    let w = (label_w + 4).min(area.width);
+    let h = (items.len() as u16 + 2).min(area.height);
     let x = x.min(area.x + area.width.saturating_sub(w));
     let y = (y + 1).min(area.y + area.height.saturating_sub(h));
-    Rect { x, y, width: w, height: h.min(area.height) }
+    Rect { x, y, width: w, height: h }
 }
 
 /// Item under a screen position, if inside the menu body.
-pub fn hit(menu: Rect, pos_x: u16, pos_y: u16) -> Option<MenuAction> {
+pub fn hit(menu: Rect, items: &[MenuItem], pos_x: u16, pos_y: u16) -> Option<MenuAction> {
     let inner = Rect {
         x: menu.x + 1,
         y: menu.y + 1,
@@ -51,21 +62,18 @@ pub fn hit(menu: Rect, pos_x: u16, pos_y: u16) -> Option<MenuAction> {
         && pos_y < inner.y + inner.height
     {
         let idx = (pos_y - inner.y) as usize;
-        return ITEMS.get(idx).map(|(_, a)| *a);
+        return items.get(idx).map(|i| i.action.clone());
     }
     None
 }
 
-pub fn render(x: u16, y: u16, theme: &Theme, area: Rect, frame: &mut Frame) {
-    let r = rect(x, y, area);
+pub fn render(x: u16, y: u16, items: &[MenuItem], theme: &Theme, area: Rect, frame: &mut Frame) {
+    let r = rect(x, y, items, area);
     frame.render_widget(Clear, r);
-    let lines: Vec<Line> = ITEMS.iter().map(|(label, _)| Line::from(format!(" {label}"))).collect();
+    let lines: Vec<Line> = items.iter().map(|i| Line::from(format!(" {}", i.label))).collect();
     let block = Block::new()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(theme.accent));
-    frame.render_widget(
-        Paragraph::new(lines).style(Style::new().bg(Color::Reset)).block(block),
-        r,
-    );
+    frame.render_widget(Paragraph::new(lines).style(Style::new().bg(Color::Reset)).block(block), r);
 }

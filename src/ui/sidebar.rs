@@ -21,10 +21,31 @@ struct Row {
     target: Option<Target>,
 }
 
-/// Sidebar layout (mockup): "spaces" — workspace list with status dot and a
-/// subtitle line; "agents" — one row per pane with an activity status.
-/// Real agent detection is Phase 3; today's status is the PTY-activity
-/// heuristic (working = output in the last seconds, else idle).
+/// Space status dot: empty/dim — no agents; green empty — agents, all
+/// idle; green filled — an agent is working; red — an agent is blocked
+/// (blocked arrives with the Phase 3 detection engine).
+fn space_dot(rt: &Runtime, wi: usize, theme: &Theme) -> (&'static str, Style) {
+    let ws = &rt.state.workspaces[wi];
+    let mut has_agent = false;
+    let mut working = false;
+    for pane in ws.tabs.iter().flat_map(|t| t.layout.panes()) {
+        let Some(p) = rt.panes.get(&pane) else { continue };
+        let title = rt.titles.get(&pane).map(String::as_str).unwrap_or("");
+        if crate::agents::detect(title, &p.program).is_some() {
+            has_agent = true;
+            working |= p.working();
+        }
+    }
+    match (has_agent, working) {
+        (false, _) => ("○ ", Style::new().fg(theme.muted)),
+        (true, false) => ("○ ", Style::new().fg(Color::Green)),
+        (true, true) => ("● ", Style::new().fg(Color::Green)),
+    }
+}
+
+/// Sidebar (mockup): "spaces" — workspaces with status dot, git branch
+/// subtitle, worktree children indented under their parent; "agents" — one
+/// row per recognized agent pane.
 fn rows(rt: &Runtime, theme: &Theme) -> Vec<Row> {
     let state = &rt.state;
     let mut out = vec![
@@ -40,14 +61,9 @@ fn rows(rt: &Runtime, theme: &Theme) -> Vec<Row> {
 
     for (wi, ws) in state.workspaces.iter().enumerate() {
         let active = wi == state.active_workspace;
-        // Space dot: any pane working → working color.
-        let working = ws
-            .tabs
-            .iter()
-            .flat_map(|t| t.layout.panes())
-            .any(|p| rt.panes.get(&p).is_some_and(|pr| pr.working()));
-        let dot_style =
-            if working { Style::new().fg(Color::Yellow) } else { Style::new().fg(theme.muted) };
+        let child = ws.parent.is_some();
+        let indent = if child { "    " } else { "  " };
+        let (dot, dot_style) = space_dot(rt, wi, theme);
         let name_style = if active {
             Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
         } else {
@@ -55,16 +71,23 @@ fn rows(rt: &Runtime, theme: &Theme) -> Vec<Row> {
         };
         out.push(Row {
             line: Line::from(vec![
-                Span::raw("  "),
-                Span::styled("● ", dot_style),
+                Span::raw(indent),
+                Span::styled(dot, dot_style),
                 Span::styled(ws.name.clone(), name_style),
             ]),
             target: Some(Target::Workspace(wi)),
         });
-        let panes: usize = ws.tabs.iter().map(|t| t.layout.panes().len()).sum();
+        // Subtitle: git branch when in a repo, otherwise tab/pane counts.
+        let subtitle = match rt.branches.get(&ws.id) {
+            Some(b) => b.clone(),
+            None => {
+                let panes: usize = ws.tabs.iter().map(|t| t.layout.panes().len()).sum();
+                format!("{} tabs · {panes} panes", ws.tabs.len())
+            }
+        };
         out.push(Row {
             line: Line::from(Span::styled(
-                format!("    {} tabs · {panes} panes", ws.tabs.len()),
+                format!("{indent}  {subtitle}"),
                 Style::new().fg(theme.muted),
             )),
             target: Some(Target::Workspace(wi)),

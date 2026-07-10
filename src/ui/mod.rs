@@ -72,8 +72,8 @@ pub fn render(view: &View, rt: &Runtime, frame: &mut Frame) {
         crate::state::InputMode::Prompt { kind, buffer } => {
             help::render_prompt(*kind, buffer, &rt.theme, full, frame);
         }
-        crate::state::InputMode::Menu { x, y, .. } => {
-            menu::render(*x, *y, &rt.theme, full, frame);
+        crate::state::InputMode::Menu { x, y, items } => {
+            menu::render(*x, *y, items, &rt.theme, full, frame);
         }
         _ => {}
     }
