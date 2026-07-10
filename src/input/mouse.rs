@@ -68,7 +68,7 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> bool {
                         }
                     }
                     Some(tabbar::Hit::CloseApp) => {
-                        crate::state::snapshot::save(&rt.state);
+                        rt.save_session();
                         return true;
                     }
                     None => {}

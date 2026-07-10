@@ -34,7 +34,12 @@ pub struct TabSnap {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeSnap {
-    Leaf,
+    /// A pane; `agent` records which agent CLI ran there so restore can
+    /// relaunch it into its conversation.
+    Leaf {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+    },
     Split { dir: DirSnap, ratio: f32, a: Box<NodeSnap>, b: Box<NodeSnap> },
 }
 
@@ -45,38 +50,47 @@ pub enum DirSnap {
     Down,
 }
 
-fn node_to_snap(node: &Node) -> NodeSnap {
+fn node_to_snap(node: &Node, agents: &std::collections::HashMap<PaneId, String>) -> NodeSnap {
     match node {
-        Node::Leaf(_) => NodeSnap::Leaf,
+        Node::Leaf(id) => NodeSnap::Leaf { agent: agents.get(id).cloned() },
         Node::Split { dir, ratio, a, b } => NodeSnap::Split {
             dir: match dir {
                 Dir::Right => DirSnap::Right,
                 Dir::Down => DirSnap::Down,
             },
             ratio: *ratio,
-            a: Box::new(node_to_snap(a)),
-            b: Box::new(node_to_snap(b)),
+            a: Box::new(node_to_snap(a, agents)),
+            b: Box::new(node_to_snap(b, agents)),
         },
     }
 }
 
-fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen) -> Node {
+fn snap_to_node(
+    snap: &NodeSnap,
+    ids: &mut IdGen,
+    agents: &mut Vec<(PaneId, Option<String>)>,
+) -> Node {
     match snap {
-        NodeSnap::Leaf => Node::Leaf(ids.pane()),
+        NodeSnap::Leaf { agent } => {
+            let id = ids.pane();
+            agents.push((id, agent.clone()));
+            Node::Leaf(id)
+        }
         NodeSnap::Split { dir, ratio, a, b } => Node::Split {
             dir: match dir {
                 DirSnap::Right => Dir::Right,
                 DirSnap::Down => Dir::Down,
             },
             ratio: ratio.clamp(0.05, 0.95),
-            a: Box::new(snap_to_node(a, ids)),
-            b: Box::new(snap_to_node(b, ids)),
+            a: Box::new(snap_to_node(a, ids, agents)),
+            b: Box::new(snap_to_node(b, ids, agents)),
         },
     }
 }
 
 impl Snapshot {
-    pub fn of(state: &AppState) -> Self {
+    /// `agents`: which agent CLI ran in which pane (for resume on restore).
+    pub fn of(state: &AppState, agents: &std::collections::HashMap<PaneId, String>) -> Self {
         Snapshot {
             active_workspace: state.active_workspace,
             workspaces: state
@@ -88,7 +102,10 @@ impl Snapshot {
                     tabs: ws
                         .tabs
                         .iter()
-                        .map(|t| TabSnap { name: t.name.clone(), layout: node_to_snap(&t.layout) })
+                        .map(|t| TabSnap {
+                            name: t.name.clone(),
+                            layout: node_to_snap(&t.layout, agents),
+                        })
                         .collect(),
                 })
                 .collect(),
@@ -96,14 +113,16 @@ impl Snapshot {
     }
 
     /// Rebuild state with fresh pane ids. Returns the state and every pane
-    /// id that needs a PTY spawned. None if the snapshot is empty/degenerate.
-    pub fn restore(&self) -> Option<(AppState, Vec<PaneId>)> {
+    /// to spawn with the agent that ran there. None if the snapshot is
+    /// empty/degenerate.
+    pub fn restore(&self) -> Option<(AppState, Vec<(PaneId, Option<String>)>)> {
         let mut ids = IdGen::default();
         let mut workspaces = Vec::new();
+        let mut panes = Vec::new();
         for ws in &self.workspaces {
             let mut tabs = Vec::new();
             for tab in &ws.tabs {
-                let layout = snap_to_node(&tab.layout, &mut ids);
+                let layout = snap_to_node(&tab.layout, &mut ids, &mut panes);
                 let focused = *layout.panes().first()?;
                 tabs.push(Tab {
                     id: ids.tab(),
@@ -135,12 +154,10 @@ impl Snapshot {
             input_mode: InputMode::Terminal,
             ids,
         };
-        let panes = state
-            .workspaces
-            .iter()
-            .flat_map(|w| w.tabs.iter())
-            .flat_map(|t| t.layout.panes())
-            .collect();
+        // Keep only panes that survived (degenerate tabs were skipped).
+        panes.retain(|(id, _)| state.workspaces.iter().any(|w| {
+            w.tabs.iter().any(|t| t.layout.contains(*id))
+        }));
         state.check_invariants();
         Some((state, panes))
     }
@@ -150,9 +167,9 @@ pub fn path() -> Option<PathBuf> {
     crate::logging::state_dir().map(|d| d.join("session.json"))
 }
 
-pub fn save(state: &AppState) {
+pub fn save(state: &AppState, agents: &std::collections::HashMap<PaneId, String>) {
     let Some(p) = path() else { return };
-    let snap = Snapshot::of(state);
+    let snap = Snapshot::of(state, agents);
     match serde_json::to_string_pretty(&snap) {
         Ok(json) => {
             if let Err(e) = std::fs::write(&p, json) {
@@ -195,7 +212,11 @@ mod tests {
         s.new_workspace("x".into());
         s.rename_active_workspace("proj".into());
 
-        let snap = Snapshot::of(&s);
+        // Mark the focused pane of ws1/tab1 as a claude pane.
+        let claude_pane = s.workspaces[0].tabs[0].focused_pane;
+        let agents =
+            std::collections::HashMap::from([(claude_pane, "claude".to_string())]);
+        let snap = Snapshot::of(&s, &agents);
         let json = serde_json::to_string(&snap).unwrap();
         let back: Snapshot = serde_json::from_str(&json).unwrap();
         let (restored, panes) = back.restore().unwrap();
@@ -205,6 +226,11 @@ mod tests {
         assert_eq!(restored.workspaces[0].tabs[0].layout.panes().len(), 3);
         assert_eq!(restored.workspaces[1].name, "proj");
         assert_eq!(panes.len(), 5);
+        assert_eq!(
+            panes.iter().filter(|(_, a)| a.as_deref() == Some("claude")).count(),
+            1,
+            "exactly one pane remembers its agent"
+        );
         assert!(restored.check_invariants());
     }
 }

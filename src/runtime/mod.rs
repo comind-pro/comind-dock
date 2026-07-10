@@ -156,6 +156,18 @@ impl Runtime {
         }
     }
 
+    /// Snapshot the session, remembering which agent ran in which pane.
+    pub fn save_session(&self) {
+        let mut agents = HashMap::new();
+        for (id, p) in &self.panes {
+            let title = self.titles.get(id).map(String::as_str).unwrap_or("");
+            if let Some(agent) = crate::agents::detect(title, &p.program) {
+                agents.insert(*id, agent.to_string());
+            }
+        }
+        crate::state::snapshot::save(&self.state, &agents);
+    }
+
     /// Default workspace name: the folder new panes spawn in.
     pub fn workspace_name(&self) -> String {
         folder_name(&resolve_cwd(&self.cfg.terminal))
@@ -229,7 +241,7 @@ pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> 
         None => {
             let st = AppState::new(folder_name(&resolve_cwd(&cfg.terminal)));
             let first = st.focused_pane();
-            (st, vec![first])
+            (st, vec![(first, None)])
         }
     };
     let mut rt = Runtime {
@@ -246,8 +258,9 @@ pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> 
         data_tx,
         dirty: true,
     };
-    for pane in initial_panes {
-        rt.spawn_pane(pane, area.width, area.height)?;
+    for (pane, agent) in initial_panes {
+        let resume = agent.as_deref().map(crate::agents::resume_command);
+        rt.spawn_pane_cmd(pane, area.width, area.height, resume)?;
     }
 
     spawn_input_thread(rt.tx.clone());
@@ -274,7 +287,7 @@ pub async fn run(terminal: &mut DefaultTerminal, cfg: Config) -> io::Result<()> 
                         AppEvent::Term(id, tev) => handle_term_event(&mut rt, id, tev),
                         AppEvent::Input(iev) => {
                             if handle_input(&mut rt, iev, terminal)? {
-                                crate::state::snapshot::save(&rt.state);
+                                rt.save_session();
                                 return Ok(());
                             }
                         }

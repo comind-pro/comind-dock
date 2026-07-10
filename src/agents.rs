@@ -8,6 +8,18 @@ const KNOWN: &[&str] = &[
     "droid", "qwen", "crush",
 ];
 
+/// Command that relaunches an agent back into its latest conversation in
+/// the same folder. ponytail: real session references (ids via integration
+/// hooks) are Phase 5 agent resume; this covers the common CLIs today.
+pub fn resume_command(agent: &str) -> String {
+    match agent {
+        "claude" => "claude --continue".to_string(),
+        "codex" => "codex resume --last".to_string(),
+        "opencode" => "opencode --continue".to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// Agent id if the pane looks like a known agent CLI.
 pub fn detect(title: &str, program: &str) -> Option<&'static str> {
     let prog = program.to_ascii_lowercase();
