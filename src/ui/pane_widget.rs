@@ -11,8 +11,9 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::term::emulator::EventProxy;
 
-/// Draw a pane's terminal content into `area`.
-pub fn render(term: &Term<EventProxy>, area: Rect, frame: &mut Frame) {
+/// Draw a pane's terminal content into `area`. Only the focused pane
+/// positions the host cursor.
+pub fn render(term: &Term<EventProxy>, area: Rect, frame: &mut Frame, focused: bool) {
     let content = term.renderable_content();
     let offset = content.display_offset as i32;
     let buf = frame.buffer_mut();
@@ -44,7 +45,7 @@ pub fn render(term: &Term<EventProxy>, area: Rect, frame: &mut Frame) {
     }
 
     // Host cursor only when the viewport is at the live bottom.
-    if content.mode.contains(TermMode::SHOW_CURSOR) && offset == 0 {
+    if focused && content.mode.contains(TermMode::SHOW_CURSOR) && offset == 0 {
         let p = content.cursor.point;
         if p.line.0 >= 0 && (p.line.0 as u16) < area.height && (p.column.0 as u16) < area.width {
             frame.set_cursor_position((area.x + p.column.0 as u16, area.y + p.line.0 as u16));

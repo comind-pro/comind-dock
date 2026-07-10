@@ -1,16 +1,20 @@
 pub mod event;
 
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::time::Duration;
 
 use alacritty_terminal::event::Event as TermEvent;
 use ratatui::DefaultTerminal;
+use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 
 use crate::input;
+use crate::state::layout::{Dir, Divider, Side};
+use crate::state::{AppState, CloseOutcome};
 use crate::state::ids::PaneId;
 use crate::term::emulator::Emulator;
-use crate::term::pty;
+use crate::term::pty::{self, Pty};
 use crate::ui;
 use event::AppEvent;
 
@@ -18,21 +22,64 @@ use event::AppEvent;
 /// cannot starve input handling and the render tick.
 const DRAIN_BUDGET: usize = 256 * 1024;
 
-/// M1 runtime: a single fullscreen pane. Grows into the full
-/// Runtime{state, panes} structure in M2/M3.
+pub struct PaneRuntime {
+    pub emu: Emulator,
+    pub pty: Pty,
+    last_size: (u16, u16),
+}
+
+pub struct Runtime {
+    pub state: AppState,
+    pub panes: HashMap<PaneId, PaneRuntime>,
+    tx: mpsc::UnboundedSender<AppEvent>,
+    dirty: bool,
+    /// ponytail: minimal prefix chord state; the real input-mode machine lands in M4.
+    prefix_pending: bool,
+}
+
+impl Runtime {
+    fn spawn_pane(&mut self, pane: PaneId, cols: u16, rows: u16) -> io::Result<()> {
+        let emu = Emulator::new(cols, rows, pane, self.tx.clone());
+        let pty = pty::spawn_shell(pane, cols, rows, self.tx.clone())?;
+        self.panes.insert(pane, PaneRuntime { emu, pty, last_size: (cols, rows) });
+        Ok(())
+    }
+
+    /// Geometry phase: compute pane rects for the active tab and propagate
+    /// size changes to emulators and PTYs. Mutation happens here, never in render.
+    fn compute_view(&mut self, area: Rect) -> (Vec<(PaneId, Rect)>, Vec<Divider>) {
+        let tab = self.state.active_tab();
+        let (rects, dividers) = match tab.zoomed {
+            Some(z) if tab.layout.contains(z) => (vec![(z, area)], Vec::new()),
+            _ => tab.layout.layout(area),
+        };
+        for (id, rect) in &rects {
+            if let Some(p) = self.panes.get_mut(id) {
+                let size = (rect.width, rect.height);
+                if p.last_size != size {
+                    p.emu.resize(size.0, size.1);
+                    p.pty.resize(size.0, size.1);
+                    p.last_size = size;
+                }
+            }
+        }
+        (rects, dividers)
+    }
+}
+
 pub async fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
-
     let area = terminal.get_frame().area();
-    let pane = PaneId(1);
-    let mut emu = Emulator::new(area.width, area.height, pane, tx.clone());
-    let mut pty = pty::spawn_shell(pane, area.width, area.height, tx.clone())?;
 
-    spawn_input_thread(tx);
+    let state = AppState::new();
+    let first = state.focused_pane();
+    let mut rt = Runtime { state, panes: HashMap::new(), tx, dirty: true, prefix_pending: false };
+    rt.spawn_pane(first, area.width, area.height)?;
+
+    spawn_input_thread(rt.tx.clone());
 
     let mut tick = tokio::time::interval(Duration::from_millis(16));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut dirty = true;
 
     loop {
         tokio::select! {
@@ -42,18 +89,23 @@ pub async fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
                 let mut next = Some(first);
                 while let Some(ev) = next.take() {
                     match ev {
-                        AppEvent::PtyBytes(_, bytes) => {
+                        AppEvent::PtyBytes(id, bytes) => {
                             budget = budget.saturating_sub(bytes.len());
-                            emu.feed(&bytes);
-                            dirty = true;
+                            if let Some(p) = rt.panes.get_mut(&id) {
+                                p.emu.feed(&bytes);
+                                rt.dirty = true;
+                            }
                         }
-                        AppEvent::PtyExit(_) => {
-                            pty.kill();
-                            return Ok(());
+                        AppEvent::PtyExit(id) => {
+                            if handle_pane_exit(&mut rt, id) {
+                                return Ok(());
+                            }
                         }
-                        AppEvent::Term(_, tev) => handle_term_event(tev, &mut pty, &mut dirty),
+                        AppEvent::Term(id, tev) => handle_term_event(&mut rt, id, tev),
                         AppEvent::Input(iev) => {
-                            handle_input(iev, &mut emu, &mut pty, &mut dirty);
+                            if handle_input(&mut rt, iev, terminal)? {
+                                return Ok(());
+                            }
                         }
                     }
                     if budget > 0 {
@@ -62,37 +114,47 @@ pub async fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
                 }
             }
             _ = tick.tick() => {
-                if dirty {
-                    terminal.draw(|f| ui::pane_widget::render(&emu.term, f.area(), f))?;
-                    dirty = false;
+                if rt.dirty {
+                    let area = terminal.get_frame().area();
+                    let (rects, dividers) = rt.compute_view(area);
+                    let focused = rt.state.focused_pane();
+                    terminal.draw(|f| ui::render_panes(f, &rects, &dividers, &rt.panes, focused))?;
+                    rt.dirty = false;
                 }
             }
         }
     }
 }
 
-fn handle_term_event(ev: TermEvent, pty: &mut pty::Pty, dirty: &mut bool) {
+/// A pane's process exited: drop its runtime, cascade the close. True → quit app.
+fn handle_pane_exit(rt: &mut Runtime, id: PaneId) -> bool {
+    let Some(mut p) = rt.panes.remove(&id) else { return false };
+    p.pty.kill();
+    rt.dirty = true;
+    matches!(rt.state.close_pane(id), CloseOutcome::LastClosed)
+}
+
+fn handle_term_event(rt: &mut Runtime, id: PaneId, ev: TermEvent) {
     match ev {
         TermEvent::Wakeup | TermEvent::MouseCursorDirty | TermEvent::CursorBlinkingChange => {
-            *dirty = true;
+            rt.dirty = true;
         }
-        TermEvent::PtyWrite(text) => pty.write(text.as_bytes()),
-        TermEvent::Title(title) => tracing::debug!(%title, "pane title"),
-        TermEvent::ResetTitle => {}
+        TermEvent::PtyWrite(text) => {
+            if let Some(p) = rt.panes.get_mut(&id) {
+                p.pty.write(text.as_bytes());
+            }
+        }
+        TermEvent::Title(title) => tracing::debug!(pane = %id, %title, "pane title"),
         TermEvent::ClipboardStore(_, data) => osc52_copy(&data),
         // ponytail: OSC color queries answered with real palette values in M7
-        TermEvent::ClipboardLoad(..) | TermEvent::ColorRequest(..) => {}
-        TermEvent::TextAreaSizeRequest(_) => {}
-        TermEvent::Bell => {}
-        TermEvent::Exit | TermEvent::ChildExit(_) => {}
+        _ => {}
     }
 }
 
 /// Forward an application's OSC 52 clipboard write to the host terminal.
 fn osc52_copy(data: &str) {
-    use base64_engine::encode;
     let mut out = io::stdout();
-    let _ = write!(out, "\x1b]52;c;{}\x07", encode(data.as_bytes()));
+    let _ = write!(out, "\x1b]52;c;{}\x07", base64_engine::encode(data.as_bytes()));
     let _ = out.flush();
 }
 
@@ -114,37 +176,85 @@ mod base64_engine {
     }
 }
 
+/// Host input. Returns Ok(true) to quit the app.
 fn handle_input(
+    rt: &mut Runtime,
     ev: crossterm::event::Event,
-    emu: &mut Emulator,
-    pty: &mut pty::Pty,
-    dirty: &mut bool,
-) {
+    terminal: &mut DefaultTerminal,
+) -> io::Result<bool> {
     use alacritty_terminal::term::TermMode;
-    use crossterm::event::{Event, KeyEventKind};
+    use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 
     match ev {
         Event::Key(key) if key.kind != KeyEventKind::Release => {
-            if let Some(bytes) = input::encode::encode_key(&key, emu.term.mode()) {
-                pty.write(&bytes);
+            let is_prefix = key.code == KeyCode::Char('b')
+                && key.modifiers.contains(KeyModifiers::CONTROL);
+
+            if rt.prefix_pending {
+                rt.prefix_pending = false;
+                rt.dirty = true;
+                let area = terminal.get_frame().area();
+                let (rects, _) = rt.compute_view(area);
+                match (key.code, is_prefix) {
+                    (_, true) => send_key(rt, &key), // double prefix → literal
+                    (KeyCode::Char('v'), _) => split(rt, Dir::Right, area)?,
+                    (KeyCode::Char('-'), _) => split(rt, Dir::Down, area)?,
+                    (KeyCode::Char('h'), _) => { rt.state.focus_neighbor(&rects, Side::Left); }
+                    (KeyCode::Char('j'), _) => { rt.state.focus_neighbor(&rects, Side::Down); }
+                    (KeyCode::Char('k'), _) => { rt.state.focus_neighbor(&rects, Side::Up); }
+                    (KeyCode::Char('l'), _) => { rt.state.focus_neighbor(&rects, Side::Right); }
+                    (KeyCode::Char('x'), _) => {
+                        // Kill only; PtyExit drives the state change (single close path).
+                        let focused = rt.state.focused_pane();
+                        if let Some(p) = rt.panes.get_mut(&focused) {
+                            p.pty.kill();
+                        }
+                    }
+                    (KeyCode::Char('z'), _) => rt.state.toggle_zoom(),
+                    (KeyCode::Char('c'), _) => {
+                        let pane = rt.state.new_tab();
+                        rt.spawn_pane(pane, area.width, area.height)?;
+                    }
+                    (KeyCode::Char('q'), _) => return Ok(true),
+                    _ => {} // unknown chord: swallow
+                }
+            } else if is_prefix {
+                rt.prefix_pending = true;
+            } else {
+                send_key(rt, &key);
             }
         }
         Event::Paste(text) => {
-            if emu.term.mode().contains(TermMode::BRACKETED_PASTE) {
-                pty.write(b"\x1b[200~");
-                pty.write(text.as_bytes());
-                pty.write(b"\x1b[201~");
-            } else {
-                pty.write(text.as_bytes());
+            let focused = rt.state.focused_pane();
+            if let Some(p) = rt.panes.get_mut(&focused) {
+                if p.emu.term.mode().contains(TermMode::BRACKETED_PASTE) {
+                    p.pty.write(b"\x1b[200~");
+                    p.pty.write(text.as_bytes());
+                    p.pty.write(b"\x1b[201~");
+                } else {
+                    p.pty.write(text.as_bytes());
+                }
             }
         }
-        Event::Resize(cols, rows) => {
-            emu.resize(cols, rows);
-            pty.resize(cols, rows);
-            *dirty = true;
-        }
+        Event::Resize(..) => rt.dirty = true, // compute_view picks up the new size
         // Mouse lands in M5.
         _ => {}
+    }
+    Ok(false)
+}
+
+fn split(rt: &mut Runtime, dir: Dir, area: Rect) -> io::Result<()> {
+    let pane = rt.state.split_focused(dir);
+    // Spawned at a provisional size; compute_view corrects it before the next frame.
+    rt.spawn_pane(pane, area.width.max(2) / 2, area.height.max(2) / 2)
+}
+
+fn send_key(rt: &mut Runtime, key: &crossterm::event::KeyEvent) {
+    let focused = rt.state.focused_pane();
+    if let Some(p) = rt.panes.get_mut(&focused) {
+        if let Some(bytes) = input::encode::encode_key(key, p.emu.term.mode()) {
+            p.pty.write(&bytes);
+        }
     }
 }
 
