@@ -1,4 +1,8 @@
 # Claude Code detection rules. Bottom-of-buffer text, case-insensitive.
+# The input box ("❯", mode hints) is ALWAYS on screen, even mid-task — idle
+# markers alone prove nothing; the spinner line is the real working signal.
+# Spinner verbs are random ("Churning…", "Dilly-dallying…"); the stable part
+# is the parenthetical: elapsed time and the ↑/↓ token counter.
 id = "claude"
 
 # Permission / approval dialogs — must win over the working spinner.
@@ -14,12 +18,19 @@ any_of = [
     "grant access",
     "esc to cancel",
 ]
-none_of = ["esc to interrupt"]
+none_of = ["esc to interrupt", "running stop hooks", "· ↓ ", "· ↑ "]
 
 [[rule]]
 priority = 90
 state = "working"
-any_of = ["esc to interrupt", "ctrl-b to run in background", "ctrl+b to run in background"]
+any_of = [
+    "esc to interrupt",                # pre-2.1 spinner hint
+    "ctrl-b to run in background",
+    "ctrl+b to run in background",
+    "running stop hooks",
+    "· ↓ ",                            # token counter in the spinner line
+    "· ↑ ",
+]
 
 # Resting input prompt with its hint line.
 [[rule]]

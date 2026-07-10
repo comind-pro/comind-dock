@@ -163,6 +163,33 @@ mod tests {
         assert_eq!(classify(&m, "", &lines(&["random text"])), None);
     }
 
+    /// v2.1.206 spinner has no "esc to interrupt", and the input box with
+    /// mode hints stays on screen mid-task — the token counter must win.
+    #[test]
+    fn v2_spinner_beats_persistent_input_box() {
+        let m = claude();
+        assert_eq!(
+            classify(
+                &m,
+                "",
+                &lines(&[
+                    "· Dilly-dallying… (running stop hooks… 1/2 · 6s · ↓ 2 tokens)",
+                    "❯",
+                    "⏸ manual mode on · ← for agents",
+                ])
+            ),
+            Some(Status::Working)
+        );
+        assert_eq!(
+            classify(
+                &m,
+                "",
+                &lines(&["✳ Churning… (5s · ↑ 1.2k tokens)", "❯", "? for shortcuts"])
+            ),
+            Some(Status::Working)
+        );
+    }
+
     #[test]
     fn spinner_overrides_stale_dialog_text() {
         // "do you want" can linger in transcript text while the agent is
