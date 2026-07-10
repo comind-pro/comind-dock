@@ -143,7 +143,7 @@ topology, and folder scoping / navigation work uniformly across origins.
 
 ## 5. Terminal emulation
 
-- **Embedded VT engine.** Options, all license-compatible with Apache-2.0:
+- **Embedded VT engine.** Options, all license-compatible with MIT:
   vendor a mature MIT-licensed VT core, or use a Rust terminal-emulation
   crate (e.g. the emulation layers extracted from established Rust
   terminals). Requirements: full VT/xterm parsing, scrollback, grapheme/emoji

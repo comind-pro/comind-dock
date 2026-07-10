@@ -52,10 +52,10 @@ cargo build --release
 
 ## Contributing
 
-The project is open source under Apache-2.0. During the specification phase,
+The project is open source under MIT. During the specification phase,
 contributions are welcome as issues and discussion on the feature and
 architecture documents. Once Phase 1 starts, standard PR flow applies.
 
 ## License
 
-[Apache-2.0](LICENSE)
+[MIT](LICENSE)
