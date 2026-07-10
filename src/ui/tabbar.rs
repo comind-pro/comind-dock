@@ -18,6 +18,8 @@ pub enum Hit {
     NewTab,
     /// The ✕ at the right edge: quit cdock, saving the session.
     CloseApp,
+    /// The ≡ at the left edge, shown only while the sidebar is hidden.
+    ShowSidebar,
 }
 
 struct Segment {
@@ -48,7 +50,11 @@ fn tab_label(rt: &Runtime, state: &AppState, ti: usize) -> String {
 fn segments(rt: &Runtime) -> Vec<Segment> {
     let state = &rt.state;
     let ws = state.active_workspace();
-    let mut out = vec![Segment { text: " ".into(), hit: None, active: false }];
+    let mut out = if state.sidebar_visible {
+        vec![Segment { text: " ".into(), hit: None, active: false }]
+    } else {
+        vec![Segment { text: " ≡  ".into(), hit: Some(Hit::ShowSidebar), active: false }]
+    };
     for ti in 0..ws.tabs.len() {
         let active = ti == ws.active_tab;
         let zoomed = active && ws.tabs[ti].zoomed.is_some();

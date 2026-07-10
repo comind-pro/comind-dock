@@ -3,6 +3,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use unicode_width::UnicodeWidthStr;
 
 use crate::config::theme::Theme;
 use crate::runtime::Runtime;
@@ -16,7 +17,12 @@ pub enum Target {
     NewWorkspace,
     /// The "≡ menu" row above spaces: app settings / session actions.
     AppMenu,
+    /// The « at the menu row's right edge: hide the sidebar.
+    CollapseSidebar,
 }
+
+/// Clickable width of the « collapse zone at the menu row's right edge.
+const COLLAPSE_ZONE: u16 = 3;
 
 struct Row {
     line: Line<'static>,
@@ -69,11 +75,18 @@ fn status_marker(status: crate::detect::Status, theme: &Theme) -> (&'static str,
 /// Sidebar (mockup): "spaces" — workspaces with status dot, git branch
 /// subtitle, worktree children indented under their parent; "agents" — one
 /// row per recognized agent pane.
-fn rows(rt: &Runtime, theme: &Theme) -> Vec<Row> {
+fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
     let state = &rt.state;
+    // "« " pinned to the right edge; hit() maps clicks there to CollapseSidebar.
+    let menu = " ≡ menu";
+    let pad = (width as usize).saturating_sub(menu.width() + 2);
     let mut out = vec![
         Row {
-            line: Line::from(Span::styled(" ≡ menu", Style::new().fg(theme.muted))),
+            line: Line::from(vec![
+                Span::styled(menu, Style::new().fg(theme.muted)),
+                Span::raw(" ".repeat(pad)),
+                Span::styled("« ", Style::new().fg(theme.muted)),
+            ]),
             target: Some(Target::AppMenu),
         },
         Row { line: Line::from(""), target: None },
@@ -193,19 +206,26 @@ fn clamped_scroll(rt: &Runtime, row_count: usize, height: u16) -> u16 {
     rt.sidebar_scroll.min((row_count as u16).saturating_sub(height))
 }
 
-pub fn max_scroll(rt: &Runtime, theme: &Theme, height: u16) -> u16 {
-    (rows(rt, theme).len() as u16).saturating_sub(height)
+pub fn max_scroll(rt: &Runtime, theme: &Theme, size: (u16, u16)) -> u16 {
+    (rows(rt, theme, size.0).len() as u16).saturating_sub(size.1)
 }
 
 pub fn render(rt: &Runtime, theme: &Theme, area: Rect, frame: &mut Frame) {
-    let lines: Vec<Line> = rows(rt, theme).into_iter().map(|r| r.line).collect();
+    let lines: Vec<Line> =
+        rows(rt, theme, area.width).into_iter().map(|r| r.line).collect();
     let scroll = clamped_scroll(rt, lines.len(), area.height);
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), area);
 }
 
-/// Which target sits on sidebar-relative row `y` (viewport coordinates).
-pub fn hit(rt: &Runtime, theme: &Theme, y: u16, height: u16) -> Option<Target> {
-    let rows = rows(rt, theme);
+/// Which target sits at sidebar-relative (`x`, `y`) (viewport coordinates).
+pub fn hit(rt: &Runtime, theme: &Theme, x: u16, y: u16, size: (u16, u16)) -> Option<Target> {
+    let (width, height) = size;
+    let rows = rows(rt, theme, width);
     let scroll = clamped_scroll(rt, rows.len(), height);
-    rows.get((y + scroll) as usize).and_then(|r| r.target)
+    match rows.get((y + scroll) as usize).and_then(|r| r.target) {
+        Some(Target::AppMenu) if x >= width.saturating_sub(COLLAPSE_ZONE) => {
+            Some(Target::CollapseSidebar)
+        }
+        t => t,
+    }
 }

@@ -96,6 +96,9 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                     Some(tabbar::Hit::CloseApp) => {
                         return InputOutcome::Shutdown;
                     }
+                    Some(tabbar::Hit::ShowSidebar) => {
+                        rt.state.sidebar_visible = true;
+                    }
                     None => {}
                 }
                 return InputOutcome::Continue;
@@ -104,10 +107,13 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 && sb.contains(pos)
             {
                 let theme = rt.theme;
-                match sidebar::hit(rt, &theme, ev.row - sb.y, sb.height) {
+                match sidebar::hit(rt, &theme, ev.column - sb.x, ev.row - sb.y, (sb.width, sb.height)) {
                     Some(sidebar::Target::Workspace(wi)) => {
                         // Plain click switches; the menu lives on right-click.
                         rt.state.active_workspace = wi;
+                    }
+                    Some(sidebar::Target::CollapseSidebar) => {
+                        rt.state.sidebar_visible = false;
                     }
                     Some(sidebar::Target::AppMenu) => {
                         rt.state.input_mode = InputMode::Menu {
@@ -243,7 +249,7 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 && sb.contains(pos)
             {
                 let theme = rt.theme;
-                let max = sidebar::max_scroll(rt, &theme, sb.height);
+                let max = sidebar::max_scroll(rt, &theme, (sb.width, sb.height));
                 let step = scroll_lines as u16;
                 let cur = rt.sidebar_scroll.min(max);
                 rt.sidebar_scroll =
@@ -282,7 +288,7 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
             {
                 let theme = rt.theme;
                 if let Some(sidebar::Target::Workspace(wi)) =
-                    sidebar::hit(rt, &theme, ev.row - sb.y, sb.height)
+                    sidebar::hit(rt, &theme, ev.column - sb.x, ev.row - sb.y, (sb.width, sb.height))
                 {
                     rt.state.active_workspace = wi;
                     rt.state.input_mode = InputMode::Menu {
