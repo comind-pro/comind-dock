@@ -48,4 +48,14 @@ mod tests {
         assert_eq!(detect("copying files", "bash"), None);
         assert_eq!(detect("pi", "zsh"), Some("pi"));
     }
+
+    /// Child exe paths are matched as titles; the version segment is noise —
+    /// any future Claude Code version under a claude/ dir must keep matching.
+    #[test]
+    fn exe_path_matches_regardless_of_version() {
+        assert_eq!(detect("/Users/x/.local/share/claude/versions/2.1.206", ""), Some("claude"));
+        assert_eq!(detect("/Users/x/.local/share/claude/versions/99.0.1-beta", ""), Some("claude"));
+        assert_eq!(detect("/opt/homebrew/bin/codex", ""), Some("codex"));
+        assert_eq!(detect("/usr/local/bin/rg", ""), None);
+    }
 }
