@@ -8,14 +8,15 @@ const KNOWN: &[&str] = &[
     "droid", "qwen", "crush",
 ];
 
-/// Command that relaunches an agent back into its latest conversation in
-/// the same folder. ponytail: real session references (ids via integration
-/// hooks) are Phase 5 agent resume; this covers the common CLIs today.
+/// Command that relaunches an agent after a restart. Session pickers, not
+/// --continue: "continue latest in this cwd" grabs whatever conversation was
+/// touched last anywhere in that folder (including ones outside cdock), and
+/// two restored panes in one cwd would resume the same conversation twice.
+/// ponytail: real per-pane session ids via integration hooks are Phase 5.
 pub fn resume_command(agent: &str) -> String {
     match agent {
-        "claude" => "claude --continue".to_string(),
-        "codex" => "codex resume --last".to_string(),
-        "opencode" => "opencode --continue".to_string(),
+        "claude" => "claude --resume".to_string(),
+        "codex" => "codex resume".to_string(),
         other => other.to_string(),
     }
 }
