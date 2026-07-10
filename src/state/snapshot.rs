@@ -12,6 +12,9 @@ use super::layout::{Dir, Node};
 use super::workspace::{Tab, Workspace};
 use super::{AppState, InputMode};
 
+/// A pane to spawn on restore, with the agent that ran there (if any).
+pub type PaneSpawn = (PaneId, Option<String>);
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Snapshot {
     pub active_workspace: usize,
@@ -65,11 +68,7 @@ fn node_to_snap(node: &Node, agents: &std::collections::HashMap<PaneId, String>)
     }
 }
 
-fn snap_to_node(
-    snap: &NodeSnap,
-    ids: &mut IdGen,
-    agents: &mut Vec<(PaneId, Option<String>)>,
-) -> Node {
+fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen, agents: &mut Vec<PaneSpawn>) -> Node {
     match snap {
         NodeSnap::Leaf { agent } => {
             let id = ids.pane();
@@ -115,7 +114,7 @@ impl Snapshot {
     /// Rebuild state with fresh pane ids. Returns the state and every pane
     /// to spawn with the agent that ran there. None if the snapshot is
     /// empty/degenerate.
-    pub fn restore(&self) -> Option<(AppState, Vec<(PaneId, Option<String>)>)> {
+    pub fn restore(&self) -> Option<(AppState, Vec<PaneSpawn>)> {
         let mut ids = IdGen::default();
         let mut workspaces = Vec::new();
         let mut panes = Vec::new();
