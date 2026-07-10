@@ -1,8 +1,9 @@
 //! Agent detection engine (ARCHITECTURE §4): a screen-snapshot pattern
 //! matcher. Reads the pane's bottom-of-buffer text plus the OSC title,
 //! runs the agent's ordered manifest rules, highest priority wins.
-//! ponytail: bundled manifests only — remote feed, local overrides, and
-//! hot reload arrive with the update system.
+//! Manifests: bundled, overridden by ~/.config/comind-dock/manifests/*.toml
+//! (matched by id), hot-reloadable via `cdock server reload-manifests`.
+//! ponytail: the remote manifest feed arrives with the update system.
 
 use serde::Deserialize;
 
@@ -124,6 +125,35 @@ pub fn bundled() -> Vec<Manifest> {
 
 pub fn manifest_for<'a>(manifests: &'a [Manifest], agent: &str) -> Option<&'a Manifest> {
     manifests.iter().find(|m| m.id == agent)
+}
+
+/// Bundled manifests with local overrides applied: a file in
+/// ~/.config/comind-dock/manifests/ replaces the bundled manifest with the
+/// same id (or adds a new agent).
+pub fn load_all() -> Vec<Manifest> {
+    let mut manifests = bundled();
+    let Some(dir) = crate::config::config_path(None).and_then(|p| p.parent().map(|d| d.join("manifests")))
+    else {
+        return manifests;
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else { return manifests };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "toml") {
+            continue;
+        }
+        match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| {
+            toml::from_str::<Manifest>(&t).map_err(|e| e.to_string())
+        }) {
+            Ok(m) => {
+                tracing::info!(id = %m.id, path = %path.display(), "manifest override");
+                manifests.retain(|b| b.id != m.id);
+                manifests.push(m);
+            }
+            Err(e) => tracing::warn!(path = %path.display(), error = %e, "bad manifest override"),
+        }
+    }
+    manifests
 }
 
 #[cfg(test)]

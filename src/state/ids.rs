@@ -1,7 +1,9 @@
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 /// Short public pane id, rendered as `%1`, `%2`, …
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PaneId(pub u64);
 
 impl fmt::Display for PaneId {
@@ -11,7 +13,7 @@ impl fmt::Display for PaneId {
 }
 
 /// Short public tab id, rendered as `@1`, `@2`, …
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct TabId(pub u64);
 
 impl fmt::Display for TabId {
@@ -21,7 +23,7 @@ impl fmt::Display for TabId {
 }
 
 /// Short public workspace id, rendered as `#1`, `#2`, …
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct WorkspaceId(pub u64);
 
 impl fmt::Display for WorkspaceId {
@@ -31,7 +33,7 @@ impl fmt::Display for WorkspaceId {
 }
 
 /// One shared counter for all id kinds — ids stay short and globally unique.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct IdGen {
     next: u64,
 }

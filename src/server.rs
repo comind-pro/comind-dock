@@ -27,6 +27,14 @@ pub struct ServerOpts {
     pub exit_when_no_clients: bool,
 }
 
+/// How the server loop ended.
+pub enum RunOutcome {
+    Exit,
+    /// Live handoff requested: the caller writes this out and execs the
+    /// (possibly updated) binary in place.
+    Handoff(Box<runtime::Handoff>),
+}
+
 type ClientId = u64;
 
 struct Client {
@@ -46,16 +54,23 @@ pub async fn run(
     listener: Option<UnixListener>,
     api_listener: Option<UnixListener>,
     initial: Vec<UnixStream>,
+    handoff: Option<runtime::Handoff>,
     opts: ServerOpts,
-) -> io::Result<()> {
+) -> io::Result<RunOutcome> {
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
     let (data_tx, mut data_rx) = mpsc::channel::<PtyData>(16);
     let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let (ctl_tx, mut ctl_rx) = mpsc::unbounded_channel::<ClientCtl>();
 
-    // Screen size before any client says hello.
-    let mut area = Rect::new(0, 0, 100, 30);
-    let mut rt = runtime::build(cfg, tx, data_tx, raw_tx, area)?;
+    // Screen size before any client says hello (a handoff carries its own).
+    let mut area = match &handoff {
+        Some(h) => Rect::new(0, 0, h.area.0.max(4), h.area.1.max(4)),
+        None => Rect::new(0, 0, 100, 30),
+    };
+    let mut rt = match handoff {
+        Some(h) => runtime::build_from_handoff(cfg, h, tx, data_tx, raw_tx)?,
+        None => runtime::build(cfg, tx, data_tx, raw_tx, area)?,
+    };
 
     let mut clients: HashMap<ClientId, Client> = HashMap::new();
     let mut next_client: ClientId = 1;
@@ -72,7 +87,7 @@ pub async fn run(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut ws_poll = tokio::time::interval(Duration::from_millis(2000));
     ws_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let manifests = crate::detect::bundled();
+    let mut manifests = crate::detect::load_all();
     let mut agent_poll = tokio::time::interval(Duration::from_millis(500));
     agent_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Debounced session persistence (ARCHITECTURE §6).
@@ -133,14 +148,14 @@ pub async fn run(
                                 rt.save_session();
                                 if opts.exit_when_no_clients {
                                     flush_writers().await;
-                                    return Ok(());
+                                    return Ok(RunOutcome::Exit);
                                 }
                             }
                             InputOutcome::Shutdown => {
                                 rt.save_session();
                                 shutdown_clients(&clients);
                                 flush_writers().await;
-                                return Ok(());
+                                return Ok(RunOutcome::Exit);
                             }
                         }
                     }
@@ -150,7 +165,7 @@ pub async fn run(
                         }
                         if clients.is_empty() && opts.exit_when_no_clients {
                             rt.save_session();
-                            return Ok(());
+                            return Ok(RunOutcome::Exit);
                         }
                     }
                 },
@@ -159,7 +174,7 @@ pub async fn run(
                     tracing::info!(client = id, "client disconnected");
                     if clients.is_empty() && opts.exit_when_no_clients {
                         rt.save_session();
-                        return Ok(());
+                        return Ok(RunOutcome::Exit);
                     }
                 }
             },
@@ -179,7 +194,7 @@ pub async fn run(
                 }
             }
             maybe = data_rx.recv() => {
-                let Some(first) = maybe else { return Ok(()) };
+                let Some(first) = maybe else { return Ok(RunOutcome::Exit) };
                 let mut budget = runtime::PTY_DRAIN_BUDGET;
                 let mut next = Some(first);
                 while let Some((id, bytes)) = next.take() {
@@ -196,12 +211,24 @@ pub async fn run(
             Some(Ok((stream, _))) = accept_next(&api_listener) => {
                 api::spawn_conn(stream, api_tx.clone());
             }
-            Some((req, reply)) = api_rx.recv() => {
-                match api::handle(&mut rt, area, req) {
+            Some((req, reply)) = api_rx.recv() => match req {
+                // The loop owns the manifest set and the exec decision.
+                api::Req::ReloadManifests => {
+                    manifests = crate::detect::load_all();
+                    let _ = reply.send(serde_json::json!({"ok": true, "count": manifests.len()}));
+                }
+                api::Req::Handoff => {
+                    rt.save_session();
+                    let h = runtime::capture_handoff(&rt, area);
+                    let _ = reply.send(serde_json::json!({"ok": true}));
+                    flush_writers().await; // let the reply reach the CLI
+                    return Ok(RunOutcome::Handoff(Box::new(h)));
+                }
+                req => match api::handle(&mut rt, area, req) {
                     Ok(v) => { let _ = reply.send(v); }
                     Err(pending) => waiters.push((pending, reply)),
                 }
-            }
+            },
             _ = ws_poll.tick() => rt.poll_workspaces(),
             _ = agent_poll.tick() => {
                 let notices = rt.poll_agent_status(&manifests);

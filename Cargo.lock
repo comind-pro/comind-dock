@@ -219,6 +219,7 @@ dependencies = [
  "alacritty_terminal",
  "clap",
  "crossterm",
+ "libc",
  "portable-pty",
  "ratatui",
  "serde",

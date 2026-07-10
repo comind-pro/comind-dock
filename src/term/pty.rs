@@ -1,4 +1,5 @@
 use std::io::{self, Read, Write};
+use std::os::fd::RawFd;
 
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::mpsc::UnboundedSender;
@@ -6,10 +7,16 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::runtime::event::AppEvent;
 use crate::state::ids::PaneId;
 
+/// Who owns the master side: a portable_pty pair we spawned, or a raw fd
+/// inherited across a live-handoff exec.
+enum Master {
+    Spawned { master: Box<dyn MasterPty + Send>, killer: Box<dyn ChildKiller + Send + Sync> },
+    Inherited { fd: RawFd },
+}
+
 pub struct Pty {
-    master: Box<dyn MasterPty + Send>,
+    master: Master,
     writer: Box<dyn Write + Send>,
-    killer: Box<dyn ChildKiller + Send + Sync>,
     /// Shell pid — its cwd drives space cwd tracking.
     pub child_pid: Option<u32>,
 }
@@ -102,7 +109,61 @@ pub fn spawn_shell(
         }
     });
 
-    Ok(Pty { master: pair.master, writer, killer, child_pid })
+    Ok(Pty { master: Master::Spawned { master: pair.master, killer }, writer, child_pid })
+}
+
+/// Rebuild a Pty around a master fd inherited across a live-handoff exec.
+/// The child keeps its pid (exec does not change ours, so it is still our
+/// child): waitpid still reports its exit, signals still reach it.
+pub fn adopt(
+    pane: PaneId,
+    fd: RawFd,
+    child_pid: Option<u32>,
+    tx: UnboundedSender<AppEvent>,
+    data_tx: tokio::sync::mpsc::Sender<crate::runtime::event::PtyData>,
+) -> io::Result<Pty> {
+    use std::os::fd::FromRawFd;
+
+    let dup = |fd: RawFd| -> io::Result<std::fs::File> {
+        let d = unsafe { libc::dup(fd) };
+        if d < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(unsafe { std::fs::File::from_raw_fd(d) })
+    };
+    let mut reader = dup(fd)?;
+    let writer = dup(fd)?;
+
+    // Child exit via waitpid on the preserved pid (see spawn_shell: child
+    // exit — not master EOF — closes the pane).
+    if let Some(pid) = child_pid {
+        let exit_tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut status: libc::c_int = 0;
+            let r = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0) };
+            tracing::debug!(%pane, pid, r, "adopted pty child exited");
+            let _ = exit_tx.send(AppEvent::PtyExit(pane));
+        });
+    }
+
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 65536];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => {
+                    let _ = tx.send(AppEvent::PtyExit(pane));
+                    break;
+                }
+                Ok(n) => {
+                    if data_tx.blocking_send((pane, buf[..n].to_vec())).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    Ok(Pty { master: Master::Inherited { fd }, writer: Box::new(writer), child_pid })
 }
 
 impl Pty {
@@ -113,13 +174,52 @@ impl Pty {
     }
 
     pub fn resize(&self, cols: u16, rows: u16) {
-        let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
-        if let Err(e) = self.master.resize(size) {
-            tracing::warn!(error = %e, "pty resize failed");
+        match &self.master {
+            Master::Spawned { master, .. } => {
+                let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
+                if let Err(e) = master.resize(size) {
+                    tracing::warn!(error = %e, "pty resize failed");
+                }
+            }
+            Master::Inherited { fd } => {
+                let ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
+                if unsafe { libc::ioctl(*fd, libc::TIOCSWINSZ, &ws) } != 0 {
+                    tracing::warn!(error = %io::Error::last_os_error(), "pty resize failed");
+                }
+            }
         }
     }
 
     pub fn kill(&mut self) {
-        let _ = self.killer.kill();
+        match &mut self.master {
+            Master::Spawned { killer, .. } => {
+                let _ = killer.kill();
+            }
+            Master::Inherited { .. } => {
+                if let Some(pid) = self.child_pid {
+                    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+                }
+            }
+        }
+    }
+
+    /// Master fd prepared to survive exec: a dup (dup clears FD_CLOEXEC), so
+    /// it outlives this Pty — dropping the original master must neither close
+    /// the handoff fd nor hang up the slave before the exec happens.
+    pub fn handoff_fd(&self) -> Option<RawFd> {
+        let fd = match &self.master {
+            Master::Spawned { master, .. } => master.as_raw_fd()?,
+            Master::Inherited { fd } => *fd,
+        };
+        let dup = unsafe { libc::dup(fd) };
+        (dup >= 0).then_some(dup)
+    }
+}
+
+impl Drop for Pty {
+    fn drop(&mut self) {
+        if let Master::Inherited { fd } = self.master {
+            unsafe { libc::close(fd) };
+        }
     }
 }

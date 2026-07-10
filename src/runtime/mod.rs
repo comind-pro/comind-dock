@@ -502,8 +502,9 @@ fn folder_name(p: &std::path::Path) -> String {
 /// last tab of the last space does NOT quit — a fresh root space opens so the
 /// runtime always has a terminal (quit stays on the tab-bar ✕ / prefix keys).
 pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
-    let Some(mut p) = rt.panes.remove(&id) else { return };
-    p.pty.kill();
+    if let Some(mut p) = rt.panes.remove(&id) {
+        p.pty.kill();
+    }
     rt.titles.remove(&id);
     rt.agent_sessions.remove(&id);
     rt.dirty = true;
@@ -569,6 +570,133 @@ mod base64_engine {
         }
         out
     }
+}
+
+/// Everything a live handoff carries across exec(): pure state as JSON plus
+/// raw master fds, which survive exec once CLOEXEC is cleared. Children keep
+/// their pids — exec does not change ours, so they remain our children.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Handoff {
+    /// Guard: only honored by the process with this pid (i.e. after exec).
+    pub pid: u32,
+    pub area: (u16, u16),
+    pub state: crate::state::AppState,
+    pub titles: Vec<(PaneId, String)>,
+    pub agent_sessions: Vec<(PaneId, String)>,
+    pub panes: Vec<HandoffPane>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct HandoffPane {
+    pub id: PaneId,
+    pub fd: i32,
+    pub pid: Option<u32>,
+    pub program: String,
+    pub size: (u16, u16),
+}
+
+/// Snapshot the runtime for exec-handoff. Clears CLOEXEC on every master fd;
+/// panes whose pty cannot expose an fd are dropped (they die with us).
+pub fn capture_handoff(rt: &Runtime, area: Rect) -> Handoff {
+    let panes = rt
+        .panes
+        .iter()
+        .filter_map(|(id, p)| {
+            let fd = p.pty.handoff_fd()?;
+            Some(HandoffPane {
+                id: *id,
+                fd,
+                pid: p.pty.child_pid,
+                program: p.program.clone(),
+                size: p.last_size,
+            })
+        })
+        .collect();
+    Handoff {
+        pid: std::process::id(),
+        area: (area.width, area.height),
+        state: serde_json::from_str(&serde_json::to_string(&rt.state).expect("state serializes"))
+            .expect("state round-trips"),
+        titles: rt.titles.iter().map(|(k, v)| (*k, v.clone())).collect(),
+        agent_sessions: rt.agent_sessions.iter().map(|(k, v)| (*k, v.clone())).collect(),
+        panes,
+    }
+}
+
+/// Rebuild the runtime on the far side of an exec-handoff: same state, same
+/// children, fresh emulators. Screens are blank until apps repaint — each
+/// pane is nudged one column narrower so the next compute_panes resize is a
+/// real change and delivers SIGWINCH.
+pub fn build_from_handoff(
+    cfg: Config,
+    h: Handoff,
+    tx: mpsc::UnboundedSender<AppEvent>,
+    data_tx: mpsc::Sender<PtyData>,
+    raw_out: mpsc::UnboundedSender<Vec<u8>>,
+) -> io::Result<Runtime> {
+    let (keymap, kw) = crate::config::keys::build_keymap(&cfg.keys);
+    let (theme, tw) = crate::config::theme::resolve(&cfg.theme);
+    for w in kw.iter().chain(&tw) {
+        tracing::warn!("{w}");
+    }
+    let scrollback = cfg.advanced.scrollback_lines();
+    let mut rt = Runtime {
+        state: h.state,
+        panes: HashMap::new(),
+        cfg,
+        keymap,
+        theme,
+        titles: h.titles.into_iter().collect(),
+        branches: HashMap::new(),
+        agent_sessions: h.agent_sessions.into_iter().collect(),
+        last_view: None,
+        sidebar_scroll: 0,
+        drag: None,
+        last_click: None,
+        tx: tx.clone(),
+        data_tx: data_tx.clone(),
+        raw_out,
+        dirty: true,
+    };
+    for hp in h.panes {
+        let (cols, rows) = hp.size;
+        match crate::term::pty::adopt(hp.id, hp.fd, hp.pid, tx.clone(), data_tx.clone()) {
+            Ok(pty) => {
+                let nudged = (cols.max(3) - 1, rows);
+                pty.resize(nudged.0, nudged.1);
+                rt.panes.insert(
+                    hp.id,
+                    PaneRuntime {
+                        emu: Emulator::new(nudged.0, nudged.1, hp.id, tx.clone(), scrollback),
+                        pty,
+                        agent: crate::agents::detect("", &hp.program),
+                        program: hp.program,
+                        last_output: std::time::Instant::now(),
+                        status: crate::detect::Status::Unknown,
+                        last_shown: crate::detect::Status::Unknown,
+                        status_since: std::time::Instant::now(),
+                        last_size: nudged,
+                    },
+                );
+            }
+            Err(e) => tracing::warn!(pane = %hp.id, error = %e, "handoff adopt failed"),
+        }
+    }
+    // Panes that did not make it across close out of the tree now.
+    let dead: Vec<PaneId> = rt
+        .state
+        .workspaces
+        .iter()
+        .flat_map(|w| w.tabs.iter())
+        .flat_map(|t| t.layout.panes())
+        .filter(|id| !rt.panes.contains_key(id))
+        .collect();
+    for id in dead {
+        let area = Rect::new(0, 0, h.area.0, h.area.1);
+        handle_pane_exit(&mut rt, id, area);
+    }
+    rt.poll_workspaces();
+    Ok(rt)
 }
 
 /// A status transition worth telling the user about.

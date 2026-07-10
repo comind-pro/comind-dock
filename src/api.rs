@@ -34,6 +34,13 @@ pub enum Req {
     /// From the agent's SessionStart integration hook: which conversation
     /// runs in this pane (restore resumes exactly it).
     ReportAgentSession { pane: u64, session_id: String },
+    /// Re-read detection manifests from disk (bundled + overrides).
+    /// Handled directly by the server loop, which owns the manifest set.
+    ReloadManifests,
+    /// Re-read config/keymap/theme. Also on the sidebar app menu.
+    ReloadConfig,
+    /// exec() the current binary in place: same pid, panes survive.
+    Handoff,
     /// Worktrees of a workspace's repo (default: the active workspace).
     WorktreeList { workspace: Option<u64> },
     /// Create branch + worktree and open it as a child space.
@@ -105,6 +112,12 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                 Err(e) => Ok(err(e)),
             }
         }
+        Req::ReloadConfig => {
+            rt.reload_config();
+            Ok(json!({"ok": true}))
+        }
+        // Owned by the server loop; reaching here is a wiring bug.
+        Req::ReloadManifests | Req::Handoff => Ok(err("handled by the server loop")),
         Req::SendText { pane, text } => Ok(write_pty(rt, pane, text.as_bytes())),
         Req::Run { pane, command } => {
             Ok(write_pty(rt, pane, format!("{command}\r").as_bytes()))

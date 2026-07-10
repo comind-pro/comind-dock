@@ -3,10 +3,12 @@
 
 use ratatui::layout::Rect;
 
+use serde::{Deserialize, Serialize};
+
 use super::ids::PaneId;
 
 /// Split direction: where the *new* pane goes relative to the old one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Dir {
     Right,
     Down,
@@ -21,7 +23,7 @@ pub enum Side {
     Down,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Node {
     Leaf(PaneId),
     Split { dir: Dir, ratio: f32, a: Box<Node>, b: Box<Node> },

@@ -81,11 +81,13 @@ pub enum CloseOutcome {
     LastClosed,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct AppState {
     pub workspaces: Vec<Workspace>,
     pub active_workspace: usize,
     pub sidebar_visible: bool,
+    /// Modal UI state — never persisted (handoff/restore resets to Terminal).
+    #[serde(skip)]
     pub input_mode: InputMode,
     ids: IdGen,
 }

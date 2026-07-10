@@ -1,9 +1,11 @@
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use super::ids::{PaneId, TabId, WorkspaceId};
 use super::layout::Node;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tab {
     pub id: TabId,
     pub name: String,
@@ -18,7 +20,7 @@ impl Tab {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workspace {
     pub id: WorkspaceId,
     pub name: String,

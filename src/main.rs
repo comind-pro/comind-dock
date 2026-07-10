@@ -77,6 +77,11 @@ enum Cmd {
         #[command(subcommand)]
         sub: WorktreeCmd,
     },
+    /// Control the running session server.
+    Server {
+        #[command(subcommand)]
+        sub: ServerCmd,
+    },
     /// Internal hook entrypoints (called by agent CLIs, not by hand).
     #[command(hide = true)]
     Hook {
@@ -95,6 +100,17 @@ enum IntegrationCmd {
 enum ApiCmd {
     /// Full runtime state: workspaces → tabs → panes, one JSON tree.
     Snapshot,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum ServerCmd {
+    /// Re-read detection manifests (bundled + ~/.config/comind-dock/manifests).
+    ReloadManifests,
+    /// Re-read config, keymap, and theme.
+    ReloadConfig,
+    /// Replace the running server with the current binary in place —
+    /// panes and agents keep running, clients reconnect.
+    Handoff,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -286,6 +302,11 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             }
         },
         Cmd::Api { sub: ApiCmd::Snapshot } => Req::Snapshot,
+        Cmd::Server { sub } => match sub {
+            ServerCmd::ReloadManifests => Req::ReloadManifests,
+            ServerCmd::ReloadConfig => Req::ReloadConfig,
+            ServerCmd::Handoff => Req::Handoff,
+        },
         Cmd::Worktree { sub } => match sub {
             WorktreeCmd::List { workspace } => Req::WorktreeList { workspace },
             WorktreeCmd::Create { branch, workspace } => {
@@ -393,21 +414,25 @@ fn main() -> ExitCode {
     }
 }
 
-/// Headless daemon: bind the session socket, serve until shutdown.
+/// Headless daemon: bind the session socket, serve until shutdown. A live
+/// handoff replaces this process image via exec — same pid, panes keep
+/// running on their inherited master fds.
 fn run_server(cfg: config::Config) -> std::io::Result<()> {
     let sock =
         proto::socket_path().ok_or_else(|| std::io::Error::other("cannot determine state dir"))?;
     let api_sock =
         api::socket_path().ok_or_else(|| std::io::Error::other("cannot determine state dir"))?;
     // A stale socket file from a dead server blocks bind; if nobody answers
-    // on it, it is safe to remove.
+    // on it, it is safe to remove. After exec-handoff OUR OWN sockets look
+    // stale (fds closed at exec) — same cleanup covers that.
     for s in [&sock, &api_sock] {
         if s.exists() && std::os::unix::net::UnixStream::connect(s).is_err() {
             let _ = std::fs::remove_file(s);
         }
     }
+    let handoff = take_handoff();
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
+    let outcome = rt.block_on(async {
         let listener = tokio::net::UnixListener::bind(&sock)?;
         let api_listener = tokio::net::UnixListener::bind(&api_sock)?;
         let result = server::run(
@@ -415,13 +440,57 @@ fn run_server(cfg: config::Config) -> std::io::Result<()> {
             Some(listener),
             Some(api_listener),
             Vec::new(),
+            handoff,
             server::ServerOpts { exit_when_no_clients: false },
         )
         .await;
         let _ = std::fs::remove_file(&sock);
         let _ = std::fs::remove_file(&api_sock);
         result
-    })
+    })?;
+    drop(rt); // no tokio left behind the exec
+    match outcome {
+        server::RunOutcome::Exit => Ok(()),
+        server::RunOutcome::Handoff(h) => {
+            let path = handoff_path()
+                .ok_or_else(|| std::io::Error::other("cannot determine state dir"))?;
+            std::fs::write(&path, serde_json::to_vec(&*h)?)?;
+            tracing::info!("exec-ing replacement server");
+            // exec only returns on failure.
+            let err = std::os::unix::process::CommandExt::exec(
+                std::process::Command::new(std::env::current_exe()?).arg("--server"),
+            );
+            let _ = std::fs::remove_file(&path);
+            Err(err)
+        }
+    }
+}
+
+fn handoff_path() -> Option<std::path::PathBuf> {
+    logging::state_dir().map(|d| d.join("handoff.json"))
+}
+
+/// Handoff state left by the previous process image, if it was really ours:
+/// the pid guard rejects stale files from crashed handoffs, whose fds would
+/// be garbage.
+fn take_handoff() -> Option<runtime::Handoff> {
+    let path = handoff_path()?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    let _ = std::fs::remove_file(&path);
+    match serde_json::from_str::<runtime::Handoff>(&text) {
+        Ok(h) if h.pid == std::process::id() => {
+            tracing::info!("resuming from live handoff");
+            Some(h)
+        }
+        Ok(h) => {
+            tracing::warn!(their_pid = h.pid, "ignoring stale handoff file");
+            None
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "bad handoff file");
+            None
+        }
+    }
 }
 
 /// --no-session: server task and thin client in one process over a socketpair.
@@ -432,9 +501,17 @@ fn run_monolithic(cfg: config::Config) -> std::io::Result<()> {
         rt.block_on(async {
             server_side.set_nonblocking(true)?;
             let stream = tokio::net::UnixStream::from_std(server_side)?;
-            // ponytail: no API socket in --no-session escape-hatch mode.
-            server::run(cfg, None, None, vec![stream], server::ServerOpts { exit_when_no_clients: true })
-                .await
+            // ponytail: no API socket / handoff in --no-session mode.
+            server::run(
+                cfg,
+                None,
+                None,
+                vec![stream],
+                None,
+                server::ServerOpts { exit_when_no_clients: true },
+            )
+            .await
+            .map(|_| ())
         })
     });
     let client_result = client::run(client_side);
