@@ -334,14 +334,38 @@ enum WaitCmd {
     },
 }
 
-/// Merge the cdock SessionStart hook into ~/.claude/settings.json so Claude
-/// Code reports which conversation runs in which pane. Idempotent; backs the
-/// file up first. The command guards on CDOCK_PANE_ID, so the hook is inert
-/// outside cdock panes.
+/// Merge the cdock SessionStart hook into EVERY Claude profile's
+/// settings.json (~/.claude and ~/.claude-*): a profile without the hook
+/// never reports its session id, and its panes silently lose their
+/// conversation on restore. Idempotent; backs each file up first. The
+/// command guards on CDOCK_PANE_ID, so the hook is inert outside panes.
 fn install_claude_hook() -> Result<bool, String> {
-    const MARKER: &str = "hook claude-session";
     let home = std::env::var("HOME").map_err(|_| "HOME unset".to_string())?;
-    let path = std::path::PathBuf::from(home).join(".claude/settings.json");
+    let home = std::path::PathBuf::from(home);
+    let mut profiles: Vec<std::path::PathBuf> = std::fs::read_dir(&home)
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            (n == ".claude" || n.starts_with(".claude-")) && e.path().is_dir()
+        })
+        .map(|e| e.path())
+        .collect();
+    if profiles.is_empty() {
+        profiles.push(home.join(".claude"));
+    }
+    profiles.sort();
+    for dir in profiles {
+        install_hook_into(&dir)?;
+        install_skill_into(&dir)?;
+    }
+    println!("restart running claude panes to activate the hook");
+    Ok(true)
+}
+
+fn install_hook_into(profile_dir: &std::path::Path) -> Result<(), String> {
+    const MARKER: &str = "hook claude-session";
+    let path = profile_dir.join("settings.json");
     let mut root: serde_json::Value = match std::fs::read_to_string(&path) {
         Ok(text) => serde_json::from_str(&text)
             .map_err(|e| format!("{} is not valid JSON ({e}); not touching it", path.display()))?,
@@ -360,8 +384,8 @@ fn install_claude_hook() -> Result<bool, String> {
         .or_insert_with(|| serde_json::json!([]));
     let arr = starts.as_array_mut().ok_or("\"SessionStart\" is not an array")?;
     if arr.iter().any(|e| e.to_string().contains(MARKER)) {
-        println!("claude integration already installed");
-        return install_claude_skill(); // keep the skill fresh anyway
+        println!("{}: hook already installed", path.display());
+        return Ok(());
     }
     arr.push(serde_json::json!({
         "hooks": [{
@@ -378,23 +402,19 @@ fn install_claude_hook() -> Result<bool, String> {
     let pretty = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
     std::fs::write(&path, pretty).map_err(|e| e.to_string())?;
     println!("installed SessionStart hook into {} (backup: .json.bak)", path.display());
-    println!("restart running claude panes to activate it");
-    install_claude_skill()?;
-    Ok(true)
+    Ok(())
 }
 
-/// Materialize the cdock skill so claude agents inside panes know how to
-/// drive the runtime (spawn siblings, run, wait). Overwrites — the skill is
-/// generated, cdock's copy is canonical.
-fn install_claude_skill() -> Result<bool, String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME unset".to_string())?;
-    let dir = std::path::PathBuf::from(home).join(".claude/skills/cdock");
+/// Materialize the cdock skill in a profile so claude agents inside panes
+/// know how to drive the runtime. Overwrites — cdock's copy is canonical.
+fn install_skill_into(profile_dir: &std::path::Path) -> Result<(), String> {
+    let dir = profile_dir.join("skills/cdock");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join("SKILL.md");
     std::fs::write(&path, include_str!("integration/cdock_skill.md"))
         .map_err(|e| e.to_string())?;
     println!("installed agent skill at {}", path.display());
-    Ok(true)
+    Ok(())
 }
 
 /// "%3" or "3" → 3.
