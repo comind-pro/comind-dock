@@ -230,7 +230,14 @@ impl Snapshot {
                 workspaces[*child].parent = Some(workspaces[*parent].id);
             }
         }
-        let active_workspace = self.active_workspace.min(workspaces.len() - 1);
+        // Through idx_map: skipped degenerate workspaces shift indices,
+        // same as parent links above.
+        let active_workspace = idx_map
+            .get(self.active_workspace)
+            .copied()
+            .flatten()
+            .unwrap_or(0)
+            .min(workspaces.len() - 1);
         let state = AppState {
             workspaces,
             active_workspace,
@@ -346,8 +353,11 @@ pub fn screen_replay(text: &str) -> Vec<u8> {
 }
 
 /// Write per-pane screen tails under `dir`; files of dead panes are removed.
+/// `None` text = keep the pane's existing file untouched (alt-screen panes:
+/// the visible TUI frame is garbage to replay, but the primary-screen tail
+/// saved earlier is still the right thing to restore).
 /// Root-parameterized so tests run against a temp dir.
-pub fn save_screens(dir: &std::path::Path, screens: &[(u64, String)]) {
+pub fn save_screens(dir: &std::path::Path, screens: &[(u64, Option<String>)]) {
     if let Err(e) = std::fs::create_dir_all(dir) {
         tracing::warn!(error = %e, "screens dir create failed");
         return;
@@ -362,6 +372,7 @@ pub fn save_screens(dir: &std::path::Path, screens: &[(u64, String)]) {
         }
     }
     for (id, text) in screens {
+        let Some(text) = text else { continue };
         if let Err(e) = std::fs::write(screen_file(dir, *id), screen_tail(text)) {
             tracing::warn!(error = %e, pane = id, "screen save failed");
         }
@@ -462,6 +473,17 @@ mod tests {
     }
 
     #[test]
+    fn alt_screen_pane_keeps_existing_tail() {
+        let dir = std::env::temp_dir().join(format!("cdock-altkeep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        save_screens(&dir, &[(7, Some("primary tail\n".into()))]);
+        // Next autosave: pane 7 is on the alt screen → None keeps the file.
+        save_screens(&dir, &[(7, None)]);
+        assert_eq!(take_screen(&dir, 7).as_deref(), Some("primary tail\n"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn screen_tail_bounds_lines_and_bytes() {
         // Line cap: 300 lines in, last 200 out.
         let text: String = (0..300).map(|i| format!("line{i}\n")).collect();
@@ -495,9 +517,9 @@ mod tests {
     fn screens_save_take_round_trip_and_stale_cleanup() {
         let dir = std::env::temp_dir().join(format!("cdock-screens-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        save_screens(&dir, &[(1, "one\n".into()), (2, "two\n".into())]);
+        save_screens(&dir, &[(1, Some("one\n".into())), (2, Some("two\n".into()))]);
         // Pane 2 died: its file must be swept on the next save.
-        save_screens(&dir, &[(1, "one\n".into())]);
+        save_screens(&dir, &[(1, Some("one\n".into()))]);
         assert_eq!(take_screen(&dir, 2), None, "stale file swept");
         assert_eq!(take_screen(&dir, 1).as_deref(), Some("one\n"));
         assert_eq!(take_screen(&dir, 1), None, "read is one-shot");

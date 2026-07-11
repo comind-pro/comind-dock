@@ -231,11 +231,13 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 }
             }
             None => {
-                // Drag inside a mouse-reporting app.
+                // Drag inside a mouse-reporting app — only when it asked
+                // for drag (1002) or any-motion (1003) reporting.
                 if let Some((id, rect)) = pane_at(&view.pane_rects, pos) {
                     let inner = crate::ui::content_rect(rect);
                     if inner.contains(pos)
                         && let Some(mode) = mouse_mode(rt, id)
+                        && mode.intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION)
                     {
                         let bytes = encode_mouse(
                             mode,
@@ -370,6 +372,49 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                     let bytes = encode_mouse(
                         mode,
                         1,
+                        ev.column - inner.x,
+                        ev.row - inner.y,
+                        true,
+                        ev.modifiers,
+                    );
+                    send_mouse(rt, id, bytes);
+                }
+            }
+        }
+
+        // Right/middle drags and bare motion for apps that asked: drag
+        // buttons carry 32 + button, buttonless motion is 32 + 3 (X11
+        // "no button" = 3), only under any-motion (1003) for the latter.
+        MouseEventKind::Drag(btn @ (MouseButton::Right | MouseButton::Middle)) => {
+            if let Some((id, rect)) = pane_at(&view.pane_rects, pos) {
+                let inner = crate::ui::content_rect(rect);
+                if inner.contains(pos)
+                    && let Some(mode) = mouse_mode(rt, id)
+                    && mode.intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION)
+                {
+                    let button = if btn == MouseButton::Middle { 32 + 1 } else { 32 + 2 };
+                    let bytes = encode_mouse(
+                        mode,
+                        button,
+                        ev.column - inner.x,
+                        ev.row - inner.y,
+                        true,
+                        ev.modifiers,
+                    );
+                    send_mouse(rt, id, bytes);
+                }
+            }
+        }
+        MouseEventKind::Moved => {
+            if let Some((id, rect)) = pane_at(&view.pane_rects, pos) {
+                let inner = crate::ui::content_rect(rect);
+                if inner.contains(pos)
+                    && let Some(mode) = mouse_mode(rt, id)
+                    && mode.contains(TermMode::MOUSE_MOTION)
+                {
+                    let bytes = encode_mouse(
+                        mode,
+                        32 + 3,
                         ev.column - inner.x,
                         ev.row - inner.y,
                         true,
@@ -761,7 +806,7 @@ fn run_menu_action(
         }
         MenuAction::OpenWorktree(ws_id, path) => {
             if rt.state.workspace_index(ws_id).is_some() {
-                rt.open_worktree(ws_id, path, area);
+                rt.open_worktree(ws_id, path, area, true);
             }
             Ok(())
         }

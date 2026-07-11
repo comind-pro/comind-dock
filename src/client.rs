@@ -22,12 +22,26 @@ fn setup_terminal() -> io::Result<()> {
         crossterm::event::EnableBracketedPaste,
         crossterm::event::EnableMouseCapture,
         crossterm::cursor::Hide,
-    )
+    )?;
+    // Kitty keyboard enhancement on the HOST terminal: without it, release
+    // events and modifier-disambiguated keys never reach us, so panes that
+    // request the protocol get an advertised-but-empty feature. Terminals
+    // without support ignore the push (best-effort by design).
+    let _ = crossterm::execute!(
+        io::stdout(),
+        crossterm::event::PushKeyboardEnhancementFlags(
+            crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | crossterm::event::KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS,
+        ),
+    );
+    Ok(())
 }
 
 fn restore_terminal() {
     let _ = crossterm::execute!(
         io::stdout(),
+        crossterm::event::PopKeyboardEnhancementFlags,
         crossterm::event::DisableMouseCapture,
         crossterm::event::DisableBracketedPaste,
         crossterm::terminal::LeaveAlternateScreen,

@@ -43,7 +43,15 @@ pub enum Req {
     },
     /// From the agent's SessionStart integration hook: which conversation
     /// runs in this pane (restore resumes exactly it).
-    ReportAgentSession { pane: u64, session_id: String },
+    ReportAgentSession {
+        pane: u64,
+        session_id: String,
+        /// The reporting agent's pid (the hook's parent). Rejected when it
+        /// isn't the pane's tracked agent — a nested claude (agent's Bash
+        /// tool, subshell) must not clobber the pane's own conversation.
+        #[serde(default)]
+        pid: Option<u32>,
+    },
     /// Integration hooks push an authoritative agent state: overrides
     /// screen detection until ttl_ms (default 30s) or an explicit clear.
     ReportAgent {
@@ -267,12 +275,20 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                 }
             }
         }
-        Req::ReportAgentSession { pane, session_id } => {
+        Req::ReportAgentSession { pane, session_id, pid } => {
             let pane = PaneId(pane);
-            if !rt.panes.contains_key(&pane) {
+            let Some(p) = rt.panes.get(&pane) else {
                 return Ok(err(format!("no such pane {pane}")));
+            };
+            // Nested claude guard: only the pane's tracked agent process may
+            // (re)bind the conversation. Unknown agent_pid (hook raced the
+            // first detection poll) is let through.
+            if let (Some(agent_pid), Some(reporter)) = (p.agent_pid, pid)
+                && agent_pid != reporter
+            {
+                return Ok(json!({"ok": true, "ignored": "nested agent"}));
             }
-            rt.agent_sessions.insert(pane, session_id);
+            rt.agent_sessions.insert(pane, format!("claude:{session_id}"));
             rt.save_session(); // survive a crash between autosaves
             Ok(json!({"ok": true}))
         }
@@ -419,7 +435,7 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             let (repo, parent_id) = (ws.cwd.clone(), ws.id);
             match crate::git::worktree_add(&repo, &branch, &rt.cfg.worktrees.root()) {
                 Ok(path) => {
-                    rt.open_worktree(parent_id, path.clone(), area);
+                    rt.open_worktree(parent_id, path.clone(), area, false);
                     rt.mark_dirty();
                     Ok(json!({"ok": true, "path": path.to_string_lossy()}))
                 }
@@ -434,7 +450,7 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             let (cwd, parent_id) = (ws.cwd.clone(), ws.id);
             match crate::git::worktrees(&cwd).into_iter().find(|(_, b)| *b == branch) {
                 Some((path, _)) => {
-                    rt.open_worktree(parent_id, path.clone(), area);
+                    rt.open_worktree(parent_id, path.clone(), area, false);
                     rt.mark_dirty();
                     Ok(json!({"ok": true, "path": path.to_string_lossy()}))
                 }

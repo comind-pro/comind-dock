@@ -313,10 +313,13 @@ impl AppState {
             }
             self.active_workspace = self.active_workspace.min(self.workspaces.len() - 1);
             // Never leave the user on a scope-hidden workspace.
-            if !self.in_scope(self.active_workspace)
-                && let Some(vis) = (0..self.workspaces.len()).find(|&i| self.in_scope(i))
-            {
-                self.active_workspace = vis;
+            if !self.in_scope(self.active_workspace) {
+                match (0..self.workspaces.len()).find(|&i| self.in_scope(i)) {
+                    Some(vis) => self.active_workspace = vis,
+                    // The last in-scope space closed: widen to everything
+                    // rather than strand the user on hidden panes.
+                    None => self.scope = None,
+                }
             }
             debug_assert!(self.check_invariants());
             return CloseOutcome::WorkspaceClosed;

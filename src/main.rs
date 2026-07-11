@@ -468,6 +468,9 @@ fn run_session_cmd(sub: SessionCmd) -> Result<bool, String> {
                     removed += 1;
                 }
             }
+            if std::fs::remove_dir_all(dir.join(format!("screens-{name}"))).is_ok() {
+                removed += 1;
+            }
             println!("deleted {removed} file(s) for session {name:?}");
             Ok(true)
         }
@@ -562,6 +565,28 @@ fn parse_pane(s: &str) -> Result<u64, String> {
     s.trim_start_matches('%').parse().map_err(|_| format!("bad pane id {s:?}"))
 }
 
+/// Pre-fix --no-session servers persisted snapshots and screen tails under
+/// ephemeral mono-<pid> names that can never resume — sweep the ones whose
+/// pid is gone. (Current mono servers no longer persist at all.)
+fn sweep_dead_mono_leftovers() {
+    let Some(dir) = crate::logging::state_dir() else { return };
+    let Ok(rd) = std::fs::read_dir(&dir) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let pid = name
+            .strip_prefix("session-mono-")
+            .and_then(|r| r.strip_suffix(".json"))
+            .or_else(|| name.strip_prefix("screens-mono-"))
+            .and_then(|p| p.parse::<i32>().ok());
+        let Some(pid) = pid else { continue };
+        // Signal 0: existence check only.
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            let p = e.path();
+            let _ = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+        }
+    }
+}
+
 /// Two-way interactive pane attach over the API socket: raw-mode stdin →
 /// SendText requests, output subscription → stdout. Ctrl-] detaches.
 // ponytail: one API request per stdin chunk — fine at human typing speed;
@@ -573,35 +598,42 @@ fn run_pane_attach(pane: u64) -> Result<(), String> {
     }
     // Paint the current screen so the user isn't staring at a blank pane.
     if let Ok(v) = api::request(&api::Req::Read { pane, lines: None })
-        && let Some(lines) = v["lines"].as_array()
+        && let Some(text) = v["text"].as_str()
     {
-        for l in lines {
-            if let Some(t) = l.as_str() {
-                println!("{t}");
-            }
-        }
+        println!("{text}");
     }
     eprintln!("[attached to %{pane} — Ctrl-] to detach]");
     crossterm::terminal::enable_raw_mode().map_err(|e| e.to_string())?;
     std::thread::spawn(move || {
         let mut stdin = std::io::stdin();
         let mut buf = [0u8; 4096];
+        // Multibyte chars can split across reads — carry the partial tail.
+        let mut pending: Vec<u8> = Vec::new();
         loop {
             let n = stdin.read(&mut buf).unwrap_or(0);
             if n == 0 {
                 break;
             }
-            let chunk = &buf[..n];
-            let end = chunk.iter().position(|&b| b == 0x1d); // Ctrl-]
-            let send = &chunk[..end.unwrap_or(n)];
-            if !send.is_empty() {
-                let text = String::from_utf8_lossy(send).into_owned();
-                let _ = api::request(&api::Req::SendText { pane, text });
-            }
-            if end.is_some() {
+            // Detach only on a LONE Ctrl-] — a typed key always arrives as
+            // its own chunk, while pasted bytes containing 0x1d must pass.
+            if n == 1 && buf[0] == 0x1d && pending.is_empty() {
                 let _ = crossterm::terminal::disable_raw_mode();
                 eprintln!("\r\n[detached]");
                 std::process::exit(0);
+            }
+            pending.extend_from_slice(&buf[..n]);
+            let (text, rest) = match std::str::from_utf8(&pending) {
+                Ok(t) => (t.to_string(), Vec::new()),
+                Err(e) if e.valid_up_to() > 0 || pending.len() < 4 => {
+                    let (ok, rest) = pending.split_at(e.valid_up_to());
+                    (String::from_utf8_lossy(ok).into_owned(), rest.to_vec())
+                }
+                // 4+ bytes of garbage: not a split char — flush lossily.
+                Err(_) => (String::from_utf8_lossy(&pending).into_owned(), Vec::new()),
+            };
+            pending = rest;
+            if !text.is_empty() {
+                let _ = api::request(&api::Req::SendText { pane, text });
             }
         }
     });
@@ -908,8 +940,14 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             };
             // No server (ephemeral session, plain terminal) → silently ok;
             // the hook must never fail a claude launch.
+            // Our parent is the reporting claude itself — the server uses
+            // the pid to reject nested claudes clobbering the pane binding.
             let _ = api::request_with_timeout(
-                &Req::ReportAgentSession { pane, session_id: session_id.to_string() },
+                &Req::ReportAgentSession {
+                    pane,
+                    session_id: session_id.to_string(),
+                    pid: Some(std::os::unix::process::parent_id()),
+                },
                 Duration::from_secs(3),
             );
             return Ok(true);
@@ -1049,6 +1087,7 @@ fn run_server(cfg: config::Config, warnings: Vec<String>) -> std::io::Result<()>
             let _ = std::fs::remove_file(s);
         }
     }
+    sweep_dead_mono_leftovers();
     let handoff = take_handoff();
     // Session snapshot as of this boot — one restore point if a bad attach
     // or runaway automation mangles the live session and autosave persists
@@ -1194,15 +1233,12 @@ fn take_handoff() -> Option<runtime::Handoff> {
 
 /// --no-session: server task and thin client in one process over a socketpair.
 fn run_monolithic_pre() {
-    // A monolithic instance must not share the default session's snapshot
+    // A monolithic instance must not share ANY named session's snapshot
     // (double agent-resume, two autosave writers) nor let its panes' hooks
-    // reach the background server's sockets: pin an ephemeral session name.
+    // reach a background server's sockets: pin an ephemeral name even when
+    // --session/env named one — --no-session means ephemeral, period.
     // Safety: called before any thread is spawned.
-    if std::env::var_os("CDOCK_SESSION").is_none() {
-        unsafe {
-            std::env::set_var("CDOCK_SESSION", format!("mono-{}", std::process::id()))
-        };
-    }
+    unsafe { std::env::set_var("CDOCK_SESSION", format!("mono-{}", std::process::id())) };
 }
 
 fn run_monolithic(cfg: config::Config, folder: Option<std::path::PathBuf>) -> std::io::Result<()> {

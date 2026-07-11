@@ -100,6 +100,10 @@ pub enum MouseDrag {
 
 pub struct Runtime {
     pub state: AppState,
+    /// false for --no-session (mono) servers: an ephemeral session that
+    /// exits with its client never resumes, so persisting it only litters
+    /// the state dir with snapshots and screen tails.
+    pub persist: bool,
     pub panes: HashMap<PaneId, PaneRuntime>,
     pub cfg: Config,
     pub keymap: Keymap,
@@ -161,7 +165,11 @@ impl Runtime {
     pub fn split_focused(&mut self, dir: Dir, before: bool, area: Rect) -> io::Result<()> {
         let pane = self.state.split_focused(dir, before);
         // Provisional size; compute_view corrects it before the next frame.
-        self.spawn_pane(pane, area.width.max(2) / 2, area.height.max(2) / 2)
+        let r = self.spawn_pane(pane, area.width.max(2) / 2, area.height.max(2) / 2);
+        if r.is_err() {
+            self.state.close_pane(pane); // a leaf without a PTY is unclosable
+        }
+        r
     }
 
     pub fn spawn_pane(&mut self, pane: PaneId, cols: u16, rows: u16) -> io::Result<()> {
@@ -200,7 +208,7 @@ impl Runtime {
     ) -> io::Result<()> {
         let scrollback = self.cfg.advanced.scrollback_lines();
         let emu = Emulator::new(cols, rows, pane, self.tx.clone(), scrollback);
-        let mut opts = self.spawn_opts(command);
+        let mut opts = self.spawn_opts(pane, command);
         opts.env = env;
         if let Some(cwd) = cwd.filter(|c| c.is_dir()) {
             opts.cwd = cwd;
@@ -237,7 +245,7 @@ impl Runtime {
         Ok(())
     }
 
-    fn spawn_opts(&self, command: Option<String>) -> pty::SpawnOpts {
+    fn spawn_opts(&self, pane: PaneId, command: Option<String>) -> pty::SpawnOpts {
         let t = &self.cfg.terminal;
         // Command panes run under /bin/sh: our generated command lines
         // (hold_on_failure, resume) are POSIX — a fish/nushell $SHELL would
@@ -254,13 +262,19 @@ impl Runtime {
             ShellMode::Login => true,
             ShellMode::NonLogin => false,
         };
-        // Panes spawn in their workspace's folder (worktree spaces have
-        // their own) — or, with [terminal].new_cwd = "follow", wherever the
-        // FOCUSED pane's process currently sits (true per-pane follow).
-        // A vanished folder (deleted worktree in a snapshot) must not brick
-        // the spawn — and with it the whole restore: fall back to home.
-        let ws = self.state.active_workspace();
-        let tab = ws.active_tab();
+        // Panes spawn in their OWNING workspace's folder (the pane is in
+        // the tree before spawn) — background API spawns into another space
+        // must not inherit the user's current folder, or the anchor poll
+        // rewrites the new space to the active one's cwd within seconds.
+        // With [terminal].new_cwd = "follow", follow that tab's focused
+        // pane. A vanished folder (deleted worktree in a snapshot) must not
+        // brick the spawn — and with it the whole restore: fall back home.
+        let (wi, ti) = self
+            .state
+            .locate_pane(pane)
+            .unwrap_or((self.state.active_workspace, 0));
+        let ws = self.state.workspaces.get(wi).unwrap_or_else(|| self.state.active_workspace());
+        let tab = ws.tabs.get(ti).unwrap_or_else(|| ws.active_tab());
         let follow = (t.new_cwd == "follow")
             .then(|| {
                 self.panes
@@ -361,8 +375,15 @@ impl Runtime {
             let Some(p) = self.panes.get_mut(&id) else { continue };
             if p.agent != agent {
                 p.agent = agent;
-                p.agent_since = agent.map(|_| std::time::SystemTime::now());
+                p.agent_since = None;
                 self.dirty = true; // agent row appears/leaves the sidebar
+            }
+            // Stamp on presence, not transition: a direct-spawned agent is
+            // already Some on the first poll (spawn seeds p.agent), and a
+            // handoff heir re-derives it from the program — a transition
+            // stamp would leave both at None forever.
+            if p.agent.is_some() && p.agent_since.is_none() {
+                p.agent_since = Some(std::time::SystemTime::now());
             }
             p.agent_pid = agent_pid;
             if agent_bin.is_some() && p.agent_bin != agent_bin {
@@ -411,9 +432,11 @@ impl Runtime {
                 notices.push(Notice { pane: id, kind: NoticeKind::Blocked, name });
             } else if prev == Status::Working
                 && matches!(eff, Status::Idle | Status::Done)
-                && p.status != Status::Unknown // manifest-confirmed, not the
-                // activity fallback — which flips on every 3s output pause
-                // and would spam "finished" for manifest-less agents
+                // Manifest-confirmed or hook-reported — not the activity
+                // fallback, which flips on every 3s output pause and would
+                // spam "finished" for manifest-less agents.
+                && (p.status != Status::Unknown
+                    || p.reported.as_ref().is_some_and(|r| r.until > std::time::Instant::now()))
                 && prev_lasted >= Duration::from_secs(5)
             {
                 // Finished a real stretch of work — not spinner flicker.
@@ -506,49 +529,74 @@ impl Runtime {
         let (repo_cwd, parent_id) = (ws.cwd.clone(), ws.id);
         let root = self.cfg.worktrees.root();
         match crate::git::worktree_add(&repo_cwd, branch, &root) {
-            Ok(path) => self.open_worktree(parent_id, path, area),
+            Ok(path) => self.open_worktree(parent_id, path, area, true),
             Err(e) => tracing::warn!(error = %e, branch, "worktree add failed"),
         }
     }
 
     /// Open an existing worktree path as a child space of `parent_id`.
+    /// `activate=false` for API callers — background automation must not
+    /// yank the user's view.
     pub fn open_worktree(
         &mut self,
         parent_id: crate::state::ids::WorkspaceId,
         path: std::path::PathBuf,
         area: Rect,
+        activate: bool,
     ) {
         let name = folder_name(&path);
-        let pane = self.state.new_workspace(name, path, Some(parent_id));
+        let pane = self.state.new_workspace_full(name, path, Some(parent_id), activate);
         if let Err(e) = self.spawn_pane(pane, area.width.max(4), area.height.max(4)) {
             tracing::warn!(error = %e, "worktree space spawn failed");
+            self.state.close_pane(pane); // a leaf without a PTY is unclosable
         }
     }
 
     /// Snapshot the session, remembering which agent ran in which pane.
-    pub fn save_session(&self) {
+    pub fn save_session(&mut self) {
+        if !self.persist {
+            return;
+        }
+        // agent_sessions holds FULL "agent:id" idents. Pre-0.4 servers and
+        // handoffs stored bare claude uuids — normalize on read.
+        fn full_ident(s: &str) -> String {
+            if s.contains(':') { s.to_string() } else { format!("claude:{s}") }
+        }
+        // Ids already bound to a pane: two same-cwd codex panes must not
+        // both claim the newest session file.
+        let mut claimed: std::collections::HashSet<String> =
+            self.agent_sessions.values().map(|s| full_ident(s)).collect();
+        let mut discovered: Vec<(PaneId, String)> = Vec::new();
         let mut metas = HashMap::new();
         for (id, p) in &self.panes {
             // "agent:session-id" when the integration hook reported one.
             // The hook can land before the 500ms detection poll notices the
-            // agent — a reported session is claude by definition, so the
-            // ident must not wait for detection.
+            // agent — the ident must not wait for detection.
             // The pane's own folder — an agent must resume where its
             // conversation lives, wherever the workspace anchor drifted.
             let cwd = p.pty.child_pid.and_then(crate::platform::process_cwd);
             let agent = match (p.agent, self.agent_sessions.get(id)) {
-                (Some(a), Some(s)) => Some(format!("{a}:{s}")),
+                (_, Some(s)) => Some(full_ident(s)),
                 // codex/opencode have no SessionStart hook — match their
-                // session files by cwd + the moment the agent appeared.
+                // session files by cwd + when the agent appeared (minus a
+                // grace: the file usually predates the first detection poll).
                 (Some(a), None) => Some(
                     cwd.as_deref()
                         .zip(p.agent_since)
                         .and_then(|(c, t)| {
-                            crate::agents::newest_agent_session(a, std::path::Path::new(c), t)
+                            let since = t - Duration::from_secs(5);
+                            crate::agents::newest_agent_session(a, std::path::Path::new(c), since)
                         })
-                        .map_or_else(|| a.to_string(), |s| format!("{a}:{s}")),
+                        .map(|s| format!("{a}:{s}"))
+                        .filter(|ident| !claimed.contains(ident))
+                        .inspect(|ident| {
+                            // Cache: later saves skip the fs walk, and the
+                            // binding survives handoff and quiet mtimes.
+                            claimed.insert(ident.clone());
+                            discovered.push((*id, ident.clone()));
+                        })
+                        .unwrap_or_else(|| a.to_string()),
                 ),
-                (None, Some(s)) => Some(format!("claude:{s}")),
                 (None, None) => None,
             };
             // Profile env rides along so restore resumes under the same
@@ -578,6 +626,9 @@ impl Runtime {
                 );
             }
         }
+        for (id, ident) in discovered {
+            self.agent_sessions.insert(id, ident);
+        }
         crate::state::snapshot::save(&self.state, &metas);
         // Screen history: a text tail per pane, replayed on cold restore.
         // Alt-screen panes are skipped — scrollback_text is just the TUI
@@ -585,11 +636,14 @@ impl Runtime {
         // ponytail: full-grid text walk every autosave; make it change-driven
         // if it ever shows up in a profile.
         if let Some(dir) = crate::state::snapshot::screens_dir() {
-            let screens: Vec<(u64, String)> = self
+            let screens: Vec<(u64, Option<String>)> = self
                 .panes
                 .iter()
-                .filter(|(_, p)| !p.emu.on_alt_screen())
-                .map(|(id, p)| (id.0, p.emu.scrollback_text()))
+                .map(|(id, p)| {
+                    // Alt-screen: keep the previously saved primary tail.
+                    let text = (!p.emu.on_alt_screen()).then(|| p.emu.scrollback_text());
+                    (id.0, text)
+                })
                 .collect();
             crate::state::snapshot::save_screens(&dir, &screens);
         }
@@ -695,6 +749,7 @@ pub fn build(
         theme,
         titles: HashMap::new(),
         branches: HashMap::new(),
+        persist: true,
         agent_sessions: HashMap::new(),
         toasts: Vec::new(),
         update_available: None,
@@ -727,11 +782,11 @@ pub fn build(
             crate::agents::hold_on_failure(&cmd)
         });
         // Seed the session mapping now: the first autosave fires before the
-        // agent's hook re-reports, and must not strip the ident.
-        if let Some(id) = meta.agent.as_deref().and_then(|a| a.strip_prefix("claude:")) {
-            // Claude only: the map's save-side fallback writes "claude:<id>",
-            // so a codex ident seeded here would be corrupted on re-save.
-            rt.agent_sessions.insert(pane, id.to_string());
+        // agent's hook re-reports (claude) or before the file walk can
+        // rediscover (codex/opencode), and must not strip the ident. The
+        // map holds full "agent:id" idents.
+        if meta.agent.as_deref().is_some_and(|a| a.contains(':')) {
+            rt.agent_sessions.insert(pane, meta.agent.clone().unwrap_or_default());
         }
         // The pane's own saved folder wins over the workspace anchor —
         // agent conversations are folder-bound; env carries the profile.
@@ -990,6 +1045,7 @@ pub fn build_from_handoff(
     let scrollback = cfg.advanced.scrollback_lines();
     let mut rt = Runtime {
         state: h.state,
+        persist: true,
         panes: HashMap::new(),
         cfg,
         keymap,
@@ -1035,7 +1091,12 @@ pub fn build_from_handoff(
                     },
                 );
             }
-            Err(e) => tracing::warn!(pane = %hp.id, error = %e, "handoff adopt failed"),
+            Err(e) => {
+                tracing::warn!(pane = %hp.id, error = %e, "handoff adopt failed");
+                // The dup'd master (CLOEXEC cleared) would otherwise leak
+                // into every future child, holding the slave open forever.
+                unsafe { libc::close(hp.fd) };
+            }
         }
         // The fresh emulator is blank until the app writes again — replay
         // the screen tail saved just before the handoff (same pane ids).
@@ -1166,7 +1227,14 @@ pub fn handle_input(
     use crossterm::event::{Event, KeyEventKind};
 
     match ev {
-        Event::Key(key) if key.kind != KeyEventKind::Release => {
+        // Releases skip keybind matching (a binding must not fire twice)
+        // and go straight to the pane — encode_key forwards them only when
+        // the pane's kitty protocol asked for event types.
+        Event::Key(key) if key.kind == KeyEventKind::Release => {
+            rt.send_key(&key);
+            return Ok(InputOutcome::Continue);
+        }
+        Event::Key(key) => {
             return input::handle_key(rt, key, area);
         }
         Event::Paste(text) => {

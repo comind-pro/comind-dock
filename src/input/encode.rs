@@ -14,6 +14,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 pub fn encode_key(key: &KeyEvent, mode: &TermMode) -> Option<Vec<u8>> {
     if mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL) {
         encode_kitty(key, mode)
+    } else if key.kind == KeyEventKind::Release {
+        // The host terminal reports releases (we push the enhancement);
+        // classic panes never asked for them — emitting bytes would type
+        // every key twice.
+        None
     } else {
         encode_classic(key, mode)
     }

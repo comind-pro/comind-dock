@@ -38,15 +38,28 @@ fn github_token() -> Option<String> {
 }
 
 /// "v0.2.1" → [0, 2, 1]; non-numeric parts end the comparison key.
-fn semver(tag: &str) -> Vec<u64> {
-    tag.trim_start_matches('v')
+/// Numeric parts + a final "is-release" rank: leading digits of each dot
+/// part parse even with a prerelease suffix ("1-rc2" → 1), and at equal
+/// numbers a full release outranks any prerelease ("0.4.1" > "0.4.1-rc1").
+/// ponytail: rc1 vs rc2 at the same version compares by the suffix string,
+/// which is right for rcN/betaN and good enough for this repo's tags.
+fn semver(tag: &str) -> (Vec<u64>, bool, String) {
+    let v = tag.trim_start_matches('v');
+    let nums: Vec<u64> = v
         .split('.')
-        .map_while(|p| p.parse::<u64>().ok())
-        .collect()
+        .map_while(|p| {
+            let digits: String = p.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse::<u64>().ok()
+        })
+        .collect();
+    let suffix = v.split_once('-').map(|(_, s)| s.to_string()).unwrap_or_default();
+    (nums, suffix.is_empty(), suffix)
 }
 
 pub fn is_newer(tag: &str) -> bool {
-    semver(tag) > semver(CURRENT)
+    let t = semver(tag);
+    // An unparseable tag ((0 numbers)) must never look newer.
+    !t.0.is_empty() && t > semver(CURRENT)
 }
 
 /// Which release feed to follow.
@@ -239,8 +252,13 @@ mod tests {
         assert!(!is_newer(CURRENT));
         assert!(!is_newer("v0.0.1"));
         assert!(semver("v0.10.0") > semver("v0.9.9"), "numeric, not lexicographic");
-        assert_eq!(semver("garbage"), Vec::<u64>::new());
+        assert!(semver("garbage").0.is_empty());
         assert!(!is_newer("garbage"), "unparseable tag is never newer");
+        // Prerelease tags keep their patch number and rank below the release.
+        assert!(semver("v0.4.1-rc1").0 == vec![0, 4, 1]);
+        assert!(semver("v0.4.1") > semver("v0.4.1-rc1"));
+        assert!(semver("v0.4.1-rc2") > semver("v0.4.1-rc1"));
+        assert!(is_newer("v99.0.0-rc1"), "prerelease of a newer version is newer");
     }
 
     #[test]

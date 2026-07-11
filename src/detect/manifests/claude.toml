@@ -38,6 +38,20 @@ any_of = ["do you want to proceed", "do you want to", "would you like to", "yes,
 none_of = ["esc to interrupt", "running stop hooks", "· ↓ ", "· ↑ "]
 
 [[rule]]
+priority = 100
+state = "blocked"
+all_of = ["❯ 4. "]
+any_of = ["do you want to proceed", "do you want to", "would you like to", "yes, and don't ask again"]
+none_of = ["esc to interrupt", "running stop hooks", "· ↓ ", "· ↑ "]
+
+[[rule]]
+priority = 100
+state = "blocked"
+all_of = ["❯ 5. "]
+any_of = ["do you want to proceed", "do you want to", "would you like to", "yes, and don't ask again"]
+none_of = ["esc to interrupt", "running stop hooks", "· ↓ ", "· ↑ "]
+
+[[rule]]
 priority = 95
 state = "blocked"
 any_of = ["waiting for your approval", "grant access", "esc to cancel"]

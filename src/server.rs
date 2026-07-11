@@ -98,6 +98,9 @@ pub async fn run(
     ws_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut manifests = crate::detect::load_all();
     let mut plugins = crate::plugin::list();
+    // Per-pane damping for plugin hooks: the activity fallback can flap
+    // Working/Idle on every output pause — shelling out each time is a storm.
+    let mut hook_last: HashMap<crate::state::ids::PaneId, std::time::Instant> = HashMap::new();
     let mut agent_poll = tokio::time::interval(Duration::from_millis(500));
     agent_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Debounced session persistence (ARCHITECTURE §6).
@@ -114,12 +117,18 @@ pub async fn run(
     });
 
     // Background release check: on start and every 6h (menu "update ready").
+    // The thread re-reads the config each round, so a reload that flips
+    // update.channel/repo/check takes effect without a restart.
     if rt.cfg.update.check {
-        let repo = rt.cfg.update.repo.clone();
-        let channel = rt.cfg.update.channel;
         let update_tx = update_check_tx;
         std::thread::spawn(move || {
             loop {
+                let upd = crate::config::load(None).0.update;
+                if !upd.check {
+                    std::thread::sleep(Duration::from_secs(6 * 3600));
+                    continue;
+                }
+                let (repo, channel) = (upd.repo, upd.channel);
                 // A failed check (network, GitHub rate limit) retries in
                 // 10min, not 6h — restarts reset the in-memory flag, so a
                 // silent failure would hide a known update for hours.
@@ -141,10 +150,13 @@ pub async fn run(
         });
     }
 
+    rt.persist = !opts.exit_when_no_clients;
     for w in &opts.boot_warnings {
         rt.add_plain_toast(format!("⚠ config: {w}"), 20);
     }
-    if let Some(notes) = crate::update::take_pending_release_notes() {
+    if rt.persist
+        && let Some(notes) = crate::update::take_pending_release_notes()
+    {
         let title = notes.lines().next().unwrap_or("").trim_start_matches(['#', ' ']).to_string();
         rt.add_plain_toast(format!("updated to {title} — notes in the log"), 20);
         tracing::info!(%notes, "release notes");
@@ -429,13 +441,21 @@ pub async fn run(
                         "event": "agent-status", "pane": ch.pane.0, "agent": ch.agent,
                         "from": ch.from.word(), "to": ch.to.word(),
                     }));
-                    // Plugin [[hooks]]: fire-and-forget shell on status change.
-                    for cmd in crate::plugin::event_hooks(&plugins, ch.to.word()) {
-                        let _ = std::process::Command::new("/bin/sh")
-                            .args(["-c", &cmd])
-                            .env("CDOCK_PANE", ch.pane.0.to_string())
-                            .env("CDOCK_STATUS", ch.to.word())
-                            .spawn();
+                    // Plugin [[hooks]]: fire-and-forget shell on AGENT status
+                    // changes only — plain shells flap Working/Idle on every
+                    // output pause and would storm the hooks.
+                    let damped = hook_last
+                        .get(&ch.pane)
+                        .is_some_and(|t| t.elapsed() < Duration::from_secs(5));
+                    if ch.agent.is_some() && !damped {
+                        hook_last.insert(ch.pane, std::time::Instant::now());
+                        for cmd in crate::plugin::event_hooks(&plugins, ch.to.word()) {
+                            let mut c = std::process::Command::new("/bin/sh");
+                            c.args(["-c", &cmd])
+                                .env("CDOCK_PANE", ch.pane.0.to_string())
+                                .env("CDOCK_STATUS", ch.to.word());
+                            spawn_and_reap(c); // reaped — a bare spawn leaks zombies
+                        }
                     }
                 }
                 // After the poll — waiters must see fresh statuses.
