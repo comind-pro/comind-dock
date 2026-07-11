@@ -1,6 +1,6 @@
 [package]
 name = "cdock"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 license = "MIT"
 description = "comind-dock: terminal-native runtime and multiplexer for AI coding agents"
