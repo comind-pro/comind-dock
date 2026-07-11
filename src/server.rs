@@ -58,6 +58,7 @@ pub async fn run(
     opts: ServerOpts,
 ) -> io::Result<RunOutcome> {
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+    let update_check_tx = tx.clone();
     let (data_tx, mut data_rx) = mpsc::channel::<PtyData>(16);
     let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let (ctl_tx, mut ctl_rx) = mpsc::unbounded_channel::<ClientCtl>();
@@ -104,6 +105,26 @@ pub async fn run(
             tracing::debug!("ignoring SIGHUP");
         }
     });
+
+    // Background release check: on start and every 6h (menu "update ready").
+    if rt.cfg.update.check {
+        let repo = rt.cfg.update.repo.clone();
+        let update_tx = update_check_tx;
+        std::thread::spawn(move || {
+            loop {
+                match crate::update::latest_release(&repo) {
+                    Ok((tag, _)) if crate::update::is_newer(&tag) => {
+                        if update_tx.send(AppEvent::UpdateAvailable(tag)).is_err() {
+                            return;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::debug!(error = %e, "update check failed"),
+                }
+                std::thread::sleep(Duration::from_secs(6 * 3600));
+            }
+        });
+    }
 
     tracing::info!("server running");
 
@@ -199,6 +220,11 @@ pub async fn run(
                     match ev {
                         AppEvent::PtyExit(id) => runtime::handle_pane_exit(&mut rt, id, area),
                         AppEvent::Term(id, tev) => runtime::handle_term_event(&mut rt, id, tev),
+                        AppEvent::UpdateAvailable(tag) => {
+                            tracing::info!(%tag, "update available");
+                            rt.update_available = Some(tag);
+                            rt.mark_dirty();
+                        }
                     }
                     next = rx.try_recv().ok();
                 }

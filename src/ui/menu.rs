@@ -27,18 +27,26 @@ pub fn pane_items(pane: PaneId) -> Vec<MenuItem> {
 }
 
 /// The sidebar "menu" button: app-level settings and session actions.
-pub fn app_items() -> Vec<MenuItem> {
-    [
+/// `update`: a newer release tag when the background check found one.
+pub fn app_items(update: Option<&str>) -> Vec<MenuItem> {
+    let mut items: Vec<MenuItem> = [
         ("new agent…", MenuAction::AgentPicker(None)),
         ("profiles", MenuAction::EditProfiles),
         ("settings", MenuAction::OpenSettings),
         ("keybinds", MenuAction::ShowKeybinds),
         ("reload config", MenuAction::ReloadConfig),
-        ("detach", MenuAction::Detach),
     ]
     .into_iter()
     .map(|(label, action)| MenuItem { label: label.to_string(), action })
-    .collect()
+    .collect();
+    if let Some(tag) = update {
+        items.push(MenuItem {
+            label: format!("● update ready {tag}"),
+            action: MenuAction::RunUpdate,
+        });
+    }
+    items.push(MenuItem { label: "detach".to_string(), action: MenuAction::Detach });
+    items
 }
 
 pub fn space_items(wi: usize) -> Vec<MenuItem> {

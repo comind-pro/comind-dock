@@ -119,7 +119,7 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                         rt.state.input_mode = InputMode::Menu {
                             x: ev.column,
                             y: ev.row,
-                            items: menu::app_items(),
+                            items: menu::app_items(rt.update_available.as_deref()),
                         };
                     }
                     Some(sidebar::Target::ContinueAgent) => {
@@ -521,6 +521,20 @@ fn run_menu_action(
         MenuAction::ReloadConfig => {
             rt.reload_config();
             Ok(())
+        }
+        MenuAction::RunUpdate => {
+            // A visible tab: the user watches the download, then the server
+            // execs the new binary in place and the client reconnects.
+            let bin = std::env::current_exe()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "cdock".to_string());
+            let pane = rt.state.new_tab();
+            rt.spawn_pane_cmd(
+                pane,
+                area.width,
+                area.height,
+                Some(format!("'{bin}' update --handoff")),
+            )
         }
         MenuAction::Detach => return InputOutcome::Detach,
         MenuAction::ListWorktrees(wi) => {

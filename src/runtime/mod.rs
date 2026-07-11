@@ -84,6 +84,8 @@ pub struct Runtime {
     pub agent_sessions: HashMap<PaneId, String>,
     /// In-app notification toasts (top-right overlay, click jumps to pane).
     pub toasts: Vec<Toast>,
+    /// A newer release tag found by the background check ("update ready").
+    pub update_available: Option<String>,
     /// The last computed view — neighbor focus and mouse hit testing.
     pub last_view: Option<crate::ui::view::View>,
     /// Sidebar scroll offset in rows (mouse wheel over the sidebar).
@@ -511,6 +513,7 @@ pub fn build(
         branches: HashMap::new(),
         agent_sessions: HashMap::new(),
         toasts: Vec::new(),
+        update_available: None,
         last_view: None,
         sidebar_scroll: 0,
         drag: None,
@@ -712,6 +715,7 @@ pub fn build_from_handoff(
         branches: HashMap::new(),
         agent_sessions: h.agent_sessions.into_iter().collect(),
         toasts: Vec::new(),
+        update_available: None,
         last_view: None,
         sidebar_scroll: 0,
         drag: None,

@@ -19,8 +19,24 @@ pub struct Config {
     pub keys: KeysCfg,
     pub ui: UiCfg,
     pub worktrees: WorktreesCfg,
+    pub update: UpdateCfg,
     pub advanced: AdvancedCfg,
     pub experimental: ExperimentalCfg,
+}
+
+#[derive(Debug, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct UpdateCfg {
+    /// Background check for new releases (menu shows "update ready").
+    pub check: bool,
+    /// GitHub repo the update feed reads from.
+    pub repo: String,
+}
+
+impl Default for UpdateCfg {
+    fn default() -> Self {
+        Self { check: true, repo: "comind-pro/comind-dock".to_string() }
+    }
 }
 
 #[derive(Debug, PartialEq, Deserialize)]

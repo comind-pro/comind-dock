@@ -53,6 +53,8 @@ pub enum MenuAction {
     /// The prefix+? keybinding overlay.
     ShowKeybinds,
     ReloadConfig,
+    /// Download the new release and live-handoff into it (a visible tab).
+    RunUpdate,
     Detach,
 }
 

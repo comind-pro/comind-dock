@@ -56,6 +56,10 @@ delivery = "both"     # app | system | both | off; app toasts click-to-jump
 [worktrees]
 directory = "~/.comind-dock/worktrees"   # <dir>/<repo>/<branch-slug>
 
+[update]
+check = true                              # background release check (6h)
+repo = "comind-pro/comind-dock"           # GitHub update feed
+
 [advanced]
 scrollback_limit_bytes = 10000000   # converted to lines at ~120 bytes/line
 

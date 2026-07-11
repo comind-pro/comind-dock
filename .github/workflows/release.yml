@@ -1,0 +1,40 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-macos
+          - runner: macos-13
+            target: x86_64-macos
+          - runner: ubuntu-latest
+            target: x86_64-linux
+          - runner: ubuntu-24.04-arm
+            target: aarch64-linux
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
+      - name: package
+        run: |
+          cp target/release/cdock cdock
+          tar -czf cdock-${{ matrix.target }}.tar.gz cdock
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum cdock-${{ matrix.target }}.tar.gz > cdock-${{ matrix.target }}.tar.gz.sha256
+          else
+            shasum -a 256 cdock-${{ matrix.target }}.tar.gz > cdock-${{ matrix.target }}.tar.gz.sha256
+          fi
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            cdock-${{ matrix.target }}.tar.gz
+            cdock-${{ matrix.target }}.tar.gz.sha256

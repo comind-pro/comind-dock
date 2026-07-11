@@ -7,6 +7,8 @@ pub enum AppEvent {
     PtyExit(PaneId),
     /// Event emitted by a pane's terminal emulator.
     Term(PaneId, alacritty_terminal::event::Event),
+    /// The background release check found a newer version tag.
+    UpdateAvailable(String),
 }
 
 /// PTY output travels on its own BOUNDED channel: when the main loop falls

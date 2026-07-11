@@ -9,6 +9,18 @@ attention. Detach and reattach at will — agents keep running on a background
 server. Drive everything with the keyboard, the mouse, or a scriptable
 CLI/JSON API that agents themselves can use to coordinate with each other.
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/comind-pro/comind-dock/master/install.sh | sh
+```
+
+Installs the latest release binary to `~/.local/bin/cdock` (override with
+`CDOCK_INSTALL_DIR`). Update later from inside the dock — the sidebar menu
+shows "update ready" when a new release ships — or with `cdock update
+--handoff`, which swaps the running server in place without killing a
+single pane.
+
 ## Status
 
 **Phase 1 (core multiplexer MVP) implemented.** `cdock` is a working

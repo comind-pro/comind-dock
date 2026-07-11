@@ -15,6 +15,7 @@ mod server;
 mod state;
 mod term;
 mod ui;
+mod update;
 
 use std::process::ExitCode;
 use std::time::Duration;
@@ -122,6 +123,13 @@ enum Cmd {
     Tab {
         #[command(subcommand)]
         sub: TabCmd,
+    },
+    /// Self-update from the latest GitHub release.
+    Update {
+        /// After replacing the binary, live-handoff the running server
+        /// into it (panes survive).
+        #[arg(long)]
+        handoff: bool,
     },
     /// Internal hook entrypoints (called by agent CLIs, not by hand).
     #[command(hide = true)]
@@ -570,6 +578,30 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             return match agent.as_str() {
                 "claude" => install_claude_hook(),
                 other => Err(format!("no integration for {other:?} yet (only claude)")),
+            };
+        }
+        Cmd::Update { handoff } => {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            println!("current: v{}", update::CURRENT);
+            return match update::self_update(&exe)? {
+                Some(tag) => {
+                    println!("updated to {tag} at {}", exe.display());
+                    if handoff {
+                        println!("handing the running server off to the new binary…");
+                        match api::request(&Req::Handoff) {
+                            Ok(v) if v["ok"] == true => println!("handoff requested — reconnecting"),
+                            Ok(v) => println!("handoff refused: {v}"),
+                            Err(e) => println!("no running server to hand off ({e})"),
+                        }
+                    } else {
+                        println!("apply to the running session with: cdock server handoff");
+                    }
+                    Ok(true)
+                }
+                None => {
+                    println!("already up to date");
+                    Ok(true)
+                }
             };
         }
         Cmd::Hook { sub: HookCmd::ClaudeSession } => {
