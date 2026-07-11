@@ -572,7 +572,16 @@ pub fn build(
         {
             env.push(("CLAUDE_CONFIG_DIR".to_string(), dir.display().to_string()));
         }
-        rt.spawn_pane_full(pane, area.width, area.height, resume, env, meta.cwd)?;
+        // No per-pane cwd (old snapshot) → the pane's OWN workspace folder;
+        // spawn_opts would otherwise use whichever workspace is active.
+        let cwd = meta.cwd.or_else(|| {
+            rt.state
+                .workspaces
+                .iter()
+                .find(|w| w.tabs.iter().any(|t| t.layout.contains(pane)))
+                .map(|w| w.cwd.clone())
+        });
+        rt.spawn_pane_full(pane, area.width, area.height, resume, env, cwd)?;
     }
     // Branches known before the first frame — the sidebar subtitle must not
     // repaint from counts to branch a poll-tick later.
@@ -712,7 +721,11 @@ pub fn capture_handoff(rt: &Runtime, area: Rect) -> Handoff {
         .panes
         .iter()
         .filter_map(|(id, p)| {
-            let fd = p.pty.handoff_fd()?;
+            let fd = p.pty.handoff_fd();
+            if fd.is_none() {
+                tracing::warn!(pane = %id, "handoff: no master fd — pane will not survive");
+            }
+            let fd = fd?;
             Some(HandoffPane {
                 id: *id,
                 fd,

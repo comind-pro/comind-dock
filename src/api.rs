@@ -208,11 +208,13 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                 Some(_) => rt.state.split_focused(Dir::Right, false),
                 None => rt.state.new_tab(),
             };
+            // An instantly-failing agent command must not cascade the tab
+            // away — degrade into a shell with the error visible.
             match rt.spawn_pane_env(
                 pane,
                 area.width.max(2) / 2,
                 area.height.max(2) / 2,
-                Some(command),
+                Some(crate::agents::hold_on_failure(&command)),
                 env,
             ) {
                 Ok(()) => {

@@ -438,7 +438,7 @@ fn run_menu_action(
                     pane,
                     area.width.max(2) / 2,
                     area.height.max(2) / 2,
-                    Some(command),
+                    Some(crate::agents::hold_on_failure(&command)),
                     env,
                 )
             }
@@ -448,9 +448,15 @@ fn run_menu_action(
             }
         },
         MenuAction::ContinuePicker => {
-            // Sessions already open in a pane are hidden — no double resume.
-            let open: std::collections::HashSet<&String> =
-                rt.agent_sessions.values().collect();
+            // Sessions open in a pane with a LIVE agent are hidden — no
+            // double resume. Panes whose agent exited (shell remains) keep a
+            // stale map entry; their conversations must stay listable.
+            let open: std::collections::HashSet<&String> = rt
+                .panes
+                .iter()
+                .filter(|(_, p)| p.agent.is_some())
+                .filter_map(|(id, _)| rt.agent_sessions.get(id))
+                .collect();
             let items: Vec<MenuItem> = crate::agents::recent_claude_sessions(9)
                 .into_iter()
                 .filter(|s| !open.contains(&s.id))
