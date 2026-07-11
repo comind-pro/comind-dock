@@ -500,7 +500,7 @@ fn run_menu_action(
                 pane,
                 area.width.max(2) / 2,
                 area.height.max(2) / 2,
-                Some(format!("claude --resume {id}")),
+                Some(crate::agents::hold_on_failure(&format!("claude --resume {id}"))),
                 env,
                 Some(cwd),
             )

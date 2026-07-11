@@ -555,10 +555,24 @@ pub fn build(
         dirty: true,
     };
     for (pane, meta) in initial_panes {
-        let resume = meta.agent.as_deref().map(crate::agents::resume_command);
+        // A failed resume must degrade into a shell, not close the pane —
+        // an instant exit cascades into killing the tab and the space.
+        let resume = meta
+            .agent
+            .as_deref()
+            .map(|a| crate::agents::hold_on_failure(&crate::agents::resume_command(a)));
         // The pane's own saved folder wins over the workspace anchor —
         // agent conversations are folder-bound; env carries the profile.
-        rt.spawn_pane_full(pane, area.width, area.height, resume, meta.env, meta.cwd)?;
+        // Snapshots from before profile tracking miss the env: recover the
+        // profile by finding which ~/.claude* owns the conversation.
+        let mut env = meta.env;
+        if !env.iter().any(|(k, _)| k == "CLAUDE_CONFIG_DIR")
+            && let Some(id) = meta.agent.as_deref().and_then(|a| a.strip_prefix("claude:"))
+            && let Some(dir) = crate::agents::find_session_profile(id)
+        {
+            env.push(("CLAUDE_CONFIG_DIR".to_string(), dir.display().to_string()));
+        }
+        rt.spawn_pane_full(pane, area.width, area.height, resume, env, meta.cwd)?;
     }
     // Branches known before the first frame — the sidebar subtitle must not
     // repaint from counts to branch a poll-tick later.

@@ -153,6 +153,37 @@ fn parse_session(path: &std::path::Path) -> Option<ClaudeSession> {
     })
 }
 
+/// Which profile (CLAUDE_CONFIG_DIR) owns conversation `id`: scans every
+/// ~/.claude*/projects for <id>.jsonl. None → default profile or unknown.
+/// Self-heals snapshots that predate profile-env tracking.
+pub fn find_session_profile(id: &str) -> Option<std::path::PathBuf> {
+    let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
+    let entries = std::fs::read_dir(&home).ok()?;
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !(name == ".claude" || name.starts_with(".claude-")) || !e.path().is_dir() {
+            continue;
+        }
+        let projects = e.path().join("projects");
+        let Ok(dirs) = std::fs::read_dir(&projects) else { continue };
+        for d in dirs.flatten() {
+            if d.path().join(format!("{id}.jsonl")).exists() {
+                // The default profile needs no env override.
+                return (name != ".claude").then(|| e.path());
+            }
+        }
+    }
+    None
+}
+
+/// Wrap a resume command so a failed resume (missing session, wrong
+/// profile) degrades the pane into a shell with the error visible instead
+/// of dying instantly — an instant exit cascades into closing the tab and
+/// possibly the whole space.
+pub fn hold_on_failure(cmd: &str) -> String {
+    format!("{cmd} || exec \"${{SHELL:-/bin/sh}}\"")
+}
+
 /// Agent id if the pane looks like a known agent CLI.
 pub fn detect(title: &str, program: &str) -> Option<&'static str> {
     let prog = program.to_ascii_lowercase();
