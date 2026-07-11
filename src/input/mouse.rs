@@ -5,6 +5,7 @@
 
 use std::time::{Duration, Instant};
 
+use alacritty_terminal::term::TermMode;
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
@@ -62,8 +63,9 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 .iter()
                 .position(|(r, _)| r.contains(pos))
             {
-                let pane = rt.toasts.remove(i).pane;
-                rt.state.focus_pane(pane);
+                if let Some(pane) = rt.toasts.remove(i).pane {
+                    rt.state.focus_pane(pane);
+                }
                 return InputOutcome::Continue;
             }
 
@@ -192,7 +194,8 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 rt.last_click = Some((Instant::now(), ev.column, ev.row));
                 if let Some(p) = rt.panes.get_mut(&id) {
                     if p.emu.wants_mouse() {
-                        let bytes = sgr(0, col, row, true, ev.modifiers);
+                        let bytes =
+                            encode_mouse(*p.emu.term.mode(), 0, col, row, true, ev.modifiers);
                         send_mouse(rt, id, bytes);
                     } else {
                         p.emu.clear_selection();
@@ -232,10 +235,16 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 if let Some((id, rect)) = pane_at(&view.pane_rects, pos) {
                     let inner = crate::ui::content_rect(rect);
                     if inner.contains(pos)
-                        && rt.panes.get(&id).is_some_and(|p| p.emu.wants_mouse())
+                        && let Some(mode) = mouse_mode(rt, id)
                     {
-                        let bytes =
-                            sgr(32, ev.column - inner.x, ev.row - inner.y, true, ev.modifiers);
+                        let bytes = encode_mouse(
+                            mode,
+                            32,
+                            ev.column - inner.x,
+                            ev.row - inner.y,
+                            true,
+                            ev.modifiers,
+                        );
                         send_mouse(rt, id, bytes);
                     }
                 }
@@ -256,10 +265,16 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                     if let Some((id, rect)) = pane_at(&view.pane_rects, pos) {
                         let inner = crate::ui::content_rect(rect);
                         if inner.contains(pos)
-                            && rt.panes.get(&id).is_some_and(|p| p.emu.wants_mouse())
+                            && let Some(mode) = mouse_mode(rt, id)
                         {
-                            let bytes =
-                                sgr(0, ev.column - inner.x, ev.row - inner.y, false, ev.modifiers);
+                            let bytes = encode_mouse(
+                                mode,
+                                0,
+                                ev.column - inner.x,
+                                ev.row - inner.y,
+                                false,
+                                ev.modifiers,
+                            );
                             send_mouse(rt, id, bytes);
                         }
                     }
@@ -291,7 +306,14 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 let (col, row) = (ev.column - inner.x, ev.row - inner.y);
                 let Some(p) = rt.panes.get_mut(&id) else { return InputOutcome::Continue };
                 if p.emu.wants_mouse() {
-                    let bytes = sgr(if up { 64 } else { 65 }, col, row, true, ev.modifiers);
+                    let bytes = encode_mouse(
+                        *p.emu.term.mode(),
+                        if up { 64 } else { 65 },
+                        col,
+                        row,
+                        true,
+                        ev.modifiers,
+                    );
                     send_mouse(rt, id, bytes);
                 } else if p.emu.alternate_scroll() {
                     let arrow: &[u8] = if up { b"\x1bOA" } else { b"\x1bOB" };
@@ -343,9 +365,16 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
             if let Some((id, rect)) = pane_at(&view.pane_rects, pos) {
                 let inner = crate::ui::content_rect(rect);
                 if inner.contains(pos)
-                    && rt.panes.get(&id).is_some_and(|p| p.emu.wants_mouse())
+                    && let Some(mode) = mouse_mode(rt, id)
                 {
-                    let bytes = sgr(1, ev.column - inner.x, ev.row - inner.y, true, ev.modifiers);
+                    let bytes = encode_mouse(
+                        mode,
+                        1,
+                        ev.column - inner.x,
+                        ev.row - inner.y,
+                        true,
+                        ev.modifiers,
+                    );
                     send_mouse(rt, id, bytes);
                 }
             }
@@ -445,17 +474,50 @@ fn run_menu_action(
             }
         }
         MenuAction::AgentPicker(split) => {
-            let items: Vec<MenuItem> = crate::profile::list()
+            // The space's assigned profile leads the list as the default.
+            let assoc = rt
+                .state
+                .workspaces
+                .get(rt.state.active_workspace)
+                .and_then(|w| w.profile.clone());
+            let mut items: Vec<MenuItem> = crate::profile::list()
                 .into_iter()
                 .map(|name| MenuItem {
-                    label: name.clone(),
+                    label: if assoc.as_deref() == Some(name.as_str()) {
+                        format!("{name} (space default)")
+                    } else {
+                        name.clone()
+                    },
                     action: MenuAction::StartProfile(name, split),
                 })
                 .collect();
+            items.sort_by_key(|i| !i.label.ends_with("(space default)"));
             if items.is_empty() {
                 tracing::info!("no profiles yet — `cdock profile new <name>`");
             } else {
                 rt.state.input_mode = InputMode::Menu { x, y, items };
+            }
+            Ok(())
+        }
+        MenuAction::SpaceProfilePicker(ws) => {
+            let mut items: Vec<MenuItem> = crate::profile::list()
+                .into_iter()
+                .map(|name| MenuItem {
+                    label: name.clone(),
+                    action: MenuAction::SetSpaceProfile(ws, Some(name)),
+                })
+                .collect();
+            items.push(MenuItem {
+                label: "(none)".to_string(),
+                action: MenuAction::SetSpaceProfile(ws, None),
+            });
+            rt.state.input_mode = InputMode::Menu { x, y, items };
+            Ok(())
+        }
+        MenuAction::SetSpaceProfile(ws, profile) => {
+            if let Some(w) = rt.state.workspaces.iter_mut().find(|w| w.id == ws) {
+                w.profile = profile;
+                rt.mark_dirty();
             }
             Ok(())
         }
@@ -555,6 +617,86 @@ fn run_menu_action(
                 Some(cwd),
             )
         }
+        MenuAction::ProfileBrowser => {
+            let mut items: Vec<MenuItem> = crate::profile::list()
+                .into_iter()
+                .map(|name| MenuItem {
+                    label: name.clone(),
+                    action: MenuAction::ProfileMenu(name),
+                })
+                .collect();
+            items.push(MenuItem {
+                label: "(open folder in editor)".to_string(),
+                action: MenuAction::EditProfiles,
+            });
+            rt.state.input_mode = InputMode::Menu { x, y, items };
+            Ok(())
+        }
+        MenuAction::ProfileMenu(name) => {
+            let items = vec![
+                MenuItem {
+                    label: format!("start {name}"),
+                    action: MenuAction::StartProfile(name.clone(), None),
+                },
+                MenuItem {
+                    label: "show command".to_string(),
+                    action: MenuAction::ProfileInfo(name.clone()),
+                },
+                MenuItem { label: "edit".to_string(), action: MenuAction::ProfileEdit(name) },
+            ];
+            rt.state.input_mode = InputMode::Menu { x, y, items };
+            Ok(())
+        }
+        MenuAction::ProfileEdit(name) => {
+            match crate::profile::profiles_dir() {
+                Some(dir) => {
+                    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+                    let pane = rt.state.new_tab();
+                    rt.spawn_pane_cmd(
+                        pane,
+                        area.width,
+                        area.height,
+                        Some(format!("{editor} {}", dir.join(&name).display())),
+                    )
+                }
+                None => Ok(()),
+            }
+        }
+        MenuAction::SkillEdit(source) => {
+            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+            let pane = rt.state.new_tab();
+            rt.spawn_pane_cmd(pane, area.width, area.height, Some(format!("{editor} {source}")))
+        }
+        MenuAction::ProfileInfo(name) => {
+            match crate::profile::load(&name) {
+                Ok(p) => {
+                    let (command, _env) = p.resolve();
+                    rt.add_plain_toast(format!("{name}: {command}"), 10);
+                }
+                Err(e) => rt.add_plain_toast(format!("{name}: {e}"), 10),
+            }
+            Ok(())
+        }
+        MenuAction::SkillBrowser => {
+            // Read-only catalog: picking a skill opens its source in $EDITOR.
+            let items: Vec<MenuItem> = crate::profile::skill_catalog()
+                .into_iter()
+                .map(|(name, entry)| MenuItem {
+                    label: if entry.description.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{name} — {}", crate::agents::truncate_clean(&entry.description, 32))
+                    },
+                    action: MenuAction::SkillEdit(entry.source),
+                })
+                .collect();
+            if items.is_empty() {
+                rt.add_plain_toast("no skills yet — `cdock skill add`".to_string(), 10);
+            } else {
+                rt.state.input_mode = InputMode::Menu { x, y, items };
+            }
+            Ok(())
+        }
         MenuAction::EditProfiles => {
             match crate::profile::profiles_dir() {
                 Some(dir) => {
@@ -634,24 +776,91 @@ fn pane_at(rects: &[(PaneId, Rect)], pos: Position) -> Option<(PaneId, Rect)> {
     rects.iter().find(|(_, r)| r.contains(pos)).copied()
 }
 
+/// The pane's TermMode, if the app in it requested mouse reporting.
+fn mouse_mode(rt: &Runtime, id: PaneId) -> Option<TermMode> {
+    rt.panes.get(&id).filter(|p| p.emu.wants_mouse()).map(|p| *p.emu.term.mode())
+}
+
+/// Encode a mouse event honoring the pane's requested protocol:
+/// SGR-1006 when SGR_MOUSE is set, legacy X10 bytes otherwise.
+fn encode_mouse(
+    mode: TermMode,
+    button: u8,
+    col: u16,
+    row: u16,
+    press: bool,
+    mods: KeyModifiers,
+) -> Vec<u8> {
+    if mode.contains(TermMode::SGR_MOUSE) {
+        sgr(button, col, row, press, mods)
+    } else {
+        x10(button, col, row, press, mods)
+    }
+}
+
+/// Shift(4)/Alt(8)/Ctrl(16) button bits shared by SGR and X10.
+fn button_mods(mods: KeyModifiers) -> u8 {
+    (mods.contains(KeyModifiers::SHIFT) as u8) * 4
+        + (mods.contains(KeyModifiers::ALT) as u8) * 8
+        + (mods.contains(KeyModifiers::CONTROL) as u8) * 16
+}
+
 /// SGR (1006) mouse encoding with pane-local 1-based coordinates.
-/// ponytail: SGR only — X10 fallback if a legacy app ever needs it.
 fn sgr(button: u8, col: u16, row: u16, press: bool, mods: KeyModifiers) -> Vec<u8> {
-    let mut b = button;
-    if mods.contains(KeyModifiers::SHIFT) {
-        b += 4;
-    }
-    if mods.contains(KeyModifiers::ALT) {
-        b += 8;
-    }
-    if mods.contains(KeyModifiers::CONTROL) {
-        b += 16;
-    }
+    let b = button + button_mods(mods);
     format!("\x1b[<{};{};{}{}", b, col + 1, row + 1, if press { 'M' } else { 'm' }).into_bytes()
+}
+
+/// Legacy X10-style encoding: `ESC [ M cb cx cy`, single 32-offset bytes.
+/// The protocol has no per-button release — releases collapse to cb=3 —
+/// and 1-based coordinates clamp at 223 (byte 255); apps needing more
+/// negotiate SGR.
+fn x10(button: u8, col: u16, row: u16, press: bool, mods: KeyModifiers) -> Vec<u8> {
+    let cb = (if press { button } else { 3 }) + button_mods(mods);
+    vec![
+        0x1b,
+        b'[',
+        b'M',
+        32 + cb,
+        32 + 1 + col.min(222) as u8,
+        32 + 1 + row.min(222) as u8,
+    ]
 }
 
 fn send_mouse(rt: &mut Runtime, pane: PaneId, bytes: Vec<u8>) {
     if let Some(p) = rt.panes.get_mut(&pane) {
         p.pty.write(&bytes);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn x10_byte_layout() {
+        // Left press at pane cell (0,0) → cb=32, cx=cy=33.
+        assert_eq!(x10(0, 0, 0, true, KeyModifiers::NONE), b"\x1b[M\x20\x21\x21".to_vec());
+        // Release collapses to cb=3; ctrl adds 16.
+        assert_eq!(
+            x10(0, 4, 9, false, KeyModifiers::CONTROL),
+            vec![0x1b, b'[', b'M', 32 + 3 + 16, 32 + 5, 32 + 10]
+        );
+        // Coordinates clamp at byte 255 (0-based cell 222).
+        assert_eq!(x10(0, 500, 222, true, KeyModifiers::NONE)[4..], [255, 255]);
+    }
+
+    #[test]
+    fn encode_mouse_dispatches_on_sgr_flag() {
+        let sgr_mode = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
+        assert_eq!(
+            encode_mouse(sgr_mode, 0, 4, 9, true, KeyModifiers::NONE),
+            b"\x1b[<0;5;10M".to_vec()
+        );
+        // Mouse reporting without SGR falls back to X10 bytes.
+        assert_eq!(
+            encode_mouse(TermMode::MOUSE_REPORT_CLICK, 0, 4, 9, true, KeyModifiers::NONE),
+            b"\x1b[M\x20\x25\x2a".to_vec()
+        );
     }
 }

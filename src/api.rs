@@ -1,8 +1,8 @@
 //! JSON automation API (Phase 4): newline-delimited JSON request/response on
 //! a second unix socket (`api-<session>.sock`). One line in → one line out;
 //! `wait-*` requests hold the line until the condition or timeout.
-//! ponytail: event subscriptions and a published JSON Schema come later;
-//! request/response + one-shot waits cover the agent-drives-runtime loop.
+//! Subscriptions (`{"cmd":"subscribe"}`) stream events on the same socket;
+//! `cdock api reference`/`schema` prints the machine-readable catalog.
 
 use std::io::{BufRead, Write};
 use std::time::{Duration, Instant};
@@ -44,13 +44,28 @@ pub enum Req {
     /// From the agent's SessionStart integration hook: which conversation
     /// runs in this pane (restore resumes exactly it).
     ReportAgentSession { pane: u64, session_id: String },
+    /// Integration hooks push an authoritative agent state: overrides
+    /// screen detection until ttl_ms (default 30s) or an explicit clear.
+    ReportAgent {
+        pane: u64,
+        /// working | blocked | done | idle — or "clear" to drop the report.
+        state: String,
+        label: Option<String>,
+        ttl_ms: Option<u64>,
+    },
+    /// Presentation metadata from hooks: title override for the pane.
+    ReportMetadata { pane: u64, title: Option<String> },
     /// Re-read detection manifests from disk (bundled + overrides).
     /// Handled directly by the server loop, which owns the manifest set.
     ReloadManifests,
+    /// Full detection trace for a pane (server loop owns the manifests).
+    AgentExplain { pane: u64 },
     /// Re-read config/keymap/theme. Also on the sidebar app menu.
     ReloadConfig,
     /// exec() the current binary in place: same pid, panes survive.
     Handoff,
+    /// Save and stop the whole session server (`cdock session stop`).
+    Shutdown,
     /// Focus a workspace / tab by public id.
     WorkspaceFocus { workspace: u64 },
     /// Close a workspace: kill every pane in it (cascade does the rest).
@@ -187,7 +202,9 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             Ok(json!({"ok": true}))
         }
         // Owned by the server loop; reaching here is a wiring bug.
-        Req::ReloadManifests | Req::Handoff => Ok(err("handled by the server loop")),
+        Req::ReloadManifests | Req::Handoff | Req::Shutdown | Req::AgentExplain { .. } => {
+            Ok(err("handled by the server loop"))
+        }
         Req::SendText { pane, text } => Ok(write_pty(rt, pane, text.as_bytes())),
         Req::Run { pane, command } => {
             Ok(write_pty(rt, pane, format!("{command}\r").as_bytes()))
@@ -257,6 +274,43 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             }
             rt.agent_sessions.insert(pane, session_id);
             rt.save_session(); // survive a crash between autosaves
+            Ok(json!({"ok": true}))
+        }
+        Req::ReportAgent { pane, state, label, ttl_ms } => {
+            let pane = PaneId(pane);
+            let Some(p) = rt.panes.get_mut(&pane) else {
+                return Ok(err(format!("no such pane {pane}")));
+            };
+            if state == "clear" {
+                p.reported = None;
+                rt.mark_dirty();
+                return Ok(json!({"ok": true}));
+            }
+            let Some(status) = parse_status(&state) else {
+                return Ok(err(format!("bad state {state:?}")));
+            };
+            p.reported = Some(crate::runtime::Reported {
+                status,
+                label,
+                until: Instant::now() + Duration::from_millis(ttl_ms.unwrap_or(30_000)),
+            });
+            rt.mark_dirty();
+            Ok(json!({"ok": true}))
+        }
+        Req::ReportMetadata { pane, title } => {
+            let pane = PaneId(pane);
+            if !rt.panes.contains_key(&pane) {
+                return Ok(err(format!("no such pane {pane}")));
+            }
+            match title {
+                Some(t) if !t.is_empty() => {
+                    rt.titles.insert(pane, t);
+                }
+                _ => {
+                    rt.titles.remove(&pane);
+                }
+            }
+            rt.mark_dirty();
             Ok(json!({"ok": true}))
         }
         Req::WorkspaceFocus { workspace } => {
@@ -440,9 +494,13 @@ pub const REFERENCE: &str = r#"[
   {"cmd":"focus","pane":1},
   {"cmd":"agent-start","command":"claude","split":"right","workspace":3,"env":[["K","V"]]},
   {"cmd":"report-agent-session","pane":1,"session_id":"uuid"},
+  {"cmd":"report-agent","pane":1,"state":"blocked","label":"awaiting review","ttl_ms":60000},
+  {"cmd":"report-metadata","pane":1,"title":"builder"},
   {"cmd":"reload-manifests"},
+  {"cmd":"agent-explain","pane":1},
   {"cmd":"reload-config"},
   {"cmd":"handoff"},
+  {"cmd":"shutdown"},
   {"cmd":"workspace-focus","workspace":3},
   {"cmd":"workspace-close","workspace":3},
   {"cmd":"workspace-create","cwd":"/tmp"},

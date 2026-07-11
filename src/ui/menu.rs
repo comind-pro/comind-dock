@@ -31,7 +31,8 @@ pub fn pane_items(pane: PaneId) -> Vec<MenuItem> {
 pub fn app_items(update: Option<&str>) -> Vec<MenuItem> {
     let mut items: Vec<MenuItem> = [
         ("new agent…", MenuAction::AgentPicker(None)),
-        ("profiles", MenuAction::EditProfiles),
+        ("profiles...", MenuAction::ProfileBrowser),
+        ("skills...", MenuAction::SkillBrowser),
         ("settings", MenuAction::OpenSettings),
         ("keybinds", MenuAction::ShowKeybinds),
         ("reload config", MenuAction::ReloadConfig),
@@ -54,6 +55,7 @@ pub fn space_items(ws: crate::state::ids::WorkspaceId) -> Vec<MenuItem> {
         ("rename", MenuAction::RenameSpace(ws)),
         ("close", MenuAction::CloseSpace(ws)),
         ("new worktree", MenuAction::NewWorktree(ws)),
+        ("assign profile...", MenuAction::SpaceProfilePicker(ws)),
         ("open worktree...", MenuAction::ListWorktrees(ws)),
     ]
     .into_iter()

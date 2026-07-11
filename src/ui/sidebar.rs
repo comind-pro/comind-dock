@@ -170,7 +170,8 @@ fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
                 any_agent = true;
                 let status = p.effective_status();
                 let (dot, dot_style) = status_marker(status, theme);
-                let status = status.word();
+                // Reporter label ("running tests") beats the generic word.
+                let status = p.reported_label().unwrap_or(status.word());
                 let name = if title.trim().is_empty() {
                     agent.to_string()
                 } else {

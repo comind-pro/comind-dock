@@ -40,6 +40,12 @@ pub struct PaneRuntime {
     /// Exe path of the agent process — resume by absolute path survives a
     /// server started with a PATH that can't find the launcher.
     pub agent_bin: Option<String>,
+    /// Hook-reported state override (report-agent API): wins over screen
+    /// detection until it expires or the reporter clears it.
+    pub reported: Option<Reported>,
+    /// When the current agent process first appeared — the `since` cutoff
+    /// for codex/opencode session-file discovery (they have no hooks).
+    pub agent_since: Option<std::time::SystemTime>,
     /// Consecutive polls with no agent — releases the session mapping.
     agent_gone_polls: u8,
     /// Detection-engine result for agent panes.
@@ -57,7 +63,13 @@ impl PaneRuntime {
     }
 
     /// Status with the activity fallback when no manifest rule matched.
+    /// A live hook report (report-agent API) outranks screen detection.
     pub fn effective_status(&self) -> crate::detect::Status {
+        if let Some(r) = &self.reported
+            && r.until > std::time::Instant::now()
+        {
+            return r.status;
+        }
         match self.status {
             crate::detect::Status::Unknown => {
                 if self.working() {
@@ -68,6 +80,14 @@ impl PaneRuntime {
             }
             s => s,
         }
+    }
+
+    /// Reporter-supplied status label ("running tests"), while the report lives.
+    pub fn reported_label(&self) -> Option<&str> {
+        self.reported
+            .as_ref()
+            .filter(|r| r.until > std::time::Instant::now())
+            .and_then(|r| r.label.as_deref())
     }
 }
 
@@ -203,6 +223,8 @@ impl Runtime {
                 agent_pid: None,
                 agent_config_dir: None,
                 agent_bin: None,
+                reported: None,
+            agent_since: None,
                 agent_gone_polls: 0,
                 program,
                 last_output: std::time::Instant::now(),
@@ -232,12 +254,25 @@ impl Runtime {
             ShellMode::Login => true,
             ShellMode::NonLogin => false,
         };
-        // Panes spawn in their workspace's folder (worktree spaces have their
-        // own). A vanished folder (deleted worktree in a snapshot) must not
-        // brick the spawn — and with it the whole restore: fall back to home.
+        // Panes spawn in their workspace's folder (worktree spaces have
+        // their own) — or, with [terminal].new_cwd = "follow", wherever the
+        // FOCUSED pane's process currently sits (true per-pane follow).
+        // A vanished folder (deleted worktree in a snapshot) must not brick
+        // the spawn — and with it the whole restore: fall back to home.
         let ws = self.state.active_workspace();
         let tab = ws.active_tab();
-        let cwd = if ws.cwd.is_dir() {
+        let follow = (t.new_cwd == "follow")
+            .then(|| {
+                self.panes
+                    .get(&tab.focused_pane)
+                    .and_then(|p| p.pty.child_pid)
+                    .and_then(crate::platform::process_cwd)
+                    .filter(|c| c.is_dir())
+            })
+            .flatten();
+        let cwd = if let Some(f) = follow {
+            f
+        } else if ws.cwd.is_dir() {
             ws.cwd.clone()
         } else {
             std::env::var_os("HOME")
@@ -326,6 +361,7 @@ impl Runtime {
             let Some(p) = self.panes.get_mut(&id) else { continue };
             if p.agent != agent {
                 p.agent = agent;
+                p.agent_since = agent.map(|_| std::time::SystemTime::now());
                 self.dirty = true; // agent row appears/leaves the sidebar
             }
             p.agent_pid = agent_pid;
@@ -448,9 +484,8 @@ impl Runtime {
         }
     }
 
-    /// Re-read config, keymap, and theme from disk and repaint.
-    /// ponytail: always the default path — a --config override on the
-    /// original launch is not remembered by the server.
+    /// Re-read config, keymap, and theme from disk and repaint. A --config
+    /// launch override is honored via CDOCK_CONFIG_PATH (pinned in main).
     pub fn reload_config(&mut self) {
         let (cfg, warnings) = crate::config::load(None);
         let (keymap, kw) = crate::config::keys::build_keymap(&cfg.keys);
@@ -498,15 +533,24 @@ impl Runtime {
             // The hook can land before the 500ms detection poll notices the
             // agent — a reported session is claude by definition, so the
             // ident must not wait for detection.
-            let agent = match (p.agent, self.agent_sessions.get(id)) {
-                (Some(a), Some(s)) => Some(format!("{a}:{s}")),
-                (Some(a), None) => Some(a.to_string()),
-                (None, Some(s)) => Some(format!("claude:{s}")),
-                (None, None) => None,
-            };
             // The pane's own folder — an agent must resume where its
             // conversation lives, wherever the workspace anchor drifted.
             let cwd = p.pty.child_pid.and_then(crate::platform::process_cwd);
+            let agent = match (p.agent, self.agent_sessions.get(id)) {
+                (Some(a), Some(s)) => Some(format!("{a}:{s}")),
+                // codex/opencode have no SessionStart hook — match their
+                // session files by cwd + the moment the agent appeared.
+                (Some(a), None) => Some(
+                    cwd.as_deref()
+                        .zip(p.agent_since)
+                        .and_then(|(c, t)| {
+                            crate::agents::newest_agent_session(a, std::path::Path::new(c), t)
+                        })
+                        .map_or_else(|| a.to_string(), |s| format!("{a}:{s}")),
+                ),
+                (None, Some(s)) => Some(format!("claude:{s}")),
+                (None, None) => None,
+            };
             // Profile env rides along so restore resumes under the same
             // CLAUDE_CONFIG_DIR, and the cdock profile NAME so restore can
             // re-merge that profile's [env] block.
@@ -529,11 +573,26 @@ impl Runtime {
                         cwd,
                         env,
                         agent_bin: p.agent_bin.clone(),
+                        saved_pane: None, // save-side: the layout leaf carries the id
                     },
                 );
             }
         }
         crate::state::snapshot::save(&self.state, &metas);
+        // Screen history: a text tail per pane, replayed on cold restore.
+        // Alt-screen panes are skipped — scrollback_text is just the TUI
+        // frame there and replaying it is garbage.
+        // ponytail: full-grid text walk every autosave; make it change-driven
+        // if it ever shows up in a profile.
+        if let Some(dir) = crate::state::snapshot::screens_dir() {
+            let screens: Vec<(u64, String)> = self
+                .panes
+                .iter()
+                .filter(|(_, p)| !p.emu.on_alt_screen())
+                .map(|(id, p)| (id.0, p.emu.scrollback_text()))
+                .collect();
+            crate::state::snapshot::save_screens(&dir, &screens);
+        }
     }
 
     /// Default workspace name: the folder new panes spawn in.
@@ -710,6 +769,17 @@ pub fn build(
                 .map(|w| w.cwd.clone())
         });
         rt.spawn_pane_full(pane, area.width, area.height, resume, env, cwd)?;
+        // Replay the pane's saved screen tail into the EMULATOR only, before
+        // any child output lands (PTY reads drain later, via the channel).
+        // Never write it to the PTY — the shell would eat it as input.
+        if let Some(text) = meta
+            .saved_pane
+            .zip(crate::state::snapshot::screens_dir())
+            .and_then(|(old, dir)| crate::state::snapshot::take_screen(&dir, old))
+            && let Some(p) = rt.panes.get_mut(&pane)
+        {
+            p.emu.feed(&crate::state::snapshot::screen_replay(&text));
+        }
     }
     // Branches known before the first frame — the sidebar subtitle must not
     // repaint from counts to branch a poll-tick later.
@@ -953,6 +1023,8 @@ pub fn build_from_handoff(
                         agent_pid: None,
                         agent_config_dir: None,
                         agent_bin: None,
+                        reported: None,
+                        agent_since: None,
                         agent_gone_polls: 0,
                         program: hp.program,
                         last_output: std::time::Instant::now(),
@@ -964,6 +1036,14 @@ pub fn build_from_handoff(
                 );
             }
             Err(e) => tracing::warn!(pane = %hp.id, error = %e, "handoff adopt failed"),
+        }
+        // The fresh emulator is blank until the app writes again — replay
+        // the screen tail saved just before the handoff (same pane ids).
+        if let Some(text) = crate::state::snapshot::screens_dir()
+            .and_then(|dir| crate::state::snapshot::take_screen(&dir, hp.id.0))
+            && let Some(p) = rt.panes.get_mut(&hp.id)
+        {
+            p.emu.feed(&crate::state::snapshot::screen_replay(&text));
         }
     }
     // Panes that did not make it across close out of the tree now.
@@ -983,10 +1063,10 @@ pub fn build_from_handoff(
     Ok(rt)
 }
 
-/// An in-app toast: one overlay line, click focuses the pane.
+/// An in-app toast: one overlay line; click focuses the pane when set.
 #[derive(Debug, Clone)]
 pub struct Toast {
-    pub pane: PaneId,
+    pub pane: Option<PaneId>,
     pub kind: NoticeKind,
     pub text: String,
     pub until: std::time::Instant,
@@ -998,11 +1078,20 @@ impl Runtime {
             NoticeKind::Blocked => format!("● {} needs input", notice.name),
             NoticeKind::Done => format!("✓ {} finished", notice.name),
         };
+        self.push_toast(Some(notice.pane), notice.kind, text, 6);
+    }
+
+    /// Free-form toast (boot warnings etc.) — no jump target.
+    pub fn add_plain_toast(&mut self, text: String, secs: u64) {
+        self.push_toast(None, NoticeKind::Blocked, text, secs);
+    }
+
+    fn push_toast(&mut self, pane: Option<PaneId>, kind: NoticeKind, text: String, secs: u64) {
         self.toasts.push(Toast {
-            pane: notice.pane,
-            kind: notice.kind,
+            pane,
+            kind,
             text,
-            until: std::time::Instant::now() + Duration::from_secs(6),
+            until: std::time::Instant::now() + Duration::from_secs(secs),
         });
         if self.toasts.len() > 4 {
             self.toasts.remove(0);
@@ -1030,6 +1119,15 @@ pub struct StatusChange {
     pub agent: Option<&'static str>,
     pub from: crate::detect::Status,
     pub to: crate::detect::Status,
+}
+
+/// A hook-reported agent state (report-agent API).
+#[derive(Debug, Clone)]
+pub struct Reported {
+    pub status: crate::detect::Status,
+    /// Free-form label shown instead of the status word (e.g. "reviewing").
+    pub label: Option<String>,
+    pub until: std::time::Instant,
 }
 
 /// A status transition worth telling the user about.
@@ -1088,4 +1186,18 @@ pub fn handle_input(
         _ => {}
     }
     Ok(InputOutcome::Continue)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn base64_rfc4648_vectors() {
+        let e = |s: &str| super::base64_engine::encode(s.as_bytes());
+        assert_eq!(e(""), "");
+        assert_eq!(e("f"), "Zg==");
+        assert_eq!(e("fo"), "Zm8=");
+        assert_eq!(e("foo"), "Zm9v");
+        assert_eq!(e("foobar"), "Zm9vYmFy");
+        assert_eq!(super::base64_engine::encode(&[0xff, 0x00, 0xfe]), "/wD+");
+    }
 }

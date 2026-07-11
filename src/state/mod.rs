@@ -43,6 +43,9 @@ pub enum MenuAction {
     /// Submenu listing agent profiles; None → spawn in a new tab,
     /// Some(pane) → split that pane.
     AgentPicker(Option<ids::PaneId>),
+    /// Submenu to pick this space's default agent profile.
+    SpaceProfilePicker(ids::WorkspaceId),
+    SetSpaceProfile(ids::WorkspaceId, Option<String>),
     StartProfile(String, Option<ids::PaneId>),
     /// Submenu of recent Claude Code sessions on the system.
     ContinuePicker,
@@ -51,6 +54,17 @@ pub enum MenuAction {
     ResumeClaudeSession(String, std::path::PathBuf, Option<std::path::PathBuf>),
     /// Open the profiles directory in $EDITOR.
     EditProfiles,
+    /// Modal browser: profiles list → per-profile actions.
+    ProfileBrowser,
+    ProfileMenu(String),
+    /// Open one profile's directory in $EDITOR (a new tab).
+    ProfileEdit(String),
+    /// Toast with the resolved launch command.
+    ProfileInfo(String),
+    /// Modal browser: skill catalog (name + source, read-only).
+    SkillBrowser,
+    /// Open a skill's source path in $EDITOR (a new tab).
+    SkillEdit(String),
     /// The prefix+? keybinding overlay.
     ShowKeybinds,
     ReloadConfig,

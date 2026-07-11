@@ -25,6 +25,8 @@ use crate::ui;
 pub struct ServerOpts {
     /// --no-session: stop when the last client disconnects.
     pub exit_when_no_clients: bool,
+    /// Config-load warnings surfaced as toasts on the first attach.
+    pub boot_warnings: Vec<String>,
 }
 
 /// How the server loop ended.
@@ -39,8 +41,8 @@ type ClientId = u64;
 
 struct Client {
     tx: mpsc::UnboundedSender<ServerMsg>,
-    /// Previous frame buffer; None → send a full repaint.
-    prev: Option<Buffer>,
+    /// Next frame must be a full repaint (fresh client / area change).
+    needs_full: bool,
     /// Last reported terminal size — the shared area re-fits to a survivor
     /// when another client leaves.
     size: (u16, u16),
@@ -84,6 +86,7 @@ pub async fn run(
     let mut waiters: Vec<(api::PendingWait, api::Replier)> = Vec::new();
     let mut subs: Vec<(api::SubSpec, mpsc::UnboundedSender<serde_json::Value>)> = Vec::new();
     let mut term = Terminal::new(TestBackend::new(area.width, area.height)).expect("test backend is infallible");
+    let mut frame_cache = FrameCache { prev: None };
 
     for stream in initial {
         let _ = ctl_tx.send(ClientCtl::New(stream));
@@ -94,6 +97,7 @@ pub async fn run(
     let mut ws_poll = tokio::time::interval(Duration::from_millis(2000));
     ws_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut manifests = crate::detect::load_all();
+    let mut plugins = crate::plugin::list();
     let mut agent_poll = tokio::time::interval(Duration::from_millis(500));
     agent_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Debounced session persistence (ARCHITECTURE §6).
@@ -112,15 +116,16 @@ pub async fn run(
     // Background release check: on start and every 6h (menu "update ready").
     if rt.cfg.update.check {
         let repo = rt.cfg.update.repo.clone();
+        let channel = rt.cfg.update.channel;
         let update_tx = update_check_tx;
         std::thread::spawn(move || {
             loop {
                 // A failed check (network, GitHub rate limit) retries in
                 // 10min, not 6h — restarts reset the in-memory flag, so a
                 // silent failure would hide a known update for hours.
-                let next = match crate::update::latest_release(&repo) {
-                    Ok((tag, _)) if crate::update::is_newer(&tag) => {
-                        if update_tx.send(AppEvent::UpdateAvailable(tag)).is_err() {
+                let next = match crate::update::latest_release(&repo, channel) {
+                    Ok(rel) if crate::update::is_newer(&rel.tag) => {
+                        if update_tx.send(AppEvent::UpdateAvailable(rel.tag)).is_err() {
                             return;
                         }
                         Duration::from_secs(6 * 3600)
@@ -136,6 +141,15 @@ pub async fn run(
         });
     }
 
+    for w in &opts.boot_warnings {
+        rt.add_plain_toast(format!("⚠ config: {w}"), 20);
+    }
+    if let Some(notes) = crate::update::take_pending_release_notes() {
+        let title = notes.lines().next().unwrap_or("").trim_start_matches(['#', ' ']).to_string();
+        rt.add_plain_toast(format!("updated to {title} — notes in the log"), 20);
+        tracing::info!(%notes, "release notes");
+    }
+
     tracing::info!("server running");
 
     loop {
@@ -147,7 +161,7 @@ pub async fn run(
                     next_client += 1;
                     let (read_half, write_half) = stream.into_split();
                     let (out_tx, out_rx) = mpsc::unbounded_channel::<ServerMsg>();
-                    clients.insert(id, Client { tx: out_tx, prev: None, size: (0, 0) });
+                    clients.insert(id, Client { tx: out_tx, needs_full: true, size: (0, 0) });
                     spawn_client_io(id, read_half, write_half, out_rx, ctl_tx.clone());
                     tracing::info!(client = id, "client connected");
                 }
@@ -178,7 +192,7 @@ pub async fn run(
                             }
                             None => rt.state.scope = None,
                         }
-                        resize_all(&mut area, &mut term, &mut clients, cols, rows)?;
+                        resize_all(&mut area, &mut term, &mut clients, &mut frame_cache, cols, rows)?;
                         rt.mark_dirty();
                     }
                     ClientMsg::Event(ev) => {
@@ -186,7 +200,7 @@ pub async fn run(
                             if let Some(c) = clients.get_mut(&id) {
                                 c.size = (cols, rows);
                             }
-                            resize_all(&mut area, &mut term, &mut clients, cols, rows)?;
+                            resize_all(&mut area, &mut term, &mut clients, &mut frame_cache, cols, rows)?;
                         }
                         match runtime::handle_input(&mut rt, ev, area)? {
                             InputOutcome::Continue => {}
@@ -201,7 +215,7 @@ pub async fn run(
                                     flush_writers().await;
                                     return Ok(RunOutcome::Exit);
                                 }
-                                refit_area(&mut area, &mut term, &mut clients, &mut rt)?;
+                                refit_area(&mut area, &mut term, &mut clients, &mut frame_cache, &mut rt)?;
                             }
                             InputOutcome::Shutdown => {
                                 rt.save_session();
@@ -219,7 +233,7 @@ pub async fn run(
                             rt.save_session();
                             return Ok(RunOutcome::Exit);
                         }
-                        refit_area(&mut area, &mut term, &mut clients, &mut rt)?;
+                        refit_area(&mut area, &mut term, &mut clients, &mut frame_cache, &mut rt)?;
                     }
                 },
                 ClientCtl::Gone(id) => {
@@ -229,7 +243,7 @@ pub async fn run(
                         rt.save_session();
                         return Ok(RunOutcome::Exit);
                     }
-                    refit_area(&mut area, &mut term, &mut clients, &mut rt)?;
+                    refit_area(&mut area, &mut term, &mut clients, &mut frame_cache, &mut rt)?;
                 }
             },
             Some(ev) = rx.recv() => {
@@ -319,7 +333,46 @@ pub async fn run(
                 // The loop owns the manifest set and the exec decision.
                 api::Req::ReloadManifests => {
                     manifests = crate::detect::load_all();
+                    plugins = crate::plugin::list();
                     let _ = reply.send(serde_json::json!({"ok": true, "count": manifests.len()}));
+                }
+                api::Req::AgentExplain { pane } => {
+                    use crate::state::ids::PaneId;
+                    let pane = PaneId(pane);
+                    let v = match rt.panes.get(&pane) {
+                        None => serde_json::json!({"ok": false, "error": "no such pane"}),
+                        Some(p) => {
+                            let title =
+                                rt.titles.get(&pane).cloned().unwrap_or_default();
+                            match p.agent.and_then(|a| crate::detect::manifest_for(&manifests, a)) {
+                                Some(m) => {
+                                    let lines = p.emu.bottom_text(15);
+                                    let ex = crate::detect::classify_explain(m, &title, &lines);
+                                    serde_json::json!({
+                                        "ok": true,
+                                        "agent": p.agent,
+                                        "effective_status": p.effective_status().word(),
+                                        "explain": ex,
+                                    })
+                                }
+                                None => serde_json::json!({
+                                    "ok": true,
+                                    "agent": p.agent,
+                                    "effective_status": p.effective_status().word(),
+                                    "explain": null,
+                                    "note": "no manifest for this pane — activity heuristic only",
+                                }),
+                            }
+                        }
+                    };
+                    let _ = reply.send(v);
+                }
+                api::Req::Shutdown => {
+                    rt.save_session();
+                    let _ = reply.send(serde_json::json!({"ok": true}));
+                    shutdown_clients(&clients);
+                    flush_writers().await;
+                    return Ok(RunOutcome::Exit);
                 }
                 api::Req::Handoff => {
                     rt.save_session();
@@ -376,6 +429,14 @@ pub async fn run(
                         "event": "agent-status", "pane": ch.pane.0, "agent": ch.agent,
                         "from": ch.from.word(), "to": ch.to.word(),
                     }));
+                    // Plugin [[hooks]]: fire-and-forget shell on status change.
+                    for cmd in crate::plugin::event_hooks(&plugins, ch.to.word()) {
+                        let _ = std::process::Command::new("/bin/sh")
+                            .args(["-c", &cmd])
+                            .env("CDOCK_PANE", ch.pane.0.to_string())
+                            .env("CDOCK_STATUS", ch.to.word())
+                            .spawn();
+                    }
                 }
                 // After the poll — waiters must see fresh statuses.
                 api::check_waiters(&rt, &mut waiters);
@@ -394,7 +455,7 @@ pub async fn run(
             }
             _ = tick.tick() => {
                 if rt.take_dirty() && !clients.is_empty() {
-                    render_frame(&mut rt, &mut term, area, &mut clients)?;
+                    render_frame(&mut rt, &mut term, area, &mut clients, &mut frame_cache)?;
                 } else if rt.take_dirty() {
                     // Headless: still run geometry so PTY sizes stay right.
                     let _ = ui::compute_view(&mut rt, area);
@@ -495,10 +556,11 @@ fn refit_area(
     area: &mut Rect,
     term: &mut Terminal<TestBackend>,
     clients: &mut HashMap<ClientId, Client>,
+    cache: &mut FrameCache,
     rt: &mut Runtime,
 ) -> io::Result<()> {
     if let Some((cols, rows)) = clients.values().map(|c| c.size).find(|s| s.0 > 0) {
-        resize_all(area, term, clients, cols, rows)?;
+        resize_all(area, term, clients, cache, cols, rows)?;
         rt.mark_dirty();
     }
     Ok(())
@@ -508,6 +570,7 @@ fn resize_all(
     area: &mut Rect,
     term: &mut Terminal<TestBackend>,
     clients: &mut HashMap<ClientId, Client>,
+    cache: &mut FrameCache,
     cols: u16,
     rows: u16,
 ) -> io::Result<()> {
@@ -515,11 +578,19 @@ fn resize_all(
     if *area != new {
         *area = new;
         *term = Terminal::new(TestBackend::new(new.width, new.height)).expect("test backend is infallible");
+        cache.prev = None;
         for c in clients.values_mut() {
-            c.prev = None; // full repaint at the new size
+            c.needs_full = true; // full repaint at the new size
         }
     }
     Ok(())
+}
+
+/// Shared previous frame: all clients see the same area, so one diff and
+/// one stored buffer serve everyone (cloning per client per 16ms tick was
+/// the loop's largest constant cost).
+struct FrameCache {
+    prev: Option<Buffer>,
 }
 
 fn render_frame(
@@ -527,19 +598,24 @@ fn render_frame(
     term: &mut Terminal<TestBackend>,
     area: Rect,
     clients: &mut HashMap<ClientId, Client>,
+    cache: &mut FrameCache,
 ) -> io::Result<()> {
     let view = ui::compute_view(rt, area);
     term.draw(|f| ui::render(&view, rt, f)).expect("test backend is infallible");
     let curr = term.backend().buffer().clone();
     let cursor = ui::cursor_for(&view, rt);
 
+    let any_full = clients.values().any(|c| c.needs_full);
+    let diff = ansi_diff(cache.prev.as_ref(), &curr, cursor);
+    let full = if any_full { ansi_diff(None, &curr, cursor) } else { Vec::new() };
     for c in clients.values_mut() {
-        let bytes = ansi_diff(c.prev.as_ref(), &curr, cursor);
+        let bytes = if c.needs_full { &full } else { &diff };
+        c.needs_full = false;
         if !bytes.is_empty() {
-            let _ = c.tx.send(ServerMsg::Frame(bytes));
+            let _ = c.tx.send(ServerMsg::Frame(bytes.clone()));
         }
-        c.prev = Some(curr.clone());
     }
+    cache.prev = Some(curr);
     Ok(())
 }
 

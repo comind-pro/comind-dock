@@ -47,6 +47,8 @@ pub struct Workspace {
     pub custom_name: bool,
     /// Worktree spaces group under their parent in the sidebar.
     pub parent: Option<WorkspaceId>,
+    /// Agent profile associated with this space — the picker's default.
+    pub profile: Option<String>,
     pub tabs: Vec<Tab>,
     pub active_tab: usize,
 }
@@ -64,7 +66,16 @@ impl Default for Workspace {
 
 impl Workspace {
     pub fn new(id: WorkspaceId, name: String, cwd: PathBuf, tab: Tab) -> Self {
-        Self { id, name, cwd, custom_name: false, parent: None, tabs: vec![tab], active_tab: 0 }
+        Self {
+            id,
+            name,
+            cwd,
+            custom_name: false,
+            parent: None,
+            profile: None,
+            tabs: vec![tab],
+            active_tab: 0,
+        }
     }
 
     pub fn active_tab(&self) -> &Tab {

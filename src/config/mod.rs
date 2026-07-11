@@ -1,7 +1,8 @@
 //! TOML config: Phase 1 subset of docs/CONFIGURATION.md.
 //! `Config::default()` is the source of truth; the embedded annotated file
-//! must deserialize back to it (round-trip test below). Invalid file →
-//! warn and run on defaults; invalid single binding → warn and skip.
+//! must deserialize back to it (round-trip test below). Unparseable file →
+//! warn and run on defaults; invalid section → warn, default that section,
+//! keep the rest; invalid single binding → warn and skip.
 
 pub mod keys;
 pub mod theme;
@@ -31,11 +32,17 @@ pub struct UpdateCfg {
     pub check: bool,
     /// GitHub repo the update feed reads from.
     pub repo: String,
+    /// `stable` (full releases only) | `preview` (prereleases included).
+    pub channel: crate::update::Channel,
 }
 
 impl Default for UpdateCfg {
     fn default() -> Self {
-        Self { check: true, repo: "comind-pro/comind-dock".to_string() }
+        Self {
+            check: true,
+            repo: "comind-pro/comind-dock".to_string(),
+            channel: crate::update::Channel::Stable,
+        }
     }
 }
 
@@ -261,15 +268,48 @@ pub fn load(cli_override: Option<PathBuf>) -> (Config, Vec<String>) {
             return (Config::default(), warnings);
         }
     };
-    match toml::from_str::<Config>(&text) {
-        Ok(cfg) => (cfg, warnings),
-        Err(e) => {
-            // ponytail: whole-file fallback; per-field lenient recovery is a
-            // documented gap until it earns its complexity.
-            warnings.push(format!("config error in {}: {e}; using defaults", path.display()));
-            (Config::default(), warnings)
-        }
+    let (cfg, section_warnings) = from_str(&text);
+    warnings.extend(section_warnings.into_iter().map(|w| format!("{}: {w}", path.display())));
+    (cfg, warnings)
+}
+
+/// Lenient parse: syntax error → all defaults + warning; otherwise
+/// per-section recovery via `from_table`.
+fn from_str(text: &str) -> (Config, Vec<String>) {
+    match text.parse::<toml::Table>() {
+        Ok(table) => from_table(table),
+        Err(e) => (Config::default(), vec![format!("config error: {e}; using defaults")]),
     }
+}
+
+/// Deserialize each known top-level section independently; a bad section
+/// falls back to its default with a warning, the rest survive. Unknown
+/// sections are ignored.
+fn from_table(table: toml::Table) -> (Config, Vec<String>) {
+    let mut cfg = Config::default();
+    let mut warnings = Vec::new();
+    macro_rules! section {
+        ($name:literal, $field:ident) => {
+            if let Some(v) = table.get($name) {
+                match v.clone().try_into() {
+                    Ok(s) => cfg.$field = s,
+                    Err(e) => warnings.push(format!(
+                        "config section [{}] invalid: {e}; using defaults for it",
+                        $name
+                    )),
+                }
+            }
+        };
+    }
+    section!("theme", theme);
+    section!("terminal", terminal);
+    section!("keys", keys);
+    section!("ui", ui);
+    section!("worktrees", worktrees);
+    section!("update", update);
+    section!("advanced", advanced);
+    section!("experimental", experimental);
+    (cfg, warnings)
 }
 
 #[cfg(test)]
@@ -305,5 +345,37 @@ description = "open lazygit"
         .unwrap();
         assert_eq!(cfg.keys.commands.len(), 1);
         assert_eq!(cfg.keys.commands[0].kind, CommandKind::Pane);
+    }
+
+    #[test]
+    fn update_channel_parses_and_defaults_to_stable() {
+        assert_eq!(Config::default().update.channel, crate::update::Channel::Stable);
+        let cfg: Config = toml::from_str("[update]\nchannel = \"preview\"\n").unwrap();
+        assert_eq!(cfg.update.channel, crate::update::Channel::Preview);
+    }
+
+    #[test]
+    fn bad_section_defaults_others_survive() {
+        let table: toml::Table =
+            "[update]\ncheck = \"yes\"\n[keys]\nprefix = \"ctrl+a\"\n".parse().unwrap();
+        let (cfg, warnings) = from_table(table);
+        assert_eq!(cfg.keys.prefix, "ctrl+a");
+        assert_eq!(cfg.update, UpdateCfg::default());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("update"), "warning must name the section: {warnings:?}");
+    }
+
+    #[test]
+    fn broken_toml_all_defaults_with_warning() {
+        let (cfg, warnings) = from_str("[update\ncheck =");
+        assert_eq!(cfg, Config::default());
+        assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn unknown_section_ignored_silently() {
+        let (cfg, warnings) = from_str("[ponies]\nrainbow = true\n");
+        assert_eq!(cfg, Config::default());
+        assert!(warnings.is_empty());
     }
 }

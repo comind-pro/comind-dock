@@ -5,9 +5,10 @@
 //! (matched by id), hot-reloadable via `cdock server reload-manifests`.
 //! ponytail: the remote manifest feed arrives with the update system.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Status {
     Working,
     Blocked,
@@ -60,7 +61,7 @@ fn default_region() -> String {
     "bottom".to_string()
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleState {
     Working,
@@ -83,26 +84,109 @@ impl From<RuleState> for Status {
 /// Classify a pane's screen against a manifest. None → no rule matched
 /// (caller falls back to the PTY-activity heuristic).
 pub fn classify(manifest: &Manifest, title: &str, bottom_lines: &[String]) -> Option<Status> {
+    // ponytail: delegates to the explain path so the two can never diverge;
+    // the extra per-rule trace allocation is a few tiny strings per tick.
+    classify_explain(manifest, title, bottom_lines).outcome
+}
+
+/// One pattern string from a rule and whether the region text contained it.
+#[derive(Debug, Serialize)]
+pub struct PatternCheck {
+    pub pattern: String,
+    pub found: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    /// all_of + any_of satisfied, no none_of present.
+    Matched,
+    /// all_of or any_of not satisfied.
+    Failed,
+    /// Would have matched, but a none_of string was present.
+    Vetoed,
+}
+
+/// Trace of one rule evaluation, in priority order.
+#[derive(Debug, Serialize)]
+pub struct RuleTrace {
+    pub priority: i32,
+    pub state: RuleState,
+    pub region: String,
+    pub all_of: Vec<PatternCheck>,
+    pub any_of: Vec<PatternCheck>,
+    pub none_of: Vec<PatternCheck>,
+    pub verdict: Verdict,
+}
+
+/// Full reasoning for one classification: every rule's evaluation plus the
+/// exact inputs and the final outcome (None → activity-heuristic fallback).
+#[derive(Debug, Serialize)]
+pub struct Explain {
+    pub manifest_id: String,
+    pub title: String,
+    pub bottom_lines: Vec<String>,
+    pub rules: Vec<RuleTrace>,
+    pub outcome: Option<Status>,
+}
+
+/// Like `classify`, but records why: every rule in priority order with each
+/// pattern's hit/miss and a verdict. `classify()` is exactly `.outcome`.
+pub fn classify_explain(manifest: &Manifest, title: &str, bottom_lines: &[String]) -> Explain {
     let bottom = bottom_lines.join("\n").to_lowercase();
-    let title = title.to_lowercase();
+    let title_lc = title.to_lowercase();
 
     let mut rules: Vec<&Rule> = manifest.rules.iter().collect();
     rules.sort_by_key(|r| -r.priority);
 
+    let mut outcome = None;
+    let mut traces = Vec::with_capacity(rules.len());
     for rule in rules {
         let text = match rule.region.as_str() {
-            "title" => title.as_str(),
+            "title" => title_lc.as_str(),
             _ => bottom.as_str(),
         };
-        let all = rule.all_of.iter().all(|s| text.contains(&s.to_lowercase()));
-        let any =
-            rule.any_of.is_empty() || rule.any_of.iter().any(|s| text.contains(&s.to_lowercase()));
-        let none = rule.none_of.iter().all(|s| !text.contains(&s.to_lowercase()));
-        if all && any && none {
-            return Some(rule.state.into());
+        let check = |pats: &[String]| -> Vec<PatternCheck> {
+            pats.iter()
+                .map(|p| PatternCheck {
+                    pattern: p.clone(),
+                    found: text.contains(&p.to_lowercase()),
+                })
+                .collect()
+        };
+        let all_of = check(&rule.all_of);
+        let any_of = check(&rule.any_of);
+        let none_of = check(&rule.none_of);
+
+        let all = all_of.iter().all(|c| c.found);
+        let any = any_of.is_empty() || any_of.iter().any(|c| c.found);
+        let verdict = if !(all && any) {
+            Verdict::Failed
+        } else if none_of.iter().any(|c| c.found) {
+            Verdict::Vetoed
+        } else {
+            Verdict::Matched
+        };
+        if verdict == Verdict::Matched && outcome.is_none() {
+            outcome = Some(rule.state.into());
         }
+        traces.push(RuleTrace {
+            priority: rule.priority,
+            state: rule.state,
+            region: rule.region.clone(),
+            all_of,
+            any_of,
+            none_of,
+            verdict,
+        });
     }
-    None
+    Explain {
+        manifest_id: manifest.id.clone(),
+        title: title.to_string(),
+        bottom_lines: bottom_lines.to_vec(),
+        rules: traces,
+        outcome,
+    }
 }
 
 /// Bundled manifests, compiled in (source of truth per ARCHITECTURE §4).
@@ -218,6 +302,63 @@ mod tests {
             ),
             Some(Status::Working)
         );
+    }
+
+    #[test]
+    fn explain_working_spinner() {
+        let m = claude();
+        // Stale dialog text + live spinner: blocked rules are vetoed by the
+        // spinner hint, the working rule matches.
+        let input =
+            lines(&["Do you want to proceed?", "❯ 1. Yes", "✻ Churning… (3s · esc to interrupt)"]);
+        let ex = classify_explain(&m, "", &input);
+        assert_eq!(ex.outcome, Some(Status::Working));
+        assert_eq!(ex.outcome, classify(&m, "", &input));
+        assert_eq!(ex.bottom_lines, input);
+        assert_eq!(ex.rules.len(), m.rules.len());
+
+        let vetoed = ex.rules.iter().find(|r| r.verdict == Verdict::Vetoed).expect("vetoed rule");
+        assert_eq!(vetoed.priority, 100);
+        assert_eq!(vetoed.state, RuleState::Blocked);
+        assert!(vetoed.none_of.iter().any(|c| c.found && c.pattern == "esc to interrupt"));
+
+        let matched =
+            ex.rules.iter().find(|r| r.verdict == Verdict::Matched).expect("matched rule");
+        assert_eq!(matched.priority, 90);
+        assert_eq!(matched.state, RuleState::Working);
+        assert!(matched.any_of.iter().any(|c| c.found && c.pattern == "esc to interrupt"));
+    }
+
+    #[test]
+    fn explain_blocked_dialog() {
+        let m = claude();
+        let input = lines(&["Do you want to proceed?", "❯ 1. Yes"]);
+        let ex = classify_explain(&m, "", &input);
+        assert_eq!(ex.outcome, Some(Status::Blocked));
+        assert_eq!(ex.outcome, classify(&m, "", &input));
+
+        let matched =
+            ex.rules.iter().find(|r| r.verdict == Verdict::Matched).expect("matched rule");
+        assert_eq!(matched.priority, 100);
+        assert_eq!(matched.state, RuleState::Blocked);
+        assert!(matched.all_of.iter().all(|c| c.found));
+        assert!(matched.any_of.iter().any(|c| c.found && c.pattern == "do you want to proceed"));
+        assert!(matched.none_of.iter().all(|c| !c.found));
+        // Serializes for the CLI.
+        let json = serde_json::to_string(&ex).expect("explain serializes");
+        assert!(json.contains("\"outcome\":\"blocked\""));
+        assert!(json.contains("\"verdict\":\"matched\""));
+    }
+
+    #[test]
+    fn explain_no_match() {
+        let m = claude();
+        let input = lines(&["random text"]);
+        let ex = classify_explain(&m, "", &input);
+        assert_eq!(ex.outcome, None);
+        assert_eq!(classify(&m, "", &input), None);
+        assert_eq!(ex.rules.len(), m.rules.len());
+        assert!(ex.rules.iter().all(|r| r.verdict == Verdict::Failed));
     }
 
     #[test]

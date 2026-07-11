@@ -1,7 +1,8 @@
-//! Minimal agent recognition: a pane counts as an agent only when its OSC
-//! title or program matches a known agent CLI. Plain shells and ordinary
-//! commands are not agents. ponytail: word-match against a bundled list;
-//! the Phase 3 detection engine (manifests, rules, states) replaces this.
+//! Agent recognition and session continuation. Identity comes from live
+//! process exe paths (`detect_process`, exact component match); the OSC
+//! title word-match (`detect`) survives only as the fallback for
+//! interpreter-hosted installs (npm claude runs as "node"). Statuses live
+//! in the detect module's manifests, not here.
 
 const KNOWN: &[&str] = &[
     "claude", "codex", "opencode", "aider", "gemini", "goose", "amp", "pi", "cursor", "copilot",
@@ -19,6 +20,7 @@ pub fn resume_command(ident: &str) -> String {
         return match agent {
             "claude" => format!("claude --resume {session}"),
             "codex" => format!("codex resume {session}"),
+            "opencode" => format!("opencode --session {session}"),
             other => other.to_string(),
         };
     }
@@ -176,6 +178,126 @@ pub fn find_session_profile(id: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+/// Session id of the newest codex/opencode conversation for `cwd` created
+/// or touched after `since` — lets the runtime bind a pane to the session
+/// the agent it just spawned created, since neither CLI has a SessionStart
+/// hook. None (agent unknown, dirs absent, nothing matches) keeps the
+/// current picker fallback.
+pub fn newest_agent_session(
+    agent: &str,
+    cwd: &std::path::Path,
+    since: std::time::SystemTime,
+) -> Option<String> {
+    let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
+    match agent {
+        // ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
+        "codex" => {
+            let root = std::env::var_os("CODEX_HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| home.join(".codex"));
+            newest_codex_session(&root.join("sessions"), cwd, since)
+        }
+        // $XDG_DATA_HOME/opencode/**/ses_*.json (session info records)
+        "opencode" => {
+            let data = std::env::var_os("XDG_DATA_HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| home.join(".local/share"));
+            newest_opencode_session(&data.join("opencode"), cwd, since)
+        }
+        _ => None,
+    }
+}
+
+/// Files under `dir` (recursing at most `depth` levels) with their mtimes.
+fn walk_files(dir: &std::path::Path, depth: usize, out: &mut Vec<(std::time::SystemTime, std::path::PathBuf)>) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            if depth > 0 {
+                walk_files(&p, depth - 1, out);
+            }
+        } else if let Ok(m) = e.metadata()
+            && let Ok(t) = m.modified()
+        {
+            out.push((t, p));
+        }
+    }
+}
+
+/// Ids go straight into a shell command line — only accept the uuid-ish
+/// shapes both CLIs actually produce.
+fn safe_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Codex rollouts: sessions/YYYY/MM/DD/rollout-<timestamp>-<uuid>.jsonl,
+/// head line `{"type":"session_meta","payload":{"id":...,"cwd":...}}`
+/// (earlier builds put id/cwd at the top level; legacy TS-codex flat
+/// rollout-*.json files carry no cwd and no resume support → skipped).
+fn newest_codex_session(
+    sessions: &std::path::Path,
+    cwd: &std::path::Path,
+    since: std::time::SystemTime,
+) -> Option<String> {
+    use std::io::BufRead;
+    let mut files = Vec::new();
+    walk_files(sessions, 3, &mut files);
+    files.retain(|(mtime, p)| {
+        *mtime > since
+            && p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("rollout-"))
+            && p.extension().is_some_and(|x| x == "jsonl")
+    });
+    files.sort_by_key(|(mtime, _)| std::cmp::Reverse(*mtime));
+    for (_, path) in files {
+        let Ok(f) = std::fs::File::open(&path) else { continue };
+        for line in std::io::BufReader::new(f).lines().map_while(Result::ok).take(5) {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            let meta = if v["type"] == "session_meta" { &v["payload"] } else { &v };
+            if let (Some(id), Some(c)) = (meta["id"].as_str(), meta["cwd"].as_str()) {
+                if std::path::Path::new(c) == cwd && safe_id(id) {
+                    return Some(id.to_string());
+                }
+                break; // meta found but wrong cwd → next file
+            }
+        }
+    }
+    None
+}
+
+/// Opencode session info: <data>/opencode/storage/session/<project>/ses_*.json
+/// (older builds: <data>/opencode/project/<slug>/storage/session/info/ses_*.json);
+/// the JSON's `directory` field is the session's cwd.
+fn newest_opencode_session(
+    root: &std::path::Path,
+    cwd: &std::path::Path,
+    since: std::time::SystemTime,
+) -> Option<String> {
+    let mut files = Vec::new();
+    walk_files(root, 6, &mut files);
+    files.retain(|(mtime, p)| {
+        *mtime > since
+            && p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("ses_"))
+            && p.extension().is_some_and(|x| x == "json")
+    });
+    files.sort_by_key(|(mtime, _)| std::cmp::Reverse(*mtime));
+    for (_, path) in files {
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+        if v["directory"].as_str().map(std::path::Path::new) != Some(cwd) {
+            continue;
+        }
+        let id = v["id"]
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| Some(path.file_stem()?.to_string_lossy().into_owned()))?;
+        if safe_id(&id) {
+            return Some(id);
+        }
+    }
+    None
+}
+
 /// Wrap a resume command so a failed resume (missing session, wrong
 /// profile) degrades the pane into a shell with the error visible instead
 /// of dying instantly — an instant exit cascades into closing the tab and
@@ -246,8 +368,82 @@ mod tests {
     fn resume_uses_reported_session_id() {
         assert_eq!(resume_command("claude:abc-123"), "claude --resume abc-123");
         assert_eq!(resume_command("codex:xyz"), "codex resume xyz");
+        assert_eq!(resume_command("opencode:ses_9y1"), "opencode --session ses_9y1");
         assert_eq!(resume_command("claude"), "claude --resume"); // no id → picker
         assert_eq!(resume_command("goose"), "goose");
+    }
+
+    fn set_mtime(path: &std::path::Path, t: std::time::SystemTime) {
+        let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        f.set_times(std::fs::FileTimes::new().set_modified(t)).unwrap();
+    }
+
+    #[test]
+    fn newest_codex_session_picks_newest_after_since_for_cwd() {
+        let root = std::env::temp_dir().join(format!("cdock-codex-{}", std::process::id()));
+        let day = root.join("2026/07/11");
+        std::fs::create_dir_all(&day).unwrap();
+        let since = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let mk = |name: &str, meta: &str, age_secs: u64| {
+            let p = day.join(name);
+            std::fs::write(&p, meta).unwrap();
+            set_mtime(&p, std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs));
+        };
+        let meta = |id: &str, cwd: &str| {
+            format!(r#"{{"type":"session_meta","payload":{{"id":"{id}","cwd":"{cwd}"}}}}"#)
+        };
+        mk("rollout-a.jsonl", &meta("too-old", "/p/x"), 120); // before since
+        mk("rollout-b.jsonl", &meta("other-dir", "/p/y"), 5);
+        mk("rollout-c.jsonl", &meta("older-match", "/p/x"), 30);
+        mk("rollout-d.jsonl", &meta("newest-match", "/p/x"), 10);
+        // Head-level meta (early Rust codex, no envelope) — newest overall
+        // but wrong cwd; must not shadow the match.
+        mk("rollout-e.jsonl", r#"{"id":"flat-meta","cwd":"/p/z"}"#, 1);
+        // Legacy TS-codex flat .json: no resume support, ignored.
+        std::fs::write(root.join("rollout-legacy.json"), r#"{"session":{"id":"old"}}"#).unwrap();
+
+        let cwd = std::path::Path::new("/p/x");
+        assert_eq!(newest_codex_session(&root, cwd, since).as_deref(), Some("newest-match"));
+        assert_eq!(
+            newest_codex_session(&root, std::path::Path::new("/p/z"), since).as_deref(),
+            Some("flat-meta"),
+            "un-enveloped head meta is parsed too"
+        );
+        assert_eq!(newest_codex_session(&root, std::path::Path::new("/nope"), since), None);
+        assert_eq!(newest_codex_session(&root.join("missing"), cwd, since), None);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn newest_opencode_session_matches_directory_field() {
+        let root = std::env::temp_dir().join(format!("cdock-oc-{}", std::process::id()));
+        let dir = root.join("storage/session/proj");
+        std::fs::create_dir_all(&dir).unwrap();
+        let since = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let mk = |name: &str, body: &str, age_secs: u64| {
+            let p = dir.join(name);
+            std::fs::write(&p, body).unwrap();
+            set_mtime(&p, std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs));
+        };
+        mk("ses_old.json", r#"{"id":"ses_old","directory":"/p/x"}"#, 120); // before since
+        mk("ses_other.json", r#"{"id":"ses_other","directory":"/p/y"}"#, 5);
+        mk("ses_hit.json", r#"{"id":"ses_hit","directory":"/p/x"}"#, 10);
+        // Non-session storage (messages/parts) never matches the prefix.
+        std::fs::write(dir.join("msg_1.json"), r#"{"id":"msg_1"}"#).unwrap();
+
+        let cwd = std::path::Path::new("/p/x");
+        assert_eq!(newest_opencode_session(&root, cwd, since).as_deref(), Some("ses_hit"));
+        assert_eq!(newest_opencode_session(&root, std::path::Path::new("/nope"), since), None);
+        assert_eq!(newest_opencode_session(&root.join("missing"), cwd, since), None);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn newest_agent_session_unknown_agent_is_none() {
+        assert_eq!(
+            newest_agent_session("goose", std::path::Path::new("/p"), std::time::SystemTime::now()),
+            None
+        );
     }
 
     fn write_jsonl(dir: &std::path::Path, name: &str, lines: &[&str]) -> std::path::PathBuf {

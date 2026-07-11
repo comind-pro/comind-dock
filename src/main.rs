@@ -34,6 +34,10 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     config: Option<std::path::PathBuf>,
 
+    /// Use/create a named session (its own server, sockets, snapshot).
+    #[arg(long, value_name = "NAME")]
+    session: Option<String>,
+
     /// Folder-scoped attach: show only workspaces under this folder
     /// (default: current directory); creates one there if none matches.
     #[arg(short = 'f', long, value_name = "PATH", num_args = 0..=1, default_missing_value = ".")]
@@ -84,6 +88,11 @@ enum Cmd {
     Worktree {
         #[command(subcommand)]
         sub: WorktreeCmd,
+    },
+    /// Named sessions: list, attach, stop, delete.
+    Session {
+        #[command(subcommand)]
+        sub: SessionCmd,
     },
     /// Control the running session server.
     Server {
@@ -151,6 +160,20 @@ enum ApiCmd {
     Snapshot,
     /// The socket API reference: one example request per command.
     Reference,
+    /// Alias of `reference` (the machine-readable command catalog).
+    Schema,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum SessionCmd {
+    /// Every known session: name, running or not, snapshot size.
+    List,
+    /// Attach to (or start) a named session.
+    Attach { name: String },
+    /// Save and stop a session's server (panes end).
+    Stop { name: String },
+    /// Delete a stopped session's snapshot and leftovers.
+    Delete { name: String },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -225,12 +248,45 @@ enum PaneCmd {
     Focus { pane: String },
     /// Stream a pane's raw output to stdout until Ctrl-C.
     Observe { pane: String },
+    /// Interactive attach: your keystrokes go to the pane, its output
+    /// streams back. Detach with Ctrl-].
+    Attach { pane: String },
+    /// Report an agent state for a pane (hooks/wrappers): working |
+    /// blocked | done | idle | clear.
+    ReportAgent {
+        pane: String,
+        state: String,
+        /// Free-text status shown in the sidebar ("running tests").
+        #[arg(long)]
+        label: Option<String>,
+        /// Report lifetime; default 30000.
+        #[arg(long)]
+        ttl_ms: Option<u64>,
+    },
+    /// Set a pane's title (like an OSC title from the app itself).
+    ReportMetadata {
+        pane: String,
+        #[arg(long)]
+        title: String,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
 enum AgentCmd {
     /// List agent panes only.
     List,
+    /// Why detection says what it says: full rule trace for a pane, or
+    /// offline against a text file.
+    Explain {
+        /// Pane id (omit when using --file).
+        pane: Option<String>,
+        /// Classify a text file instead of a live pane.
+        #[arg(long, requires = "agent")]
+        file: Option<std::path::PathBuf>,
+        /// Agent manifest id for --file mode (claude|codex|opencode|…).
+        #[arg(long)]
+        agent: Option<String>,
+    },
     /// Spawn an agent in a new tab (or a split of the focused pane).
     Start {
         /// Command to run, e.g. "claude" or "codex --model o3".
@@ -260,6 +316,10 @@ enum PluginCmd {
         plugin: String,
         action: String,
     },
+    /// Install a plugin: gh:owner/repo (shallow clone) or a local path.
+    Install { spec: String },
+    /// Open the panes a plugin declares under [[panes]].
+    Open { id: String },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -285,6 +345,9 @@ enum WorkspaceCmd {
     Create {
         #[arg(long)]
         cwd: Option<String>,
+        /// Remote host: the workspace pane runs `ssh -t <host>`.
+        #[arg(long)]
+        ssh: Option<String>,
     },
     /// Kill every pane in the workspace.
     Close { workspace: u64 },
@@ -332,6 +395,83 @@ enum WaitCmd {
         #[arg(long)]
         timeout: Option<u64>,
     },
+}
+
+/// Sessions are files in the state dir: session-<name>.json (+ sockets
+/// while running). Name extraction mirrors proto::socket_path.
+fn run_session_cmd(sub: SessionCmd) -> Result<bool, String> {
+    let dir = logging::state_dir().ok_or("cannot determine state dir")?;
+    let running = |name: &str| {
+        std::os::unix::net::UnixStream::connect(dir.join(format!("session-{name}.sock"))).is_ok()
+    };
+    match sub {
+        SessionCmd::List => {
+            let mut names: Vec<String> = std::fs::read_dir(&dir)
+                .map_err(|e| e.to_string())?
+                .flatten()
+                .filter_map(|e| {
+                    let n = e.file_name().to_string_lossy().into_owned();
+                    n.strip_prefix("session-").and_then(|r| {
+                        r.strip_suffix(".json").or_else(|| r.strip_suffix(".sock"))
+                    }).map(str::to_string)
+                })
+                .collect();
+            names.sort();
+            names.dedup();
+            for name in names {
+                let snap = dir.join(format!("session-{name}.json"));
+                let size = std::fs::metadata(&snap).map(|m| m.len()).unwrap_or(0);
+                println!(
+                    "{name}	{}	{size}B",
+                    if running(&name) { "running" } else { "stopped" }
+                );
+            }
+            Ok(true)
+        }
+        SessionCmd::Attach { name } => {
+            // ssh:host or ssh:host/session — attach to cdock on that box.
+            if let Some(remote) = name.strip_prefix("ssh:") {
+                let (host, sess) =
+                    remote.split_once('/').map_or((remote, None), |(h, s)| (h, Some(s)));
+                let mut c = std::process::Command::new("ssh");
+                c.arg("-t").arg(host).arg("cdock");
+                if let Some(s) = sess {
+                    c.arg("--session").arg(s);
+                }
+                use std::os::unix::process::CommandExt;
+                return Err(format!("ssh exec failed: {}", c.exec()));
+            }
+            // Safety: no other threads yet in a CLI invocation.
+            unsafe { std::env::set_var("CDOCK_SESSION", &name) };
+            attach_or_spawn(None).map_err(|e| e.to_string())?;
+            Ok(true)
+        }
+        SessionCmd::Stop { name } => {
+            unsafe { std::env::set_var("CDOCK_SESSION", &name) };
+            let v = api::request(&api::Req::Shutdown).map_err(|e| e.to_string())?;
+            println!("{v}");
+            Ok(v["ok"].as_bool().unwrap_or(false))
+        }
+        SessionCmd::Delete { name } => {
+            if running(&name) {
+                return Err(format!("session {name:?} is running — stop it first"));
+            }
+            let mut removed = 0;
+            for f in [
+                format!("session-{name}.json"),
+                format!("session-{name}.json.boot-bak"),
+                format!("handoff-{name}.json"),
+                format!("session-{name}.sock"),
+                format!("api-{name}.sock"),
+            ] {
+                if std::fs::remove_file(dir.join(&f)).is_ok() {
+                    removed += 1;
+                }
+            }
+            println!("deleted {removed} file(s) for session {name:?}");
+            Ok(true)
+        }
+    }
 }
 
 /// Merge the cdock SessionStart hook into EVERY Claude profile's
@@ -422,6 +562,61 @@ fn parse_pane(s: &str) -> Result<u64, String> {
     s.trim_start_matches('%').parse().map_err(|_| format!("bad pane id {s:?}"))
 }
 
+/// Two-way interactive pane attach over the API socket: raw-mode stdin →
+/// SendText requests, output subscription → stdout. Ctrl-] detaches.
+// ponytail: one API request per stdin chunk — fine at human typing speed;
+// switch to a persistent input stream if someone pipes bulk data through.
+fn run_pane_attach(pane: u64) -> Result<(), String> {
+    use std::io::{IsTerminal, Read, Write};
+    if !std::io::stdin().is_terminal() {
+        return Err("attach needs an interactive terminal".to_string());
+    }
+    // Paint the current screen so the user isn't staring at a blank pane.
+    if let Ok(v) = api::request(&api::Req::Read { pane, lines: None })
+        && let Some(lines) = v["lines"].as_array()
+    {
+        for l in lines {
+            if let Some(t) = l.as_str() {
+                println!("{t}");
+            }
+        }
+    }
+    eprintln!("[attached to %{pane} — Ctrl-] to detach]");
+    crossterm::terminal::enable_raw_mode().map_err(|e| e.to_string())?;
+    std::thread::spawn(move || {
+        let mut stdin = std::io::stdin();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = stdin.read(&mut buf).unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            let chunk = &buf[..n];
+            let end = chunk.iter().position(|&b| b == 0x1d); // Ctrl-]
+            let send = &chunk[..end.unwrap_or(n)];
+            if !send.is_empty() {
+                let text = String::from_utf8_lossy(send).into_owned();
+                let _ = api::request(&api::Req::SendText { pane, text });
+            }
+            if end.is_some() {
+                let _ = crossterm::terminal::disable_raw_mode();
+                eprintln!("\r\n[detached]");
+                std::process::exit(0);
+            }
+        }
+    });
+    let spec = api::SubSpec { events: vec!["output".to_string()], pane: Some(pane) };
+    let res = api::subscribe(&spec, |v| {
+        if let Some(data) = v["data"].as_str() {
+            let mut out = std::io::stdout();
+            let _ = out.write_all(data.as_bytes());
+            let _ = out.flush();
+        }
+    });
+    let _ = crossterm::terminal::disable_raw_mode();
+    res.map_err(|e| e.to_string())
+}
+
 /// Send one API request, print the JSON reply. Ok(true) when the server said ok.
 fn run_cmd(cmd: Cmd) -> Result<bool, String> {
     use api::Req;
@@ -437,6 +632,15 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             PaneCmd::SendText { pane, text } => Req::SendText { pane: parse_pane(&pane)?, text },
             PaneCmd::Read { pane, lines } => Req::Read { pane: parse_pane(&pane)?, lines },
             PaneCmd::Focus { pane } => Req::Focus { pane: parse_pane(&pane)? },
+            PaneCmd::Attach { pane } => {
+                return run_pane_attach(parse_pane(&pane)?).map(|()| true);
+            }
+            PaneCmd::ReportAgent { pane, state, label, ttl_ms } => {
+                Req::ReportAgent { pane: parse_pane(&pane)?, state, label, ttl_ms }
+            }
+            PaneCmd::ReportMetadata { pane, title } => {
+                Req::ReportMetadata { pane: parse_pane(&pane)?, title: Some(title) }
+            }
             PaneCmd::Observe { pane } => {
                 let pane = parse_pane(&pane)?;
                 let spec =
@@ -451,6 +655,24 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 return Ok(true);
             }
         },
+        Cmd::Agent { sub: AgentCmd::Explain { pane, file, agent } } => {
+            if let Some(path) = file {
+                let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+                let lines: Vec<String> = text.lines().map(str::to_string).collect();
+                let manifests = detect::load_all();
+                let id = agent.unwrap_or_default();
+                let Some(m) = detect::manifest_for(&manifests, &id) else {
+                    return Err(format!("no manifest for agent {id:?}"));
+                };
+                let ex = detect::classify_explain(m, "", &lines);
+                println!("{}", serde_json::to_string_pretty(&ex).map_err(|e| e.to_string())?);
+                return Ok(true);
+            }
+            let Some(pane) = pane else {
+                return Err("pane id required (or use --file)".to_string());
+            };
+            Req::AgentExplain { pane: parse_pane(&pane)? }
+        }
         Cmd::Agent { sub: AgentCmd::Start { command, profile, split, workspace } } => {
             let (command, env) = match profile {
                 Some(name) => profile::load(&name)?.resolve(),
@@ -480,6 +702,30 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                     Ok(true)
                 }
                 PluginCmd::Action { plugin, action } => plugin::invoke(&plugin, &action),
+            PluginCmd::Install { spec } => {
+                println!("installed {}", plugin::install(&spec)?);
+                return Ok(true);
+            }
+            PluginCmd::Open { id } => {
+                let p = plugin::load(&id)?;
+                for mp in plugin::managed_panes(&p) {
+                    let v = api::request(&Req::Split {
+                        pane: None,
+                        direction: None,
+                        command: Some(mp.command.clone()),
+                    })
+                    .map_err(|e| e.to_string())?;
+                    // Honor the declared title when the split reports its pane.
+                    if let Some(pane) = v["pane"].as_u64() {
+                        let _ = api::request(&Req::ReportMetadata {
+                            pane,
+                            title: Some(mp.title.clone()),
+                        });
+                    }
+                    println!("{}	{v}", mp.title);
+                }
+                return Ok(true);
+            }
             };
         }
         Cmd::Skill { sub } => {
@@ -514,7 +760,27 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
         }
         Cmd::Workspace { sub } => match sub {
             WorkspaceCmd::Focus { workspace } => Req::WorkspaceFocus { workspace },
-            WorkspaceCmd::Create { cwd } => Req::WorkspaceCreate { cwd },
+            WorkspaceCmd::Create { cwd, ssh } => {
+                let Some(host) = ssh else {
+                    let v = api::request(&Req::WorkspaceCreate { cwd }).map_err(|e| e.to_string())?;
+                    println!("{v}");
+                    return Ok(v["ok"].as_bool().unwrap_or(false));
+                };
+                // ssh-backed space: create it, then exec ssh in its pane so
+                // the pane closes when the remote shell ends.
+                let v = api::request(&Req::WorkspaceCreate { cwd }).map_err(|e| e.to_string())?;
+                let Some(pane) = v["pane"].as_u64() else {
+                    println!("{v}");
+                    return Ok(false);
+                };
+                // No exec: a failed ssh drops back to the local shell
+                // instead of killing the fresh space.
+                let quoted = format!("'{}'", host.replace('\'', "'\\''"));
+                let r = api::request(&Req::Run { pane, command: format!("ssh -t {quoted}") })
+                    .map_err(|e| e.to_string())?;
+                println!("{v}");
+                return Ok(r["ok"].as_bool().unwrap_or(false));
+            }
             WorkspaceCmd::Close { workspace } => Req::WorkspaceClose { workspace },
         },
         Cmd::Tab { sub } => match sub {
@@ -575,10 +841,11 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             }
         },
         Cmd::Api { sub: ApiCmd::Snapshot } => Req::Snapshot,
-        Cmd::Api { sub: ApiCmd::Reference } => {
+        Cmd::Api { sub: ApiCmd::Reference | ApiCmd::Schema } => {
             println!("{}", api::REFERENCE.trim());
             return Ok(true);
         }
+        Cmd::Session { sub } => return run_session_cmd(sub),
         Cmd::Server { sub } => match sub {
             ServerCmd::ReloadManifests => Req::ReloadManifests,
             ServerCmd::ReloadConfig => Req::ReloadConfig,
@@ -666,6 +933,21 @@ fn main() -> ExitCode {
     }
     let cli = Cli::parse();
 
+    // Named session: everything downstream (sockets, snapshot, handoff,
+    // logs) namespaces off this env var.
+    if let Some(name) = &cli.session {
+        // Safety: single-threaded this early in main.
+        unsafe { std::env::set_var("CDOCK_SESSION", name) };
+    }
+    // --config becomes CDOCK_CONFIG_PATH: the auto-spawned server and the
+    // live reload-config action then read the SAME file (the override used
+    // to be lost past this process).
+    if let Some(path) = &cli.config
+        && let Ok(abs) = std::fs::canonicalize(path)
+    {
+        unsafe { std::env::set_var("CDOCK_CONFIG_PATH", abs) };
+    }
+
     if cli.default_config {
         print!("{DEFAULT_CONFIG}");
         return ExitCode::SUCCESS;
@@ -728,7 +1010,7 @@ fn main() -> ExitCode {
     }
 
     let result = if cli.server {
-        run_server(cfg)
+        run_server(cfg, warnings.clone())
     } else if cli.no_session {
         run_monolithic_pre();
         run_monolithic(cfg, folder)
@@ -749,7 +1031,7 @@ fn main() -> ExitCode {
 /// Headless daemon: bind the session socket, serve until shutdown. A live
 /// handoff replaces this process image via exec — same pid, panes keep
 /// running on their inherited master fds.
-fn run_server(cfg: config::Config) -> std::io::Result<()> {
+fn run_server(cfg: config::Config, warnings: Vec<String>) -> std::io::Result<()> {
     let sock =
         proto::socket_path().ok_or_else(|| std::io::Error::other("cannot determine state dir"))?;
     let api_sock =
@@ -810,7 +1092,7 @@ fn run_server(cfg: config::Config) -> std::io::Result<()> {
             Some(api_listener),
             Vec::new(),
             handoff,
-            server::ServerOpts { exit_when_no_clients: false },
+            server::ServerOpts { exit_when_no_clients: false, boot_warnings: warnings.clone() },
         )
         .await;
         // Unlink only on a real exit, under the lock, and only if nobody
@@ -937,7 +1219,7 @@ fn run_monolithic(cfg: config::Config, folder: Option<std::path::PathBuf>) -> st
                 None,
                 vec![stream],
                 None,
-                server::ServerOpts { exit_when_no_clients: true },
+                server::ServerOpts { exit_when_no_clients: true, boot_warnings: Vec::new() },
             )
             .await
             .map(|_| ())

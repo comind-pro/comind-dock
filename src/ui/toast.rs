@@ -12,7 +12,7 @@ use crate::runtime::{NoticeKind, Runtime};
 use crate::state::ids::PaneId;
 
 /// Deterministic toast rects — render and mouse hit testing must agree.
-pub fn rects(rt: &Runtime, area: Rect) -> Vec<(Rect, PaneId)> {
+pub fn rects(rt: &Runtime, area: Rect) -> Vec<(Rect, Option<PaneId>)> {
     rt.toasts
         .iter()
         .enumerate()

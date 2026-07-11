@@ -3,11 +3,9 @@
 //! update` downloads the platform tarball, verifies the sha256 when
 //! published, atomically replaces the current binary, and with --handoff
 //! execs the running server in place — no pane dies.
-//! ponytail: latest-release only; stable/preview channels arrive when there
-//! is something to channel. HTTP via the system curl — not worth a client
-//! dependency.
+//! ponytail: HTTP via the system curl — not worth a client dependency.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
@@ -51,10 +49,28 @@ pub fn is_newer(tag: &str) -> bool {
     semver(tag) > semver(CURRENT)
 }
 
-/// Latest release: (tag, asset urls). Blocking — call off the main loop.
-pub fn latest_release(repo: &str) -> Result<(String, Vec<String>), String> {
-    let body = curl(&format!("https://api.github.com/repos/{repo}/releases/latest"))?;
-    let v: serde_json::Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+/// Which release feed to follow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Channel {
+    /// Latest full release (GitHub `/releases/latest` excludes prereleases
+    /// and drafts by definition).
+    #[default]
+    Stable,
+    /// Newest published release, prereleases included.
+    Preview,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Release {
+    pub tag: String,
+    pub assets: Vec<String>,
+    /// Release notes (the GitHub release `body`).
+    pub notes: String,
+}
+
+/// Pure: one release JSON object → Release.
+fn parse_release(v: &serde_json::Value) -> Result<Release, String> {
     let tag = v["tag_name"].as_str().ok_or("release has no tag_name")?.to_string();
     let assets = v["assets"]
         .as_array()
@@ -64,7 +80,31 @@ pub fn latest_release(repo: &str) -> Result<(String, Vec<String>), String> {
                 .collect()
         })
         .unwrap_or_default();
-    Ok((tag, assets))
+    let notes = v["body"].as_str().unwrap_or_default().to_string();
+    Ok(Release { tag, assets, notes })
+}
+
+/// Pure: newest non-draft entry of a `/releases` array (GitHub orders
+/// newest-first; prereleases are eligible — that is the point of preview).
+fn first_non_draft(list: &serde_json::Value) -> Result<&serde_json::Value, String> {
+    list.as_array()
+        .and_then(|a| a.iter().find(|r| r["draft"] != true))
+        .ok_or_else(|| "no published releases".to_string())
+}
+
+/// Latest release on the channel. Blocking — call off the main loop.
+pub fn latest_release(repo: &str, channel: Channel) -> Result<Release, String> {
+    let body = match channel {
+        Channel::Stable => curl(&format!("https://api.github.com/repos/{repo}/releases/latest"))?,
+        Channel::Preview => {
+            curl(&format!("https://api.github.com/repos/{repo}/releases?per_page=10"))?
+        }
+    };
+    let v: serde_json::Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+    match channel {
+        Channel::Stable => parse_release(&v),
+        Channel::Preview => parse_release(first_non_draft(&v)?),
+    }
 }
 
 /// The platform asset name this binary updates from.
@@ -80,8 +120,9 @@ pub fn asset_name() -> String {
 /// Download the latest release and atomically replace `exe`. Returns the
 /// new version tag, or None when already up to date.
 pub fn self_update(exe: &Path) -> Result<Option<String>, String> {
-    let repo = crate::config::load(None).0.update.repo;
-    let (tag, assets) = latest_release(&repo)?;
+    let update_cfg = crate::config::load(None).0.update;
+    let rel = latest_release(&update_cfg.repo, update_cfg.channel)?;
+    let (tag, assets) = (rel.tag, rel.assets);
     if !is_newer(&tag) {
         return Ok(None);
     }
@@ -134,7 +175,33 @@ pub fn self_update(exe: &Path) -> Result<Option<String>, String> {
     std::fs::rename(&new_bin, exe)
         .map_err(|e| format!("cannot replace {} ({e}); is it writable?", exe.display()))?;
     let _ = std::fs::remove_dir_all(&staging);
+    // Leave the release notes for the next boot to toast (best-effort).
+    if let Some(dir) = crate::logging::state_dir() {
+        let _ = write_pending_notes(&dir, &tag, &rel.notes);
+    }
     Ok(Some(tag))
+}
+
+fn pending_notes_path(dir: &Path) -> PathBuf {
+    dir.join("release-notes-pending.md")
+}
+
+fn write_pending_notes(dir: &Path, tag: &str, notes: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(pending_notes_path(dir), format!("# {tag}\n\n{notes}\n"))
+}
+
+fn take_pending_notes(dir: &Path) -> Option<String> {
+    let path = pending_notes_path(dir);
+    let text = std::fs::read_to_string(&path).ok()?;
+    let _ = std::fs::remove_file(&path);
+    Some(text)
+}
+
+/// Release notes left behind by a successful `self_update`, consumed on
+/// first read (read + delete) — the boot path toasts the headline.
+pub fn take_pending_release_notes() -> Option<String> {
+    take_pending_notes(&crate::logging::state_dir()?)
 }
 
 /// ponytail: no crypto dependency for one digest — shell out like install.sh.
@@ -174,6 +241,37 @@ mod tests {
         assert!(semver("v0.10.0") > semver("v0.9.9"), "numeric, not lexicographic");
         assert_eq!(semver("garbage"), Vec::<u64>::new());
         assert!(!is_newer("garbage"), "unparseable tag is never newer");
+    }
+
+    #[test]
+    fn preview_picks_first_non_draft_release() {
+        let list: serde_json::Value = serde_json::json!([
+            { "tag_name": "v9.9.9", "draft": true, "prerelease": true, "body": "wip" },
+            {
+                "tag_name": "v1.2.0-rc.1",
+                "draft": false,
+                "prerelease": true,
+                "body": "rc notes",
+                "assets": [{ "browser_download_url": "https://x/cdock-aarch64-macos.tar.gz" }]
+            },
+            { "tag_name": "v1.1.0", "draft": false, "prerelease": false, "body": "stable" },
+        ]);
+        let rel = parse_release(first_non_draft(&list).unwrap()).unwrap();
+        assert_eq!(rel.tag, "v1.2.0-rc.1", "drafts skipped, prereleases eligible");
+        assert_eq!(rel.notes, "rc notes");
+        assert_eq!(rel.assets, vec!["https://x/cdock-aarch64-macos.tar.gz".to_string()]);
+        assert!(first_non_draft(&serde_json::json!([])).is_err(), "empty list is an error");
+    }
+
+    #[test]
+    fn pending_notes_round_trip() {
+        let dir = std::env::temp_dir().join(format!("cdock-notes-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(take_pending_notes(&dir), None, "nothing pending in a fresh dir");
+        write_pending_notes(&dir, "v1.2.3", "bug fixes").unwrap();
+        assert_eq!(take_pending_notes(&dir).as_deref(), Some("# v1.2.3\n\nbug fixes\n"));
+        assert_eq!(take_pending_notes(&dir), None, "take consumes the file");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

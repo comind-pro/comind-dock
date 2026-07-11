@@ -23,6 +23,9 @@ pub struct PaneMeta {
     pub env: Vec<(String, String)>,
     /// Absolute exe path of the agent (resume without relying on PATH).
     pub agent_bin: Option<String>,
+    /// Pane id at SAVE time — keys the screens-<session>/pane-<id>.txt
+    /// file; restore-side only (save derives it from the layout leaf).
+    pub saved_pane: Option<u64>,
 }
 
 /// A pane to spawn on restore with its metadata.
@@ -44,6 +47,9 @@ pub struct WsSnap {
     /// Index of the parent workspace (worktree grouping).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<usize>,
+    /// The space's default agent profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     pub active_tab: usize,
     pub tabs: Vec<TabSnap>,
 }
@@ -69,6 +75,9 @@ pub enum NodeSnap {
         env: Vec<(String, String)>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_bin: Option<String>,
+        /// Pane id at save time — names the screen-history file.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<u64>,
     },
     Split { dir: DirSnap, ratio: f32, a: Box<NodeSnap>, b: Box<NodeSnap> },
 }
@@ -89,6 +98,7 @@ fn node_to_snap(node: &Node, panes: &std::collections::HashMap<PaneId, PaneMeta>
                 cwd: meta.cwd.map(|c| c.to_string_lossy().into_owned()),
                 env: meta.env,
                 agent_bin: meta.agent_bin,
+                pane: Some(id.0),
             }
         }
         Node::Split { dir, ratio, a, b } => NodeSnap::Split {
@@ -105,7 +115,7 @@ fn node_to_snap(node: &Node, panes: &std::collections::HashMap<PaneId, PaneMeta>
 
 fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen, agents: &mut Vec<PaneSpawn>) -> Node {
     match snap {
-        NodeSnap::Leaf { agent, cwd, env, agent_bin } => {
+        NodeSnap::Leaf { agent, cwd, env, agent_bin, pane } => {
             let id = ids.pane();
             agents.push((
                 id,
@@ -114,6 +124,7 @@ fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen, agents: &mut Vec<PaneSpawn>) -
                     cwd: cwd.clone().map(PathBuf::from),
                     env: env.clone(),
                     agent_bin: agent_bin.clone(),
+                    saved_pane: *pane,
                 },
             ));
             Node::Leaf(id)
@@ -145,6 +156,7 @@ impl Snapshot {
                     parent: ws
                         .parent
                         .and_then(|pid| state.workspaces.iter().position(|w| w.id == pid)),
+                    profile: ws.profile.clone(),
                     active_tab: ws.active_tab,
                     tabs: ws
                         .tabs
@@ -199,6 +211,7 @@ impl Snapshot {
                 cwd,
                 custom_name: ws.custom_name,
                 parent: None, // linked below by saved index
+                profile: ws.profile.clone(),
                 tabs,
                 active_tab,
             });
@@ -279,6 +292,90 @@ pub fn load() -> Option<Snapshot> {
     }
 }
 
+// ── Screen history ──────────────────────────────────────────────────
+// Plain-text tail of each pane's scrollback, one file per pane, replayed
+// into the emulator on cold restore. ponytail: text only — styled replay
+// would mean serializing the grid; the words above the prompt are the value.
+
+const SCREEN_MAX_LINES: usize = 200;
+const SCREEN_MAX_BYTES: usize = 64 * 1024;
+
+/// Where this session's per-pane screen tails live.
+pub fn screens_dir() -> Option<PathBuf> {
+    let name = std::env::var("CDOCK_SESSION").unwrap_or_else(|_| "default".to_string());
+    Some(crate::logging::state_dir()?.join(format!("screens-{name}")))
+}
+
+fn screen_file(dir: &std::path::Path, id: u64) -> PathBuf {
+    dir.join(format!("pane-{id}.txt"))
+}
+
+/// Last `SCREEN_MAX_LINES` lines, hard-capped at `SCREEN_MAX_BYTES`. The
+/// byte cut lands after a newline, so it can't split a UTF-8 char either.
+fn screen_tail(text: &str) -> &str {
+    let mut s = match text.rmatch_indices('\n').nth(SCREEN_MAX_LINES) {
+        Some((i, _)) => &text[i + 1..],
+        None => text,
+    };
+    if s.len() > SCREEN_MAX_BYTES {
+        let over = s.len() - SCREEN_MAX_BYTES;
+        // ponytail: a single line longer than the whole cap is dropped.
+        s = match s.as_bytes()[over..].iter().position(|&b| b == b'\n') {
+            Some(nl) => &s[over + nl + 1..],
+            None => "",
+        };
+    }
+    s
+}
+
+/// Sanitized bytes to feed the emulator on restore: control chars (incl.
+/// ESC) stripped except \t, \n → \r\n, dim "restored" separator appended.
+pub fn screen_replay(text: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() + 32);
+    let mut buf = [0u8; 4];
+    for c in text.chars() {
+        match c {
+            '\n' => out.extend_from_slice(b"\r\n"),
+            '\t' => out.push(b'\t'),
+            c if c.is_control() => {}
+            c => out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes()),
+        }
+    }
+    out.extend_from_slice("\x1b[2m\u{2500}\u{2500} restored \u{2500}\u{2500}\x1b[0m\r\n".as_bytes());
+    out
+}
+
+/// Write per-pane screen tails under `dir`; files of dead panes are removed.
+/// Root-parameterized so tests run against a temp dir.
+pub fn save_screens(dir: &std::path::Path, screens: &[(u64, String)]) {
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        tracing::warn!(error = %e, "screens dir create failed");
+        return;
+    }
+    let live: std::collections::HashSet<std::ffi::OsString> =
+        screens.iter().map(|(id, _)| format!("pane-{id}.txt").into()).collect();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            if !live.contains(&e.file_name()) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    for (id, text) in screens {
+        if let Err(e) = std::fs::write(screen_file(dir, *id), screen_tail(text)) {
+            tracing::warn!(error = %e, pane = id, "screen save failed");
+        }
+    }
+}
+
+/// One-shot read of a pane's saved screen: the file is deleted on success.
+pub fn take_screen(dir: &std::path::Path, id: u64) -> Option<String> {
+    let p = screen_file(dir, id);
+    let text = std::fs::read_to_string(&p).ok()?;
+    let _ = std::fs::remove_file(&p);
+    (!text.trim().is_empty()).then_some(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,6 +401,7 @@ mod tests {
                 cwd: Some(std::path::PathBuf::from("/projects/real-home")),
                 env: vec![("CLAUDE_CONFIG_DIR".into(), "/home/u/.claude-oleh".into())],
                 agent_bin: Some("/usr/local/bin/claude".into()),
+                saved_pane: None,
             },
         )]);
         let snap = Snapshot::of(&s, &metas);
@@ -328,6 +426,11 @@ mod tests {
             agent[0].1.env,
             vec![("CLAUDE_CONFIG_DIR".to_string(), "/home/u/.claude-oleh".to_string())],
             "the profile env survives the round trip"
+        );
+        assert_eq!(
+            agent[0].1.saved_pane,
+            Some(claude_pane.0),
+            "the OLD pane id rides along so restore finds the screen file"
         );
         assert!(restored.check_invariants());
     }
@@ -356,5 +459,48 @@ mod tests {
             Some(restored.workspaces[0].id),
             "feat still parents to repo despite the shifted index"
         );
+    }
+
+    #[test]
+    fn screen_tail_bounds_lines_and_bytes() {
+        // Line cap: 300 lines in, last 200 out.
+        let text: String = (0..300).map(|i| format!("line{i}\n")).collect();
+        let tail = screen_tail(&text);
+        assert_eq!(tail.lines().count(), SCREEN_MAX_LINES);
+        assert!(tail.starts_with("line100\n"));
+        assert!(tail.ends_with("line299\n"));
+
+        // Byte cap: 200 fat lines blow the 64KB cap; result fits and
+        // starts on a line boundary (no split UTF-8 chars).
+        let fat: String = (0..200).map(|i| format!("{i}-{}\n", "é".repeat(500))).collect();
+        let tail = screen_tail(&fat);
+        assert!(tail.len() <= SCREEN_MAX_BYTES);
+        assert!(tail.ends_with('\n'));
+        assert!(tail.chars().next().unwrap().is_ascii_digit(), "cut lands on a line start");
+
+        // Short text passes through untouched.
+        assert_eq!(screen_tail("hi\n"), "hi\n");
+    }
+
+    #[test]
+    fn screen_replay_sanitizes() {
+        let out = screen_replay("a\x1b[31mb\r\x07c\nd\te\n");
+        let s = String::from_utf8(out).unwrap();
+        let (body, sep) = s.split_at(s.find("\u{1b}[2m").unwrap());
+        assert_eq!(body, "a[31mbc\r\nd\te\r\n", "ESC/CR/BEL stripped, \\n → \\r\\n, \\t kept");
+        assert_eq!(sep, "\u{1b}[2m\u{2500}\u{2500} restored \u{2500}\u{2500}\u{1b}[0m\r\n");
+    }
+
+    #[test]
+    fn screens_save_take_round_trip_and_stale_cleanup() {
+        let dir = std::env::temp_dir().join(format!("cdock-screens-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        save_screens(&dir, &[(1, "one\n".into()), (2, "two\n".into())]);
+        // Pane 2 died: its file must be swept on the next save.
+        save_screens(&dir, &[(1, "one\n".into())]);
+        assert_eq!(take_screen(&dir, 2), None, "stale file swept");
+        assert_eq!(take_screen(&dir, 1).as_deref(), Some("one\n"));
+        assert_eq!(take_screen(&dir, 1), None, "read is one-shot");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
