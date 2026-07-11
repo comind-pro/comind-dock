@@ -632,6 +632,13 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
 use config::DEFAULT_CONFIG;
 
 fn main() -> ExitCode {
+    // Invoked as cdock-dev → pin the dev namespace into the environment so
+    // the auto-spawned server and every pane child inherit it (current_exe
+    // resolves the symlink, argv[0] does not survive respawns).
+    if logging::dev_mode() {
+        // Safety: single-threaded this early in main.
+        unsafe { std::env::set_var("CDOCK_DEV", "1") };
+    }
     let cli = Cli::parse();
 
     if cli.default_config {
@@ -670,8 +677,14 @@ fn main() -> ExitCode {
     }
 
     // Nested-launch guard: panes get CDOCK_ENV=1; running cdock inside cdock
-    // is almost always a mistake.
-    if !cli.server && std::env::var_os("CDOCK_ENV").is_some() && !cfg.experimental.allow_nested {
+    // is almost always a mistake — EXCEPT the dev binary, whose whole point
+    // is being developed and launched from inside the production dock (its
+    // namespace is isolated, so nesting is harmless).
+    if !cli.server
+        && !logging::dev_mode()
+        && std::env::var_os("CDOCK_ENV").is_some()
+        && !cfg.experimental.allow_nested
+    {
         eprintln!("cdock: already running inside a cdock pane (CDOCK_ENV is set); refusing to nest");
         eprintln!("cdock: set [experimental].allow_nested = true to override");
         return ExitCode::FAILURE;

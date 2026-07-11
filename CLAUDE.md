@@ -1,21 +1,34 @@
 # comind-dock — agent rules
 
-## Testing server features: SANDBOX ONLY
+## Testing server features: cdock-dev ONLY
 
 NEVER run test servers, scoped attaches (`-f`), workspace/tab mutations, or
 handoffs against the default session. The user's live session autosaves every
 5 seconds — one stray attach permanently overwrites their real workspaces
 (this has happened; recovery cost an evening).
 
+Local development uses `cdock-dev` — a symlink to the same binary that flips
+it into a fully isolated namespace (own state dir, sockets, snapshot;
+nested-launch guard off). Create it once per target dir:
+
 ```bash
-D=$(mktemp -d /tmp/cdk.XXXX)             # short path: unix sockets < 104 chars
-XDG_STATE_HOME=$D ./target/debug/cdock --server &
-XDG_STATE_HOME=$D ./target/debug/cdock pane list   # every test command too
-kill %1 && rm -rf $D
+cargo build && ln -sf cdock target/debug/cdock-dev
+./target/debug/cdock-dev --server &
+./target/debug/cdock-dev pane list          # every test command: the -dev name
 ```
 
-The default session (no XDG_STATE_HOME override) belongs to the user. Read
-from it only; never write, attach, or mutate.
+(`CDOCK_DEV=1 ./target/debug/cdock …` is the equivalent env form.)
+
+For tests that must not see even the dev session, add a throwaway state dir:
+`XDG_STATE_HOME=$(mktemp -d /tmp/cdk.XXXX)` (short path — unix sockets cap
+at ~104 chars).
+
+The production session (`cdock`, no overrides) belongs to the user. Read from
+it only; never write, attach, or mutate.
+
+Killing test servers: NEVER `pgrep -f "cdock --server" | kill` — it matches
+the production server. Kill only pids you recorded when starting the dev
+server (`$!`), or match the dev name exactly: `pgrep -f "cdock-dev --server"`.
 
 ## Verify before done
 
