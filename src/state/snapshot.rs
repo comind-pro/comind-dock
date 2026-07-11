@@ -160,6 +160,9 @@ impl Snapshot {
         let mut ids = IdGen::default();
         let mut workspaces = Vec::new();
         let mut panes = Vec::new();
+        // Snapshot index → restored index: skipped (degenerate) workspaces
+        // shift positions, and parent links are by index.
+        let mut idx_map: Vec<Option<usize>> = Vec::with_capacity(self.workspaces.len());
         for ws in &self.workspaces {
             let mut tabs = Vec::new();
             for tab in &ws.tabs {
@@ -174,6 +177,7 @@ impl Snapshot {
                 });
             }
             if tabs.is_empty() {
+                idx_map.push(None);
                 continue;
             }
             let active_tab = ws.active_tab.min(tabs.len() - 1);
@@ -182,6 +186,7 @@ impl Snapshot {
             } else {
                 std::path::PathBuf::from(&ws.cwd)
             };
+            idx_map.push(Some(workspaces.len()));
             workspaces.push(Workspace {
                 id: ids.workspace(),
                 name: ws.name.clone(),
@@ -195,12 +200,16 @@ impl Snapshot {
         if workspaces.is_empty() {
             return None;
         }
-        // Re-link worktree parents by saved index.
-        for (i, snap_ws) in self.workspaces.iter().enumerate() {
-            if let (Some(pi), true) = (snap_ws.parent, i < workspaces.len())
-                && pi < workspaces.len() && pi != i {
-                    workspaces[i].parent = Some(workspaces[pi].id);
-                }
+        // Re-link worktree parents through the index map — restored
+        // positions shift when a degenerate workspace was skipped.
+        for (snap_i, snap_ws) in self.workspaces.iter().enumerate() {
+            if let Some(pi) = snap_ws.parent
+                && let Some(Some(child)) = idx_map.get(snap_i)
+                && let Some(Some(parent)) = idx_map.get(pi)
+                && child != parent
+            {
+                workspaces[*child].parent = Some(workspaces[*parent].id);
+            }
         }
         let active_workspace = self.active_workspace.min(workspaces.len() - 1);
         let state = AppState {
@@ -298,5 +307,31 @@ mod tests {
             "the profile env survives the round trip"
         );
         assert!(restored.check_invariants());
+    }
+
+    /// A degenerate (empty-tabs) workspace between a parent and its worktree
+    /// child shifts restored indexes — the parent link must survive.
+    #[test]
+    fn parent_relink_survives_skipped_workspace() {
+        let json = r#"{
+            "active_workspace": 0,
+            "workspaces": [
+                { "name": "repo", "cwd": "/r", "custom_name": false, "active_tab": 0,
+                  "tabs": [ { "name": "1", "layout": { "leaf": {} } } ] },
+                { "name": "ghost", "cwd": "/g", "custom_name": false, "active_tab": 0,
+                  "tabs": [] },
+                { "name": "feat", "cwd": "/w/feat", "custom_name": false, "parent": 0,
+                  "active_tab": 0,
+                  "tabs": [ { "name": "1", "layout": { "leaf": {} } } ] }
+            ]
+        }"#;
+        let snap: Snapshot = serde_json::from_str(json).unwrap();
+        let (restored, _) = snap.restore().unwrap();
+        assert_eq!(restored.workspaces.len(), 2, "ghost dropped");
+        assert_eq!(
+            restored.workspaces[1].parent,
+            Some(restored.workspaces[0].id),
+            "feat still parents to repo despite the shifted index"
+        );
     }
 }

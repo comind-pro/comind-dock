@@ -220,13 +220,22 @@ impl Runtime {
             ShellMode::Login => true,
             ShellMode::NonLogin => false,
         };
-        // Panes spawn in their workspace's folder (worktree spaces have their own).
+        // Panes spawn in their workspace's folder (worktree spaces have their
+        // own). A vanished folder (deleted worktree in a snapshot) must not
+        // brick the spawn — and with it the whole restore: fall back to home.
         let ws = self.state.active_workspace();
         let tab = ws.active_tab();
+        let cwd = if ws.cwd.is_dir() {
+            ws.cwd.clone()
+        } else {
+            std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::path::PathBuf::from("/"))
+        };
         pty::SpawnOpts {
             shell,
             login,
-            cwd: ws.cwd.clone(),
+            cwd,
             command,
             env: Vec::new(),
             tab_id: tab.id.to_string(),
@@ -429,10 +438,15 @@ impl Runtime {
         let mut metas = HashMap::new();
         for (id, p) in &self.panes {
             // "agent:session-id" when the integration hook reported one.
-            let agent = p.agent.map(|agent| match self.agent_sessions.get(id) {
-                Some(s) => format!("{agent}:{s}"),
-                None => agent.to_string(),
-            });
+            // The hook can land before the 500ms detection poll notices the
+            // agent — a reported session is claude by definition, so the
+            // ident must not wait for detection.
+            let agent = match (p.agent, self.agent_sessions.get(id)) {
+                (Some(a), Some(s)) => Some(format!("{a}:{s}")),
+                (Some(a), None) => Some(a.to_string()),
+                (None, Some(s)) => Some(format!("claude:{s}")),
+                (None, None) => None,
+            };
             // The pane's own folder — an agent must resume where its
             // conversation lives, wherever the workspace anchor drifted.
             let cwd = p.pty.child_pid.and_then(crate::platform::process_cwd);

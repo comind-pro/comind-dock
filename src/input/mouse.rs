@@ -484,9 +484,18 @@ fn run_menu_action(
             Ok(())
         }
         MenuAction::ResumeClaudeSession(id, cwd, config_dir) => {
-            // Land in the space anchored at the session's folder (reuse or
-            // create) — the conversation is folder-bound.
-            let pane = match rt.state.workspaces.iter().position(|w| w.cwd == cwd) {
+            // Land in the deepest space containing the session's folder
+            // (cpgps/alert-service joins cpgps, not a new sibling space);
+            // create one only when nothing contains it.
+            let found = rt
+                .state
+                .workspaces
+                .iter()
+                .enumerate()
+                .filter(|(_, w)| cwd.starts_with(&w.cwd))
+                .max_by_key(|(_, w)| w.cwd.as_os_str().len())
+                .map(|(i, _)| i);
+            let pane = match found {
                 Some(wi) => {
                     rt.state.active_workspace = wi;
                     rt.state.new_tab()
