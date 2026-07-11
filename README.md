@@ -21,6 +21,18 @@ shows "update ready" when a new release ships — or with `cdock update
 --handoff`, which swaps the running server in place without killing a
 single pane.
 
+### Homebrew
+
+```sh
+brew install comind-pro/tap/cdock
+```
+
+### Nix
+
+```sh
+nix run github:comind-pro/comind-dock
+```
+
 ## Status
 
 **Phase 1 (core multiplexer MVP) implemented.** `cdock` is a working
