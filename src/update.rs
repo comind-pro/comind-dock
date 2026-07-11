@@ -12,14 +12,31 @@ use std::path::Path;
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
 fn curl(url: &str) -> Result<Vec<u8>, String> {
-    let out = std::process::Command::new("curl")
-        .args(["-fsSL", "-m", "30", url])
-        .output()
-        .map_err(|e| format!("curl failed to start: {e}"))?;
+    let mut cmd = std::process::Command::new("curl");
+    cmd.args(["-fsSL", "-m", "30"]);
+    // Anonymous GitHub API caps at 60 req/h per IP — authenticate when a
+    // token is around (GITHUB_TOKEN, else a logged-in gh CLI).
+    if url.starts_with("https://api.github.com/")
+        && let Some(token) = github_token()
+    {
+        cmd.arg("-H").arg(format!("Authorization: Bearer {token}"));
+    }
+    let out = cmd.arg(url).output().map_err(|e| format!("curl failed to start: {e}"))?;
     if !out.status.success() {
         return Err(format!("curl {url}: {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
     Ok(out.stdout)
+}
+
+fn github_token() -> Option<String> {
+    if let Ok(t) = std::env::var("GITHUB_TOKEN")
+        && !t.trim().is_empty()
+    {
+        return Some(t.trim().to_string());
+    }
+    let out = std::process::Command::new("gh").args(["auth", "token"]).output().ok()?;
+    let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !t.is_empty()).then_some(t)
 }
 
 /// "v0.2.1" → [0, 2, 1]; non-numeric parts end the comparison key.
