@@ -261,9 +261,11 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<Inp
                         match kind {
                             PromptKind::RenameTab => rt.state.rename_active_tab(name),
                             PromptKind::RenameWorkspace => rt.state.rename_active_workspace(name),
-                            PromptKind::WorktreeBranch(wi) => {
+                            PromptKind::WorktreeBranch(ws) => {
                                 rt.state.input_mode = InputMode::Terminal;
-                                rt.create_worktree(wi, &name, area);
+                                if let Some(wi) = rt.state.workspace_index(ws) {
+                                    rt.create_worktree(wi, &name, area);
+                                }
                                 return Ok(InputOutcome::Continue);
                             }
                         }

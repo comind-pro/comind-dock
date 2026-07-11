@@ -15,8 +15,8 @@ use workspace::{Tab, Workspace};
 pub enum PromptKind {
     RenameTab,
     RenameWorkspace,
-    /// Branch name for a new worktree of workspace `wi`.
-    WorktreeBranch(usize),
+    /// Branch name for a new worktree of the workspace with this id.
+    WorktreeBranch(ids::WorkspaceId),
 }
 
 /// One context-menu entry.
@@ -33,11 +33,11 @@ pub enum MenuAction {
     SplitDown(ids::PaneId),
     SplitUp(ids::PaneId),
     ClosePane(ids::PaneId),
-    RenameSpace(usize),
-    CloseSpace(usize),
-    NewWorktree(usize),
-    ListWorktrees(usize),
-    OpenWorktree(usize, std::path::PathBuf),
+    RenameSpace(ids::WorkspaceId),
+    CloseSpace(ids::WorkspaceId),
+    NewWorktree(ids::WorkspaceId),
+    ListWorktrees(ids::WorkspaceId),
+    OpenWorktree(ids::WorkspaceId, std::path::PathBuf),
     /// Open the config file in $EDITOR in a new tab.
     OpenSettings,
     /// Submenu listing agent profiles; None → spawn in a new tab,
@@ -267,9 +267,24 @@ impl AppState {
             if self.workspaces.is_empty() {
                 return CloseOutcome::LastClosed;
             }
+            // Removing a lower-index workspace shifts everything down —
+            // keep the user's active workspace, don't jump to a neighbor.
+            if wi < self.active_workspace {
+                self.active_workspace -= 1;
+            }
             self.active_workspace = self.active_workspace.min(self.workspaces.len() - 1);
+            // Never leave the user on a scope-hidden workspace.
+            if !self.in_scope(self.active_workspace)
+                && let Some(vis) = (0..self.workspaces.len()).find(|&i| self.in_scope(i))
+            {
+                self.active_workspace = vis;
+            }
             debug_assert!(self.check_invariants());
             return CloseOutcome::WorkspaceClosed;
+        }
+        // Same shift logic one level down for tabs.
+        if ti < ws.active_tab {
+            ws.active_tab -= 1;
         }
         ws.active_tab = ws.active_tab.min(ws.tabs.len() - 1);
         debug_assert!(self.check_invariants());
@@ -349,6 +364,12 @@ impl AppState {
     }
 
     /// Panes of any workspace by index (close-space from the menu).
+    /// Workspace index by public id — menu/prompt actions hold ids because
+    /// indexes shift whenever a workspace closes underneath an open modal.
+    pub fn workspace_index(&self, id: ids::WorkspaceId) -> Option<usize> {
+        self.workspaces.iter().position(|w| w.id == id)
+    }
+
     pub fn workspace_panes(&self, wi: usize) -> Vec<PaneId> {
         self.workspaces
             .get(wi)

@@ -648,14 +648,32 @@ pub fn subscribe(spec: &SubSpec, mut f: impl FnMut(Value)) -> std::io::Result<()
             Err(_) => {}
         }
     }
-    Ok(())
+    // The server never ends a subscription voluntarily — EOF means it went
+    // away (handoff, crash). Exit non-zero so watching scripts notice
+    // instead of dying silently with success.
+    Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "event stream ended (server restarted?)"))
 }
 
-/// Blocking one-shot request from the CLI side.
+/// Blocking one-shot request from the CLI side. No read timeout — wait-*
+/// requests legitimately hold the line for minutes.
 pub fn request(req: &Req) -> std::io::Result<Value> {
+    request_inner(req, None)
+}
+
+/// Bounded request for hook contexts: the SessionStart hook runs inside
+/// every claude launch — a wedged server loop must not stall the agent for
+/// Claude Code's full 60s hook timeout.
+pub fn request_with_timeout(req: &Req, timeout: Duration) -> std::io::Result<Value> {
+    request_inner(req, Some(timeout))
+}
+
+fn request_inner(req: &Req, timeout: Option<Duration>) -> std::io::Result<Value> {
     let sock = socket_path().ok_or_else(|| std::io::Error::other("cannot determine state dir"))?;
-    let mut stream = std::os::unix::net::UnixStream::connect(&sock)
+    let stream = std::os::unix::net::UnixStream::connect(&sock)
         .map_err(|e| std::io::Error::other(format!("no cdock server on {sock:?} ({e}); start `cdock` first")))?;
+    stream.set_read_timeout(timeout)?;
+    stream.set_write_timeout(timeout)?;
+    let mut stream = stream;
     let mut line = serde_json::to_string(req)?;
     line.push('\n');
     stream.write_all(line.as_bytes())?;

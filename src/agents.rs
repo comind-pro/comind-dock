@@ -184,6 +184,21 @@ pub fn hold_on_failure(cmd: &str) -> String {
     format!("{cmd} || exec \"${{SHELL:-/bin/sh}}\"")
 }
 
+/// Agent id from a process's executable path: a path COMPONENT must equal
+/// the agent name exactly ("~/.local/share/claude/versions/2.1.206" hits
+/// "claude"; "goose-sim" or "pi-app" folders do not). Precise on purpose —
+/// this is the poll-time source of truth, unlike the fuzzier title match.
+pub fn detect_process(ident: &str) -> Option<&'static str> {
+    let lower = ident.to_ascii_lowercase();
+    std::path::Path::new(&lower)
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(os) => os.to_str(),
+            _ => None,
+        })
+        .find_map(|comp| KNOWN.iter().find(|a| **a == comp).copied())
+}
+
 /// Agent id if the pane looks like a known agent CLI.
 pub fn detect(title: &str, program: &str) -> Option<&'static str> {
     let prog = program.to_ascii_lowercase();

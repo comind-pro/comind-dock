@@ -37,6 +37,8 @@ pub struct PaneRuntime {
     pub agent_pid: Option<u32>,
     /// CLAUDE_CONFIG_DIR of the agent process — which profile it runs as.
     pub agent_config_dir: Option<String>,
+    /// Consecutive polls with no agent — releases the session mapping.
+    agent_gone_polls: u8,
     /// Detection-engine result for agent panes.
     pub status: crate::detect::Status,
     /// Last status the UI showed — drives redraws and notifications.
@@ -197,6 +199,7 @@ impl Runtime {
                 agent: crate::agents::detect("", &program),
                 agent_pid: None,
                 agent_config_dir: None,
+                agent_gone_polls: 0,
                 program,
                 last_output: std::time::Instant::now(),
                 status: crate::detect::Status::Unknown,
@@ -210,7 +213,12 @@ impl Runtime {
 
     fn spawn_opts(&self, command: Option<String>) -> pty::SpawnOpts {
         let t = &self.cfg.terminal;
-        let shell = if t.default_shell.is_empty() {
+        // Command panes run under /bin/sh: our generated command lines
+        // (hold_on_failure, resume) are POSIX — a fish/nushell $SHELL would
+        // reject them outright. Interactive panes keep the user's shell.
+        let shell = if command.is_some() {
+            "/bin/sh".to_string()
+        } else if t.default_shell.is_empty() {
             std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
         } else {
             t.default_shell.clone()
@@ -260,26 +268,27 @@ impl Runtime {
         for id in ids {
             let title = self.titles.get(&id).cloned().unwrap_or_default();
             let Some(p) = self.panes.get(&id) else { continue };
-            // Spawn command and title first; else look at what actually runs
-            // inside the shell — `claude` typed into a zsh pane must count.
-            // Idents are exe paths, word-matched like titles: Claude Code's
-            // process is literally named "2.1.206", only its path says claude.
+            // Live processes are the source of truth: the pane's child
+            // itself (direct spawn) or any of its children (agent typed into
+            // a shell). Exe-path components are matched exactly — no title
+            // or spawn-command matching, which pinned the SHELL's pid as the
+            // agent (wrong profile) and kept "phantom agents" alive after
+            // the process died behind a stale title.
             let mut agent_pid = None;
-            let agent = match crate::agents::detect(&title, &p.program) {
-                Some(a) => {
-                    agent_pid = p.pty.child_pid;
-                    Some(a)
-                }
-                None => p
-                    .pty
-                    .child_pid
-                    .map(crate::platform::child_process_idents)
-                    .unwrap_or_default()
-                    .iter()
-                    .find_map(|(pid, ident)| {
-                        crate::agents::detect(ident, "").inspect(|_| agent_pid = Some(*pid))
-                    }),
-            };
+            let agent = p.pty.child_pid.and_then(|child| {
+                crate::platform::process_ident(child)
+                    .and_then(|ident| {
+                        crate::agents::detect_process(&ident).inspect(|_| agent_pid = Some(child))
+                    })
+                    .or_else(|| {
+                        crate::platform::child_process_idents(child).iter().find_map(
+                            |(pid, ident)| {
+                                crate::agents::detect_process(ident)
+                                    .inspect(|_| agent_pid = Some(*pid))
+                            },
+                        )
+                    })
+            });
             let status = agent
                 .and_then(|a| crate::detect::manifest_for(manifests, a))
                 .and_then(|m| {
@@ -293,15 +302,27 @@ impl Runtime {
                 p.agent = agent;
                 self.dirty = true; // agent row appears/leaves the sidebar
             }
-            if p.agent_pid != agent_pid {
-                p.agent_pid = agent_pid;
-                // Which profile: the agent process's own CLAUDE_CONFIG_DIR.
-                let dir = agent_pid
-                    .and_then(|pid| crate::platform::process_env_var(pid, "CLAUDE_CONFIG_DIR"));
-                if p.agent_config_dir != dir {
-                    p.agent_config_dir = dir;
-                    self.dirty = true;
+            p.agent_pid = agent_pid;
+            // Which profile: the agent process's own CLAUDE_CONFIG_DIR.
+            // Re-read every poll (one cheap sysctl) — caching on the pid
+            // froze transient read failures and survived agent crashes.
+            let dir = agent_pid
+                .and_then(|pid| crate::platform::process_env_var(pid, "CLAUDE_CONFIG_DIR"));
+            if p.agent_config_dir != dir {
+                p.agent_config_dir = dir;
+                self.dirty = true;
+            }
+            // An agent that stays gone releases its conversation: without
+            // this, a pane the user turned back into a shell resurrects
+            // claude on restore, and the picker hides the conversation.
+            // Grace of a few polls tolerates transient process-scan misses.
+            if p.agent.is_none() && self.agent_sessions.contains_key(&id) {
+                p.agent_gone_polls = p.agent_gone_polls.saturating_add(1);
+                if p.agent_gone_polls >= 6 {
+                    self.agent_sessions.remove(&id);
                 }
+            } else {
+                p.agent_gone_polls = 0;
             }
             p.status = status;
             let eff = p.effective_status();
@@ -325,6 +346,9 @@ impl Runtime {
                 notices.push(Notice { pane: id, kind: NoticeKind::Blocked, name });
             } else if prev == Status::Working
                 && matches!(eff, Status::Idle | Status::Done)
+                && p.status != Status::Unknown // manifest-confirmed, not the
+                // activity fallback — which flips on every 3s output pause
+                // and would spam "finished" for manifest-less agents
                 && prev_lasted >= Duration::from_secs(5)
             {
                 // Finished a real stretch of work — not spinner flicker.
@@ -451,12 +475,19 @@ impl Runtime {
             // conversation lives, wherever the workspace anchor drifted.
             let cwd = p.pty.child_pid.and_then(crate::platform::process_cwd);
             // Profile env rides along so restore resumes under the same
-            // CLAUDE_CONFIG_DIR.
-            let env = p
+            // CLAUDE_CONFIG_DIR, and the cdock profile NAME so restore can
+            // re-merge that profile's [env] block.
+            let mut env = p
                 .agent_config_dir
                 .as_ref()
                 .map(|d| vec![("CLAUDE_CONFIG_DIR".to_string(), d.clone())])
                 .unwrap_or_default();
+            if let Some(name) = p
+                .agent_pid
+                .and_then(|pid| crate::platform::process_env_var(pid, "CDOCK_AGENT_PROFILE"))
+            {
+                env.push(("CDOCK_AGENT_PROFILE".to_string(), name));
+            }
             if agent.is_some() || cwd.is_some() {
                 metas.insert(*id, crate::state::snapshot::PaneMeta { agent, cwd, env });
             }
@@ -492,8 +523,16 @@ impl Runtime {
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
                     .spawn();
-                if let Err(e) = result {
-                    tracing::warn!(command = %cmd.command, error = %e, "shell command failed");
+                match result {
+                    // Reap — an unwaited child is a zombie for the server's life.
+                    Ok(mut child) => {
+                        std::thread::spawn(move || {
+                            let _ = child.wait();
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!(command = %cmd.command, error = %e, "shell command failed");
+                    }
                 }
                 Ok(())
             }
@@ -575,6 +614,11 @@ pub fn build(
             .agent
             .as_deref()
             .map(|a| crate::agents::hold_on_failure(&crate::agents::resume_command(a)));
+        // Seed the session mapping now: the first autosave fires before the
+        // agent's hook re-reports, and must not strip the ident.
+        if let Some(id) = meta.agent.as_deref().and_then(|a| a.split_once(':').map(|(_, s)| s)) {
+            rt.agent_sessions.insert(pane, id.to_string());
+        }
         // The pane's own saved folder wins over the workspace anchor —
         // agent conversations are folder-bound; env carries the profile.
         // Snapshots from before profile tracking miss the env: recover the
@@ -585,6 +629,21 @@ pub fn build(
             && let Some(dir) = crate::agents::find_session_profile(id)
         {
             env.push(("CLAUDE_CONFIG_DIR".to_string(), dir.display().to_string()));
+        }
+        // A pane that ran a cdock profile gets that profile's [env] block
+        // re-merged (saved env keys win — they reflect what actually ran).
+        if let Some(name) = env
+            .iter()
+            .find(|(k, _)| k == "CDOCK_AGENT_PROFILE")
+            .map(|(_, v)| v.clone())
+            && let Ok(profile) = crate::profile::load(&name)
+        {
+            let (_, profile_env) = profile.resolve();
+            for (k, v) in profile_env {
+                if !env.iter().any(|(ek, _)| *ek == k) {
+                    env.push((k, v));
+                }
+            }
         }
         // No per-pane cwd (old snapshot) → the pane's OWN workspace folder;
         // spawn_opts would otherwise use whichever workspace is active.
@@ -811,6 +870,7 @@ pub fn build_from_handoff(
                         agent: crate::agents::detect("", &hp.program),
                         agent_pid: None,
                         agent_config_dir: None,
+                        agent_gone_polls: 0,
                         program: hp.program,
                         last_output: std::time::Instant::now(),
                         status: crate::detect::Status::Unknown,

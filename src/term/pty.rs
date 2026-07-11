@@ -129,8 +129,11 @@ pub fn adopt(
 ) -> io::Result<Pty> {
     use std::os::fd::FromRawFd;
 
+    // F_DUPFD_CLOEXEC: reader/writer dups must NOT survive the next exec —
+    // the reader File sits in a blocked thread that exec destroys without
+    // dropping, and a plain dup would leak one fd per pane per handoff.
     let dup = |fd: RawFd| -> io::Result<std::fs::File> {
-        let d = unsafe { libc::dup(fd) };
+        let d = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
         if d < 0 {
             return Err(io::Error::last_os_error());
         }

@@ -300,10 +300,11 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                     sidebar::hit(rt, &theme, ev.column - sb.x, ev.row - sb.y, (sb.width, sb.height))
                 {
                     rt.state.active_workspace = wi;
+                    let ws_id = rt.state.workspaces[wi].id;
                     rt.state.input_mode = InputMode::Menu {
                         x: ev.column,
                         y: ev.row,
-                        items: menu::space_items(wi),
+                        items: menu::space_items(ws_id),
                     };
                     rt.mark_dirty();
                 }
@@ -366,21 +367,27 @@ fn run_menu_action(
             rt.kill_pane(pane);
             Ok(())
         }
-        MenuAction::RenameSpace(wi) => {
-            rt.state.active_workspace = wi.min(rt.state.workspaces.len().saturating_sub(1));
-            rt.state.input_mode =
-                InputMode::Prompt { kind: PromptKind::RenameWorkspace, buffer: String::new() };
-            Ok(())
-        }
-        MenuAction::CloseSpace(wi) => {
-            for pane in rt.state.workspace_panes(wi) {
-                rt.kill_pane(pane);
+        MenuAction::RenameSpace(ws) => {
+            if let Some(wi) = rt.state.workspace_index(ws) {
+                rt.state.active_workspace = wi;
+                rt.state.input_mode =
+                    InputMode::Prompt { kind: PromptKind::RenameWorkspace, buffer: String::new() };
             }
             Ok(())
         }
-        MenuAction::NewWorktree(wi) => {
+        MenuAction::CloseSpace(ws) => {
+            // Resolve id → index at CLICK time: the workspaces vec may have
+            // shifted while the menu was open (a pane exited in background).
+            if let Some(wi) = rt.state.workspace_index(ws) {
+                for pane in rt.state.workspace_panes(wi) {
+                    rt.kill_pane(pane);
+                }
+            }
+            Ok(())
+        }
+        MenuAction::NewWorktree(ws) => {
             rt.state.input_mode = InputMode::Prompt {
-                kind: PromptKind::WorktreeBranch(wi),
+                kind: PromptKind::WorktreeBranch(ws),
                 buffer: String::new(),
             };
             Ok(())
@@ -559,8 +566,9 @@ fn run_menu_action(
             )
         }
         MenuAction::Detach => return InputOutcome::Detach,
-        MenuAction::ListWorktrees(wi) => {
-            let Some(ws) = rt.state.workspaces.get(wi) else {
+        MenuAction::ListWorktrees(ws_id) => {
+            let Some(ws) = rt.state.workspace_index(ws_id).map(|wi| &rt.state.workspaces[wi])
+            else {
                 return InputOutcome::Continue;
             };
             let current = ws.cwd.clone();
@@ -569,7 +577,7 @@ fn run_menu_action(
                 .filter(|(path, _)| *path != current)
                 .map(|(path, branch)| MenuItem {
                     label: branch,
-                    action: MenuAction::OpenWorktree(wi, path),
+                    action: MenuAction::OpenWorktree(ws_id, path),
                 })
                 .collect();
             if items.is_empty() {
@@ -579,9 +587,9 @@ fn run_menu_action(
             }
             Ok(())
         }
-        MenuAction::OpenWorktree(wi, path) => {
-            if let Some(parent_id) = rt.state.workspaces.get(wi).map(|w| w.id) {
-                rt.open_worktree(parent_id, path, area);
+        MenuAction::OpenWorktree(ws_id, path) => {
+            if rt.state.workspace_index(ws_id).is_some() {
+                rt.open_worktree(ws_id, path, area);
             }
             Ok(())
         }

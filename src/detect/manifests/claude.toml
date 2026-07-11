@@ -6,18 +6,25 @@
 id = "claude"
 
 # Permission / approval dialogs — must win over the working spinner.
+# Prose like "do you want to" lingers in the transcript after approval and
+# would re-block an idle agent; it only counts alongside a LIVE dialog
+# cursor ("❯ 1"). Unambiguous markers keep their own rule below.
 [[rule]]
 priority = 100
 state = "blocked"
+all_of = ["❯ 1"]
 any_of = [
     "do you want to proceed",
     "do you want to",
     "would you like to",
     "yes, and don't ask again",
-    "waiting for your approval",
-    "grant access",
-    "esc to cancel",
 ]
+none_of = ["esc to interrupt", "running stop hooks", "· ↓ ", "· ↑ "]
+
+[[rule]]
+priority = 95
+state = "blocked"
+any_of = ["waiting for your approval", "grant access", "esc to cancel"]
 none_of = ["esc to interrupt", "running stop hooks", "· ↓ ", "· ↑ "]
 
 [[rule]]

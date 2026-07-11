@@ -639,8 +639,11 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             let Some(session_id) = v["session_id"].as_str() else {
                 return Ok(true); // nothing to report
             };
-            api::request(&Req::ReportAgentSession { pane, session_id: session_id.to_string() })
-                .map_err(|e| e.to_string())?;
+            api::request_with_timeout(
+                &Req::ReportAgentSession { pane, session_id: session_id.to_string() },
+                Duration::from_secs(3),
+            )
+            .map_err(|e| e.to_string())?;
             return Ok(true);
         }
     };
@@ -652,6 +655,7 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
 use config::DEFAULT_CONFIG;
 
 fn main() -> ExitCode {
+    let _ = startup_exe(); // capture before any self-update can rename us
     // Invoked as cdock-dev → pin the dev namespace into the environment so
     // the auto-spawned server and every pane child inherit it (current_exe
     // resolves the symlink, argv[0] does not survive respawns).
@@ -756,18 +760,42 @@ fn run_server(cfg: config::Config) -> std::io::Result<()> {
             let _ = std::fs::remove_file(s);
         }
     }
+    let handoff = take_handoff();
     // Session snapshot as of this boot — one restore point if a bad attach
-    // or runaway automation mangles the live session and autosave persists it.
-    if let Some(snap) = crate::state::snapshot::path()
+    // or runaway automation mangles the live session and autosave persists
+    // it. NOT on handoff: that would overwrite the rollback point with the
+    // very state the user may want to roll back from.
+    if handoff.is_none()
+        && let Some(snap) = crate::state::snapshot::path()
         && snap.exists()
     {
         let _ = std::fs::copy(&snap, snap.with_extension("json.boot-bak"));
     }
-    let handoff = take_handoff();
     let rt = tokio::runtime::Runtime::new()?;
+    let heir = handoff.is_some();
     let outcome = rt.block_on(async {
-        let listener = tokio::net::UnixListener::bind(&sock)?;
-        let api_listener = tokio::net::UnixListener::bind(&api_sock)?;
+        // The heir of a live handoff must not die on a transient bind race
+        // with a rival auto-spawned server — losing here kills every pane.
+        let bind = |path: std::path::PathBuf| async move {
+            for _ in 0..10 {
+                if let Ok(l) = tokio::net::UnixListener::bind(&path) {
+                    return Ok(l);
+                }
+                if std::os::unix::net::UnixStream::connect(&path).is_err() {
+                    let _ = std::fs::remove_file(&path);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            tokio::net::UnixListener::bind(&path)
+        };
+        let (listener, api_listener) = if heir {
+            (bind(sock.clone()).await?, bind(api_sock.clone()).await?)
+        } else {
+            (
+                tokio::net::UnixListener::bind(&sock)?,
+                tokio::net::UnixListener::bind(&api_sock)?,
+            )
+        };
         let result = server::run(
             cfg,
             Some(listener),
@@ -789,14 +817,29 @@ fn run_server(cfg: config::Config) -> std::io::Result<()> {
                 .ok_or_else(|| std::io::Error::other("cannot determine state dir"))?;
             std::fs::write(&path, serde_json::to_vec(&*h)?)?;
             tracing::info!("exec-ing replacement server");
-            // exec only returns on failure.
+            // exec only returns on failure. Use the path captured at startup:
+            // after a self-update renamed over us, Linux current_exe() reads
+            // "/…/cdock (deleted)" and the exec would kill the session.
             let err = std::os::unix::process::CommandExt::exec(
-                std::process::Command::new(std::env::current_exe()?).arg("--server"),
+                std::process::Command::new(startup_exe()).arg("--server"),
             );
             let _ = std::fs::remove_file(&path);
             Err(err)
         }
     }
+}
+
+/// The executable path as it was at process start (see exec-handoff note).
+fn startup_exe() -> &'static std::path::Path {
+    static EXE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    EXE.get_or_init(|| {
+        let p = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("cdock"));
+        // Strip Linux's " (deleted)" suffix if we raced a self-update.
+        match p.to_str().and_then(|s| s.strip_suffix(" (deleted)")) {
+            Some(clean) => std::path::PathBuf::from(clean),
+            None => p,
+        }
+    })
 }
 
 fn handoff_path() -> Option<std::path::PathBuf> {
@@ -809,18 +852,21 @@ fn handoff_path() -> Option<std::path::PathBuf> {
 fn take_handoff() -> Option<runtime::Handoff> {
     let path = handoff_path()?;
     let text = std::fs::read_to_string(&path).ok()?;
-    let _ = std::fs::remove_file(&path);
     match serde_json::from_str::<runtime::Handoff>(&text) {
         Ok(h) if h.pid == std::process::id() => {
+            let _ = std::fs::remove_file(&path);
             tracing::info!("resuming from live handoff");
             Some(h)
         }
+        // NOT ours — a concurrently spawned server must leave the heir's
+        // handoff file alone (deleting it here dropped every live pane).
         Ok(h) => {
-            tracing::warn!(their_pid = h.pid, "ignoring stale handoff file");
+            tracing::warn!(their_pid = h.pid, "ignoring another process's handoff file");
             None
         }
         Err(e) => {
-            tracing::warn!(error = %e, "bad handoff file");
+            let _ = std::fs::remove_file(&path);
+            tracing::warn!(error = %e, "removed corrupt handoff file");
             None
         }
     }

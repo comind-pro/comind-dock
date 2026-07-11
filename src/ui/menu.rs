@@ -49,12 +49,12 @@ pub fn app_items(update: Option<&str>) -> Vec<MenuItem> {
     items
 }
 
-pub fn space_items(wi: usize) -> Vec<MenuItem> {
+pub fn space_items(ws: crate::state::ids::WorkspaceId) -> Vec<MenuItem> {
     [
-        ("rename", MenuAction::RenameSpace(wi)),
-        ("close", MenuAction::CloseSpace(wi)),
-        ("new worktree", MenuAction::NewWorktree(wi)),
-        ("open worktree...", MenuAction::ListWorktrees(wi)),
+        ("rename", MenuAction::RenameSpace(ws)),
+        ("close", MenuAction::CloseSpace(ws)),
+        ("new worktree", MenuAction::NewWorktree(ws)),
+        ("open worktree...", MenuAction::ListWorktrees(ws)),
     ]
     .into_iter()
     .map(|(label, action)| MenuItem { label: label.to_string(), action })

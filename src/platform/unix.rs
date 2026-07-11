@@ -115,6 +115,34 @@ pub fn child_process_idents(pid: u32) -> Vec<(u32, String)> {
         .collect()
 }
 
+/// Executable path (fallback: name) of one process — the pane's direct
+/// child may itself be the agent (direct spawn, no shell in between).
+#[cfg(target_os = "linux")]
+pub fn process_ident(pid: u32) -> Option<String> {
+    std::fs::read_link(format!("/proc/{pid}/exe"))
+        .map(|p| p.to_string_lossy().into_owned())
+        .or_else(|_| std::fs::read_to_string(format!("/proc/{pid}/comm")))
+        .ok()
+        .map(|s| s.trim().to_string())
+}
+
+#[cfg(target_os = "macos")]
+pub fn process_ident(pid: u32) -> Option<String> {
+    use std::os::raw::{c_int, c_void};
+    const PROC_PIDPATHINFO_MAXSIZE: usize = 4096;
+    unsafe extern "C" {
+        fn proc_pidpath(pid: c_int, buffer: *mut c_void, buffersize: u32) -> c_int;
+        fn proc_name(pid: c_int, buffer: *mut c_void, buffersize: u32) -> c_int;
+    }
+    let mut buf = [0u8; PROC_PIDPATHINFO_MAXSIZE];
+    let mut len =
+        unsafe { proc_pidpath(pid as c_int, buf.as_mut_ptr() as *mut c_void, buf.len() as u32) };
+    if len <= 0 {
+        len = unsafe { proc_name(pid as c_int, buf.as_mut_ptr() as *mut c_void, 64) };
+    }
+    (len > 0).then(|| String::from_utf8_lossy(&buf[..len as usize]).into_owned())
+}
+
 /// One environment variable of a live process — how a pane learns which
 /// CLAUDE_CONFIG_DIR its agent runs under (profiles are config dirs).
 #[cfg(target_os = "linux")]

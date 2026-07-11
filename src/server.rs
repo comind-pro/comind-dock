@@ -336,6 +336,19 @@ async fn accept_next(
     }
 }
 
+/// Spawn a fire-and-forget helper and reap it — a dropped Child is never
+/// waited on, and every unreaped exit is a zombie that survives handoffs.
+fn spawn_and_reap(mut cmd: std::process::Command) {
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if let Ok(mut child) = cmd.spawn() {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
+}
+
 /// Sound + toast for an agent transition. Delivery: "app" (clickable
 /// top-right overlay), "system" (OS notification), "both", "off".
 fn notify(rt: &mut Runtime, clients: &HashMap<ClientId, Client>, notice: &runtime::Notice) {
@@ -356,12 +369,9 @@ fn notify(rt: &mut Runtime, clients: &HashMap<ClientId, Client>, notice: &runtim
                 runtime::NoticeKind::Blocked => "/System/Library/Sounds/Basso.aiff",
                 runtime::NoticeKind::Done => "/System/Library/Sounds/Glass.aiff",
             };
-            let _ = std::process::Command::new("afplay")
-                .arg(file)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
+            let mut cmd = std::process::Command::new("afplay");
+            cmd.arg(file);
+            spawn_and_reap(cmd);
         }
     }
 
@@ -374,21 +384,15 @@ fn notify(rt: &mut Runtime, clients: &HashMap<ClientId, Client>, notice: &runtim
         {
             let script =
                 format!("display notification \"{}\" with title \"cdock\"", text.replace('\"', ""));
-            let _ = std::process::Command::new("osascript")
-                .args(["-e", &script])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
+            let mut cmd = std::process::Command::new("osascript");
+            cmd.args(["-e", &script]);
+            spawn_and_reap(cmd);
         }
         #[cfg(target_os = "linux")]
         {
-            let _ = std::process::Command::new("notify-send")
-                .args(["cdock", &text])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
+            let mut cmd = std::process::Command::new("notify-send");
+            cmd.args(["cdock", &text]);
+            spawn_and_reap(cmd);
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         let _ = text;
