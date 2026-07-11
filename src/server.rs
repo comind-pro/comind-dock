@@ -248,6 +248,7 @@ pub async fn run(
                 let mut next = Some(first);
                 while let Some((id, bytes)) = next.take() {
                     budget = budget.saturating_sub(bytes.len());
+                    api::feed_waiters(&mut waiters, id, &bytes);
                     if stream_output {
                         api::emit(&mut subs, "output", Some(id.0), &serde_json::json!({
                             "event": "output", "pane": id.0,
@@ -280,9 +281,34 @@ pub async fn run(
                 api::Req::Handoff => {
                     rt.save_session();
                     let h = runtime::capture_handoff(&rt, area);
-                    let _ = reply.send(serde_json::json!({"ok": true}));
-                    flush_writers().await; // let the reply reach the CLI
-                    return Ok(RunOutcome::Handoff(Box::new(h)));
+                    // Persist BEFORE acking: a write failure (full disk) at
+                    // the point of no return would kill every pane. Refuse
+                    // the handoff instead and keep serving.
+                    let written = runtime::handoff_path()
+                        .ok_or_else(|| "no state dir".to_string())
+                        .and_then(|p| {
+                            serde_json::to_vec(&h)
+                                .map_err(|e| e.to_string())
+                                .and_then(|json| std::fs::write(&p, json).map_err(|e| e.to_string()))
+                        });
+                    match written {
+                        Ok(()) => {
+                            let _ = reply.send(serde_json::json!({"ok": true}));
+                            flush_writers().await; // let the reply reach the CLI
+                            // Leak the runtime ON PURPOSE: dropping it closes
+                            // the original pty masters, and on macOS a master
+                            // close hangs up the slave even while our
+                            // handoff dups are open — idle shells read EOF
+                            // and exit before the heir can adopt them. exec
+                            // replaces the whole image; nothing needs Drop.
+                            std::mem::forget(rt);
+                            return Ok(RunOutcome::Handoff(Box::new(h)));
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "handoff refused: cannot persist state");
+                            let _ = reply.send(serde_json::json!({"ok": false, "error": e}));
+                        }
+                    }
                 }
                     req => match api::handle(&mut rt, area, req) {
                         Ok(v) => { let _ = reply.send(v); }

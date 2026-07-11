@@ -9,6 +9,8 @@ id = "claude"
 # Prose like "do you want to" lingers in the transcript after approval and
 # would re-block an idle agent; it only counts alongside a LIVE dialog
 # cursor ("❯ 1"). Unambiguous markers keep their own rule below.
+# One rule per cursor position — the user arrowing to option 2 or 3 must
+# not flip the status out of Blocked mid-dialog.
 [[rule]]
 priority = 100
 state = "blocked"
@@ -19,6 +21,20 @@ any_of = [
     "would you like to",
     "yes, and don't ask again",
 ]
+none_of = ["esc to interrupt", "running stop hooks", "· ↓ ", "· ↑ "]
+
+[[rule]]
+priority = 100
+state = "blocked"
+all_of = ["❯ 2"]
+any_of = ["do you want to proceed", "do you want to", "would you like to", "yes, and don't ask again"]
+none_of = ["esc to interrupt", "running stop hooks", "· ↓ ", "· ↑ "]
+
+[[rule]]
+priority = 100
+state = "blocked"
+all_of = ["❯ 3"]
+any_of = ["do you want to proceed", "do you want to", "would you like to", "yes, and don't ask again"]
 none_of = ["esc to interrupt", "running stop hooks", "· ↓ ", "· ↑ "]
 
 [[rule]]

@@ -37,6 +37,9 @@ pub struct PaneRuntime {
     pub agent_pid: Option<u32>,
     /// CLAUDE_CONFIG_DIR of the agent process — which profile it runs as.
     pub agent_config_dir: Option<String>,
+    /// Exe path of the agent process — resume by absolute path survives a
+    /// server started with a PATH that can't find the launcher.
+    pub agent_bin: Option<String>,
     /// Consecutive polls with no agent — releases the session mapping.
     agent_gone_polls: u8,
     /// Detection-engine result for agent panes.
@@ -199,6 +202,7 @@ impl Runtime {
                 agent: crate::agents::detect("", &program),
                 agent_pid: None,
                 agent_config_dir: None,
+                agent_bin: None,
                 agent_gone_polls: 0,
                 program,
                 last_output: std::time::Instant::now(),
@@ -275,20 +279,34 @@ impl Runtime {
             // agent (wrong profile) and kept "phantom agents" alive after
             // the process died behind a stale title.
             let mut agent_pid = None;
-            let agent = p.pty.child_pid.and_then(|child| {
-                crate::platform::process_ident(child)
-                    .and_then(|ident| {
-                        crate::agents::detect_process(&ident).inspect(|_| agent_pid = Some(child))
-                    })
-                    .or_else(|| {
-                        crate::platform::child_process_idents(child).iter().find_map(
-                            |(pid, ident)| {
-                                crate::agents::detect_process(ident)
-                                    .inspect(|_| agent_pid = Some(*pid))
-                            },
-                        )
-                    })
-            });
+            let mut agent_bin = None;
+            let agent = p
+                .pty
+                .child_pid
+                .and_then(|child| {
+                    crate::platform::process_ident(child)
+                        .and_then(|ident| {
+                            crate::agents::detect_process(&ident).inspect(|_| {
+                                agent_pid = Some(child);
+                                agent_bin = Some(ident.clone());
+                            })
+                        })
+                        .or_else(|| {
+                            crate::platform::child_process_idents(child).iter().find_map(
+                                |(pid, ident)| {
+                                    crate::agents::detect_process(ident).inspect(|_| {
+                                        agent_pid = Some(*pid);
+                                        agent_bin = Some(ident.clone());
+                                    })
+                                },
+                            )
+                        })
+                })
+                // Interpreter-hosted installs (npm/bun claude runs as
+                // "node") have no agent-named exe path — the OSC title is
+                // the only signal. Identity only: agent_pid stays what the
+                // scan found (None), so no shell-env misreads.
+                .or_else(|| crate::agents::detect(&title, ""));
             let status = agent
                 .and_then(|a| crate::detect::manifest_for(manifests, a))
                 .and_then(|m| {
@@ -303,6 +321,9 @@ impl Runtime {
                 self.dirty = true; // agent row appears/leaves the sidebar
             }
             p.agent_pid = agent_pid;
+            if agent_bin.is_some() && p.agent_bin != agent_bin {
+                p.agent_bin = agent_bin;
+            }
             // Which profile: the agent process's own CLAUDE_CONFIG_DIR.
             // Re-read every poll (one cheap sysctl) — caching on the pid
             // froze transient read failures and survived agent crashes.
@@ -489,7 +510,15 @@ impl Runtime {
                 env.push(("CDOCK_AGENT_PROFILE".to_string(), name));
             }
             if agent.is_some() || cwd.is_some() {
-                metas.insert(*id, crate::state::snapshot::PaneMeta { agent, cwd, env });
+                metas.insert(
+                    *id,
+                    crate::state::snapshot::PaneMeta {
+                        agent,
+                        cwd,
+                        env,
+                        agent_bin: p.agent_bin.clone(),
+                    },
+                );
             }
         }
         crate::state::snapshot::save(&self.state, &metas);
@@ -610,13 +639,23 @@ pub fn build(
     for (pane, meta) in initial_panes {
         // A failed resume must degrade into a shell, not close the pane —
         // an instant exit cascades into killing the tab and the space.
-        let resume = meta
-            .agent
-            .as_deref()
-            .map(|a| crate::agents::hold_on_failure(&crate::agents::resume_command(a)));
+        let resume = meta.agent.as_deref().map(|a| {
+            let mut cmd = crate::agents::resume_command(a);
+            // /bin/sh has no shell-rc PATH: prefer the recorded absolute
+            // binary when it still exists (agent updates replace the path —
+            // then the bare name + inherited PATH is the fallback).
+            if let Some(bin) = meta.agent_bin.as_deref().filter(|b| std::path::Path::new(b).is_file())
+                && let Some(rest) = cmd.split_once(' ').map(|(_, r)| r.to_string())
+            {
+                cmd = format!("'{bin}' {rest}");
+            }
+            crate::agents::hold_on_failure(&cmd)
+        });
         // Seed the session mapping now: the first autosave fires before the
         // agent's hook re-reports, and must not strip the ident.
-        if let Some(id) = meta.agent.as_deref().and_then(|a| a.split_once(':').map(|(_, s)| s)) {
+        if let Some(id) = meta.agent.as_deref().and_then(|a| a.strip_prefix("claude:")) {
+            // Claude only: the map's save-side fallback writes "claude:<id>",
+            // so a codex ident seeded here would be corrupted on re-save.
             rt.agent_sessions.insert(pane, id.to_string());
         }
         // The pane's own saved folder wins over the workspace anchor —
@@ -768,6 +807,7 @@ mod base64_engine {
 /// raw master fds, which survive exec once CLOEXEC is cleared. Children keep
 /// their pids — exec does not change ours, so they remain our children.
 #[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Handoff {
     /// Guard: only honored by the process with this pid (i.e. after exec).
     pub pid: u32,
@@ -779,12 +819,37 @@ pub struct Handoff {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct HandoffPane {
     pub id: PaneId,
     pub fd: i32,
     pub pid: Option<u32>,
     pub program: String,
     pub size: (u16, u16),
+}
+
+/// Where the exec-handoff state file lives.
+pub fn handoff_path() -> Option<std::path::PathBuf> {
+    crate::logging::state_dir().map(|d| d.join("handoff.json"))
+}
+
+impl Default for Handoff {
+    fn default() -> Self {
+        Handoff {
+            pid: 0,
+            area: (0, 0),
+            state: crate::state::AppState::new(String::new(), std::path::PathBuf::from("/")),
+            titles: Vec::new(),
+            agent_sessions: Vec::new(),
+            panes: Vec::new(),
+        }
+    }
+}
+
+impl Default for HandoffPane {
+    fn default() -> Self {
+        HandoffPane { id: PaneId(0), fd: -1, pid: None, program: String::new(), size: (0, 0) }
+    }
 }
 
 /// Snapshot the runtime for exec-handoff. Clears CLOEXEC on every master fd;
@@ -870,6 +935,7 @@ pub fn build_from_handoff(
                         agent: crate::agents::detect("", &hp.program),
                         agent_pid: None,
                         agent_config_dir: None,
+                        agent_bin: None,
                         agent_gone_polls: 0,
                         program: hp.program,
                         last_output: std::time::Instant::now(),

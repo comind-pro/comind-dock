@@ -80,7 +80,10 @@ pub enum Req {
 
 pub enum WaitCond {
     Status(crate::detect::Status),
-    Output(String),
+    /// Needle plus a rolling tail of raw pane output — fast output can
+    /// scroll past between 500ms polls, so the PTY-data path feeds chunks
+    /// here and matching never misses.
+    Output(String, String),
 }
 
 pub struct PendingWait {
@@ -156,21 +159,27 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
         Req::Snapshot => Ok(snapshot(rt)),
         Req::Split { pane, direction, command } => {
             let target = pane.map(PaneId).unwrap_or_else(|| rt.state.focused_pane());
-            if !rt.state.focus_pane(target) {
-                return Ok(err(format!("no such pane {target}")));
-            }
             let dir = match direction.as_deref() {
                 Some("down") => Dir::Down,
                 _ => Dir::Right,
             };
-            let new = rt.state.split_focused(dir, false);
+            // In place: background API calls must never yank the user's
+            // focus — their keystrokes would land in the new shell.
+            let Some(new) = rt.state.split_pane(target, dir) else {
+                return Ok(err(format!("no such pane {target}")));
+            };
             // Provisional size; compute_view corrects it before the next frame.
             match rt.spawn_pane_cmd(new, area.width.max(2) / 2, area.height.max(2) / 2, command) {
                 Ok(()) => {
                     rt.mark_dirty();
                     Ok(json!({"ok": true, "pane": new.0}))
                 }
-                Err(e) => Ok(err(e)),
+                // Spawn failed: the leaf is already in the layout — roll it
+                // back or it renders empty forever and can never be closed.
+                Err(e) => {
+                    rt.state.close_pane(new);
+                    Ok(err(e))
+                }
             }
         }
         Req::ReloadConfig => {
@@ -199,14 +208,20 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             }
         }
         Req::AgentStart { command, split, workspace, env } => {
-            if let Some(wi) = workspace.map(|w| resolve_ws(rt, Some(w))) {
-                let Some(wi) = wi else { return Ok(err("no such workspace")) };
-                rt.state.active_workspace = wi;
-            }
+            let Some(wi) = resolve_ws(rt, workspace) else {
+                return Ok(err("no such workspace"));
+            };
+            // Background spawns never steal the user's view.
             let pane = match split.as_deref() {
-                Some("down") => rt.state.split_focused(Dir::Down, false),
-                Some(_) => rt.state.split_focused(Dir::Right, false),
-                None => rt.state.new_tab(),
+                Some(d) => {
+                    let dir = if d == "down" { Dir::Down } else { Dir::Right };
+                    let target = rt.state.workspaces[wi].active_tab().focused_pane;
+                    match rt.state.split_pane(target, dir) {
+                        Some(p) => p,
+                        None => return Ok(err("no pane to split")),
+                    }
+                }
+                None => rt.state.new_tab_in(wi, false),
             };
             // An instantly-failing agent command must not cascade the tab
             // away — degrade into a shell with the error visible.
@@ -221,7 +236,10 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                     rt.mark_dirty();
                     Ok(json!({"ok": true, "pane": pane.0}))
                 }
-                Err(e) => Ok(err(e)),
+                Err(e) => {
+                    rt.state.close_pane(pane);
+                    Ok(err(e))
+                }
             }
         }
         Req::ReportAgentSession { pane, session_id } => {
@@ -257,14 +275,22 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             };
             let name =
                 cwd.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let pane = rt.state.new_workspace(name, cwd, None);
+            let pane = rt.state.new_workspace_full(name, cwd, None, false);
             match rt.spawn_pane(pane, area.width.max(4), area.height.max(4)) {
                 Ok(()) => {
                     rt.mark_dirty();
-                    let ws = rt.state.active_workspace();
-                    Ok(json!({"ok": true, "workspace": ws.id.0, "pane": pane.0}))
+                    let ws_id = rt
+                        .state
+                        .workspaces
+                        .iter()
+                        .find(|w| w.tabs.iter().any(|t| t.layout.contains(pane)))
+                        .map(|w| w.id.0);
+                    Ok(json!({"ok": true, "workspace": ws_id, "pane": pane.0}))
                 }
-                Err(e) => Ok(err(e)),
+                Err(e) => {
+                    rt.state.close_pane(pane);
+                    Ok(err(e))
+                }
             }
         }
         Req::TabFocus { tab } => {
@@ -301,14 +327,16 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             let Some(wi) = resolve_ws(rt, workspace) else {
                 return Ok(err("no such workspace"));
             };
-            rt.state.active_workspace = wi;
-            let pane = rt.state.new_tab();
+            let pane = rt.state.new_tab_in(wi, false);
             match rt.spawn_pane(pane, area.width.max(4), area.height.max(4)) {
                 Ok(()) => {
                     rt.mark_dirty();
                     Ok(json!({"ok": true, "pane": pane.0}))
                 }
-                Err(e) => Ok(err(e)),
+                Err(e) => {
+                    rt.state.close_pane(pane);
+                    Ok(err(e))
+                }
             }
         }
         Req::WorktreeList { workspace } => {
@@ -386,7 +414,7 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             wait(rt, pane, WaitCond::Status(status), timeout_ms)
         }
         Req::WaitOutput { pane, needle, timeout_ms } => {
-            wait(rt, pane, WaitCond::Output(needle), timeout_ms)
+            wait(rt, pane, WaitCond::Output(needle, String::new()), timeout_ms)
         }
     }
 }
@@ -535,6 +563,22 @@ fn snapshot(rt: &Runtime) -> Value {
     json!({"ok": true, "workspaces": workspaces})
 }
 
+/// Append a PTY chunk to output-waiters of this pane (called from the
+/// server's data path) — capped rolling tail so needles can't scroll past.
+pub fn feed_waiters(waiters: &mut [(PendingWait, Replier)], pane: PaneId, chunk: &[u8]) {
+    for (w, _) in waiters.iter_mut() {
+        if w.pane == pane
+            && let WaitCond::Output(_, tail) = &mut w.cond
+        {
+            tail.push_str(&String::from_utf8_lossy(chunk));
+            if tail.len() > 16 * 1024 {
+                let cut = tail.len() - 8 * 1024;
+                tail.drain(..cut);
+            }
+        }
+    }
+}
+
 /// Resolve parked waits: condition met, pane gone, or deadline passed.
 /// Called from the server's 500ms agent poll — that granularity is the
 /// wait resolution.
@@ -548,8 +592,15 @@ pub fn check_waiters(rt: &Runtime, waiters: &mut Vec<(PendingWait, Replier)>) {
                 WaitCond::Status(want) if p.effective_status() == *want => {
                     Some(json!({"ok": true, "status": want.word()}))
                 }
-                WaitCond::Output(needle) if p.emu.bottom_text(30).join("\n").contains(needle) => {
-                    Some(json!({"ok": true}))
+                WaitCond::Output(needle, tail) => {
+                    let on_screen = p.emu.bottom_text(30).join("\n").contains(needle.as_str());
+                    if on_screen || tail.contains(needle.as_str()) {
+                        Some(json!({"ok": true}))
+                    } else if w.deadline.is_some_and(|d| Instant::now() >= d) {
+                        Some(err("timeout"))
+                    } else {
+                        None
+                    }
                 }
                 _ if w.deadline.is_some_and(|d| Instant::now() >= d) => Some(err("timeout")),
                 _ => None,
@@ -618,6 +669,15 @@ pub fn spawn_conn(stream: tokio::net::UnixStream, tx: mpsc::UnboundedSender<Conn
                 }
                 Err(e) => err(format!("bad request: {e}")),
             };
+            let mut reply = reply;
+            // Version skew detection: old CLIs silently ignore new fields,
+            // so every reply names the server that produced it.
+            if let Some(obj) = reply.as_object_mut() {
+                obj.insert(
+                    "server_version".to_string(),
+                    Value::String(crate::update::CURRENT.to_string()),
+                );
+            }
             let mut out = reply.to_string();
             out.push('\n');
             if w.write_all(out.as_bytes()).await.is_err() {

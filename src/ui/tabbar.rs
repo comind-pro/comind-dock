@@ -3,7 +3,6 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use unicode_width::UnicodeWidthStr;
 
 use crate::config::theme::Theme;
 use crate::runtime::Runtime;
@@ -102,7 +101,11 @@ const CLOSE_WIDTH: usize = 3;
 
 /// What sits under bar-relative column `x` (`width` = bar width).
 pub fn hit(rt: &Runtime, x: u16, width: u16) -> Option<Hit> {
-    if x >= width.saturating_sub(CLOSE_WIDTH as u16) {
+    // The ✕ exists only when render actually drew it — on a full bar the
+    // right edge shows a tab, and CloseApp there would shut the dock down.
+    use unicode_width::UnicodeWidthStr as _;
+    let used: usize = segments(rt).iter().map(|s| s.text.width()).sum();
+    if used + CLOSE_WIDTH <= width as usize && x >= width.saturating_sub(CLOSE_WIDTH as u16) {
         return Some(Hit::CloseApp);
     }
     let mut cursor: u16 = 0;

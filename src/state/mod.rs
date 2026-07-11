@@ -13,8 +13,8 @@ use workspace::{Tab, Workspace};
 /// What a rename prompt is renaming.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
-    RenameTab,
-    RenameWorkspace,
+    RenameTab(ids::TabId),
+    RenameWorkspace(ids::WorkspaceId),
     /// Branch name for a new worktree of the workspace with this id.
     WorktreeBranch(ids::WorkspaceId),
 }
@@ -102,8 +102,13 @@ pub enum CloseOutcome {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct AppState {
+    // Every field defaults: this struct crosses the exec-handoff boundary
+    // between VERSIONS — a missing field must never abort an upgrade.
+    #[serde(default)]
     pub workspaces: Vec<Workspace>,
+    #[serde(default)]
     pub active_workspace: usize,
+    #[serde(default = "default_true")]
     pub sidebar_visible: bool,
     /// Folder-scoped attach (`cdock -f`): only workspaces under this folder
     /// show. Presentation state — never persisted; the client re-sends its
@@ -114,7 +119,12 @@ pub struct AppState {
     /// Modal UI state — never persisted (handoff/restore resets to Terminal).
     #[serde(skip)]
     pub input_mode: InputMode,
+    #[serde(default)]
     ids: IdGen,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl AppState {
@@ -203,6 +213,21 @@ impl AppState {
             .flat_map(|w| w.tabs.iter())
             .flat_map(|t| t.layout.panes())
             .collect()
+    }
+
+    /// Split `target` in place WITHOUT moving the user's focus or active
+    /// workspace/tab — the automation API splits background panes while the
+    /// user types elsewhere. None if the pane is gone.
+    pub fn split_pane(&mut self, target: PaneId, dir: Dir) -> Option<PaneId> {
+        let (wi, ti) = self.locate_pane(target)?;
+        let new = self.ids.pane();
+        let tab = &mut self.workspaces[wi].tabs[ti];
+        tab.layout.split(target, new, dir, false);
+        if tab.zoomed == Some(target) {
+            tab.zoomed = None;
+        }
+        debug_assert!(self.check_invariants());
+        Some(new)
     }
 
     /// Split the focused pane; the new pane becomes focused. `before` puts
@@ -302,12 +327,21 @@ impl AppState {
 
     /// New tab in the active workspace; returns the new pane id to spawn.
     pub fn new_tab(&mut self) -> PaneId {
+        let wi = self.active_workspace.min(self.workspaces.len() - 1);
+        self.new_tab_in(wi, true)
+    }
+
+    /// New tab in workspace `wi`; `activate` = also switch the user's view
+    /// to it (background API calls must NOT yank the screen mid-typing).
+    pub fn new_tab_in(&mut self, wi: usize, activate: bool) -> PaneId {
         let pane = self.ids.pane();
         let id = self.ids.tab();
-        let ws = self.active_workspace_mut();
+        let ws = &mut self.workspaces[wi];
         let name = (ws.tabs.len() + 1).to_string();
         ws.tabs.push(Tab::new(id, name, pane));
-        ws.active_tab = ws.tabs.len() - 1;
+        if activate {
+            ws.active_tab = ws.tabs.len() - 1;
+        }
         debug_assert!(self.check_invariants());
         pane
     }
@@ -328,6 +362,17 @@ impl AppState {
         name: String,
         cwd: std::path::PathBuf,
         parent: Option<ids::WorkspaceId>,
+    ) -> PaneId {
+        self.new_workspace_full(name, cwd, parent, true)
+    }
+
+    /// `activate: false` keeps the user's current view (background API).
+    pub fn new_workspace_full(
+        &mut self,
+        name: String,
+        cwd: std::path::PathBuf,
+        parent: Option<ids::WorkspaceId>,
+        activate: bool,
     ) -> PaneId {
         let pane = self.ids.pane();
         let tab = Tab::new(self.ids.tab(), "1".to_string(), pane);
@@ -350,7 +395,12 @@ impl AppState {
             None => self.workspaces.len(),
         };
         self.workspaces.insert(insert_at, ws);
-        self.active_workspace = insert_at;
+        if activate {
+            self.active_workspace = insert_at;
+        } else if insert_at <= self.active_workspace && self.workspaces.len() > 1 {
+            // Keep the user's view pinned despite the insertion shift.
+            self.active_workspace = (self.active_workspace + 1).min(self.workspaces.len() - 1);
+        }
         debug_assert!(self.check_invariants());
         pane
     }
@@ -421,14 +471,21 @@ impl AppState {
         }
     }
 
-    pub fn rename_active_tab(&mut self, name: String) {
-        self.active_tab_mut().name = name;
+    /// Rename by id — prompts resolve at Enter time, indexes may shift.
+    pub fn rename_tab_by_id(&mut self, id: ids::TabId, name: String) {
+        for ws in &mut self.workspaces {
+            if let Some(t) = ws.tabs.iter_mut().find(|t| t.id == id) {
+                t.name = name;
+                return;
+            }
+        }
     }
 
-    pub fn rename_active_workspace(&mut self, name: String) {
-        let ws = self.active_workspace_mut();
-        ws.name = name;
-        ws.custom_name = true;
+    pub fn rename_workspace_by_id(&mut self, id: ids::WorkspaceId, name: String) {
+        if let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == id) {
+            ws.name = name;
+            ws.custom_name = true;
+        }
     }
 
     /// Panes of the active tab (for close-tab: kill each, PtyExit cascades).
@@ -457,6 +514,17 @@ impl AppState {
         self.active_workspace = wi;
         self.workspaces[wi].active_tab = ti;
         self.workspaces[wi].tabs[ti].focused_pane = pane;
+        // Landing behind another pane's zoom would leave the user typing
+        // into an invisible pane (toast/sidebar jumps).
+        if self.workspaces[wi].tabs[ti].zoomed.is_some_and(|z| z != pane) {
+            self.workspaces[wi].tabs[ti].zoomed = None;
+        }
+        // An explicit jump to a scope-hidden pane wins over the -f filter:
+        // otherwise the sidebar shows no active space and cycling can't
+        // ever reach it back.
+        if !self.in_scope(wi) {
+            self.scope = None;
+        }
         true
     }
 

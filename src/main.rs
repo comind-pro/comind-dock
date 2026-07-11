@@ -752,6 +752,11 @@ fn run_server(cfg: config::Config) -> std::io::Result<()> {
         proto::socket_path().ok_or_else(|| std::io::Error::other("cannot determine state dir"))?;
     let api_sock =
         api::socket_path().ok_or_else(|| std::io::Error::other("cannot determine state dir"))?;
+    // Stale-socket cleanup and binding are serialized under an exclusive
+    // flock: check-then-remove is a TOCTOU race, and a handoff heir could
+    // otherwise unlink a rival's just-bound live socket (split-brain with
+    // duplicate resumed agents).
+    let _sock_lock = sockets_lock();
     // A stale socket file from a dead server blocks bind; if nobody answers
     // on it, it is safe to remove. After exec-handoff OUR OWN sockets look
     // stale (fds closed at exec) — same cleanup covers that.
@@ -796,6 +801,7 @@ fn run_server(cfg: config::Config) -> std::io::Result<()> {
                 tokio::net::UnixListener::bind(&api_sock)?,
             )
         };
+        drop(_sock_lock); // cleanup + bind done — let other launches proceed
         let result = server::run(
             cfg,
             Some(listener),
@@ -812,10 +818,8 @@ fn run_server(cfg: config::Config) -> std::io::Result<()> {
     drop(rt); // no tokio left behind the exec
     match outcome {
         server::RunOutcome::Exit => Ok(()),
-        server::RunOutcome::Handoff(h) => {
-            let path = handoff_path()
-                .ok_or_else(|| std::io::Error::other("cannot determine state dir"))?;
-            std::fs::write(&path, serde_json::to_vec(&*h)?)?;
+        server::RunOutcome::Handoff(_h) => {
+            // handoff.json was persisted by the server loop before it acked.
             tracing::info!("exec-ing replacement server");
             // exec only returns on failure. Use the path captured at startup:
             // after a self-update renamed over us, Linux current_exe() reads
@@ -823,7 +827,9 @@ fn run_server(cfg: config::Config) -> std::io::Result<()> {
             let err = std::os::unix::process::CommandExt::exec(
                 std::process::Command::new(startup_exe()).arg("--server"),
             );
-            let _ = std::fs::remove_file(&path);
+            if let Some(p) = handoff_path() {
+                let _ = std::fs::remove_file(p);
+            }
             Err(err)
         }
     }
@@ -842,8 +848,22 @@ fn startup_exe() -> &'static std::path::Path {
     })
 }
 
+/// Exclusive lock guarding socket cleanup+bind across processes.
+fn sockets_lock() -> Option<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    let dir = logging::state_dir()?;
+    let _ = std::fs::create_dir_all(&dir);
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false) // lock file: contents irrelevant
+        .write(true)
+        .open(dir.join(".sockets.lock"))
+        .ok()?;
+    (unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } == 0).then_some(f)
+}
+
 fn handoff_path() -> Option<std::path::PathBuf> {
-    logging::state_dir().map(|d| d.join("handoff.json"))
+    runtime::handoff_path()
 }
 
 /// Handoff state left by the previous process image, if it was really ours:
@@ -858,15 +878,22 @@ fn take_handoff() -> Option<runtime::Handoff> {
             tracing::info!("resuming from live handoff");
             Some(h)
         }
-        // NOT ours — a concurrently spawned server must leave the heir's
-        // handoff file alone (deleting it here dropped every live pane).
+        // NOT ours — a concurrently spawned server must leave a LIVE heir's
+        // handoff file alone (deleting it dropped every pane). A dead owner
+        // can never claim it; left forever, pid recycling could falsely
+        // adopt garbage fds — clean those up.
         Ok(h) => {
-            tracing::warn!(their_pid = h.pid, "ignoring another process's handoff file");
+            let owner_alive = unsafe { libc::kill(h.pid as libc::pid_t, 0) } == 0;
+            if !owner_alive {
+                let _ = std::fs::remove_file(&path);
+            }
+            tracing::warn!(their_pid = h.pid, owner_alive, "ignoring another process's handoff file");
             None
         }
         Err(e) => {
-            let _ = std::fs::remove_file(&path);
-            tracing::warn!(error = %e, "removed corrupt handoff file");
+            // Keep the evidence: version-skew debugging needs the payload.
+            let _ = std::fs::rename(&path, path.with_extension("json.bad"));
+            tracing::warn!(error = %e, "quarantined unreadable handoff file");
             None
         }
     }

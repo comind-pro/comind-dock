@@ -163,7 +163,22 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 return InputOutcome::Continue;
             }
             if let Some((id, rect)) = pane_at(&view.pane_rects, pos) {
-                rt.state.active_tab_mut().focused_pane = id;
+                // Clicking away mid-search: close the search on the OLD pane
+                // or its highlight/mode go stale.
+                if matches!(rt.state.input_mode, InputMode::Search { .. } | InputMode::SearchNav)
+                    && id != rt.state.focused_pane()
+                {
+                    let old = rt.state.focused_pane();
+                    if let Some(p) = rt.panes.get_mut(&old) {
+                        p.emu.clear_search();
+                    }
+                    rt.state.input_mode = InputMode::Terminal;
+                }
+                // focus_pane validates: the view is a frame old, the pane
+                // may have died — a raw assignment plants a dead id.
+                if !rt.state.focus_pane(id) {
+                    return InputOutcome::Continue;
+                }
                 let inner = crate::ui::content_rect(rect);
                 if !inner.contains(pos) {
                     return InputOutcome::Continue; // border click: focus only
@@ -312,7 +327,9 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
             }
             // Right-click on a pane opens the context menu.
             if let Some((id, _)) = pane_at(&view.pane_rects, pos) {
-                rt.state.active_tab_mut().focused_pane = id;
+                if !rt.state.focus_pane(id) {
+                    return InputOutcome::Continue;
+                }
                 rt.state.input_mode = InputMode::Menu {
                     x: ev.column,
                     y: ev.row,
@@ -347,20 +364,30 @@ fn run_menu_action(
     area: Rect,
 ) -> InputOutcome {
     let result = match action {
+        // The pane may have died while the menu was open — a failed focus
+        // must not split whatever happens to be focused now.
         MenuAction::SplitRight(pane) => {
-            rt.state.focus_pane(pane);
+            if !rt.state.focus_pane(pane) {
+                return InputOutcome::Continue;
+            }
             rt.split_focused(Dir::Right, false, area)
         }
         MenuAction::SplitLeft(pane) => {
-            rt.state.focus_pane(pane);
+            if !rt.state.focus_pane(pane) {
+                return InputOutcome::Continue;
+            }
             rt.split_focused(Dir::Right, true, area)
         }
         MenuAction::SplitDown(pane) => {
-            rt.state.focus_pane(pane);
+            if !rt.state.focus_pane(pane) {
+                return InputOutcome::Continue;
+            }
             rt.split_focused(Dir::Down, false, area)
         }
         MenuAction::SplitUp(pane) => {
-            rt.state.focus_pane(pane);
+            if !rt.state.focus_pane(pane) {
+                return InputOutcome::Continue;
+            }
             rt.split_focused(Dir::Down, true, area)
         }
         MenuAction::ClosePane(pane) => {
@@ -368,10 +395,11 @@ fn run_menu_action(
             Ok(())
         }
         MenuAction::RenameSpace(ws) => {
-            if let Some(wi) = rt.state.workspace_index(ws) {
-                rt.state.active_workspace = wi;
-                rt.state.input_mode =
-                    InputMode::Prompt { kind: PromptKind::RenameWorkspace, buffer: String::new() };
+            if rt.state.workspace_index(ws).is_some() {
+                rt.state.input_mode = InputMode::Prompt {
+                    kind: PromptKind::RenameWorkspace(ws),
+                    buffer: String::new(),
+                };
             }
             Ok(())
         }
@@ -435,10 +463,10 @@ fn run_menu_action(
             Ok(p) => {
                 let (command, env) = p.resolve();
                 let pane = match split {
-                    Some(target) => {
-                        rt.state.focus_pane(target);
-                        rt.state.split_focused(Dir::Right, false)
-                    }
+                    Some(target) => match rt.state.split_pane(target, Dir::Right) {
+                        Some(p) => p,
+                        None => return InputOutcome::Continue, // pane died under the menu
+                    },
                     None => rt.state.new_tab(),
                 };
                 rt.spawn_pane_env(

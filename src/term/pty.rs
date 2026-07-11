@@ -149,7 +149,10 @@ pub fn adopt(
         std::thread::spawn(move || {
             let mut status: libc::c_int = 0;
             let r = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0) };
-            tracing::debug!(%pane, pid, r, "adopted pty child exited");
+            let signaled = libc::WIFSIGNALED(status);
+            let sig = if signaled { libc::WTERMSIG(status) } else { 0 };
+            let code = if libc::WIFEXITED(status) { libc::WEXITSTATUS(status) } else { -1 };
+            tracing::debug!(%pane, pid, r, signaled, sig, code, "adopted pty child exited");
             let _ = exit_tx.send(AppEvent::PtyExit(pane));
         });
     }

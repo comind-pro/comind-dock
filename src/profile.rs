@@ -50,12 +50,23 @@ fn save_catalog(cat: &std::collections::BTreeMap<String, SkillEntry>) -> Result<
     std::fs::write(path, text).map_err(|e| e.to_string())
 }
 
+/// Catalog for WRITE paths: a parse failure must abort loudly — the silent
+/// empty-map fallback would let the next save wipe the whole catalog.
+fn skill_catalog_strict() -> Result<std::collections::BTreeMap<String, SkillEntry>, String> {
+    let Some(path) = skills_path() else { return Ok(Default::default()) };
+    match std::fs::read_to_string(&path) {
+        Ok(t) => toml::from_str(&t).map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
 pub fn skill_add(name: &str, source: &str, description: &str) -> Result<(), String> {
     let dir = PathBuf::from(shellexpand_home(source));
     if !dir.join("SKILL.md").exists() {
         return Err(format!("{} has no SKILL.md", dir.display()));
     }
-    let mut cat = skill_catalog();
+    let mut cat = skill_catalog_strict()?;
     cat.insert(
         name.to_string(),
         SkillEntry { source: dir.display().to_string(), description: description.to_string() },
@@ -64,7 +75,7 @@ pub fn skill_add(name: &str, source: &str, description: &str) -> Result<(), Stri
 }
 
 pub fn skill_remove(name: &str) -> Result<(), String> {
-    let mut cat = skill_catalog();
+    let mut cat = skill_catalog_strict()?;
     if cat.remove(name).is_none() {
         return Err(format!("no skill {name:?} in the catalog"));
     }

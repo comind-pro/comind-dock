@@ -21,6 +21,8 @@ pub struct PaneMeta {
     pub cwd: Option<PathBuf>,
     /// Extra env restore must respawn with (e.g. CLAUDE_CONFIG_DIR profile).
     pub env: Vec<(String, String)>,
+    /// Absolute exe path of the agent (resume without relying on PATH).
+    pub agent_bin: Option<String>,
 }
 
 /// A pane to spawn on restore with its metadata.
@@ -65,6 +67,8 @@ pub enum NodeSnap {
         cwd: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         env: Vec<(String, String)>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_bin: Option<String>,
     },
     Split { dir: DirSnap, ratio: f32, a: Box<NodeSnap>, b: Box<NodeSnap> },
 }
@@ -84,6 +88,7 @@ fn node_to_snap(node: &Node, panes: &std::collections::HashMap<PaneId, PaneMeta>
                 agent: meta.agent,
                 cwd: meta.cwd.map(|c| c.to_string_lossy().into_owned()),
                 env: meta.env,
+                agent_bin: meta.agent_bin,
             }
         }
         Node::Split { dir, ratio, a, b } => NodeSnap::Split {
@@ -100,7 +105,7 @@ fn node_to_snap(node: &Node, panes: &std::collections::HashMap<PaneId, PaneMeta>
 
 fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen, agents: &mut Vec<PaneSpawn>) -> Node {
     match snap {
-        NodeSnap::Leaf { agent, cwd, env } => {
+        NodeSnap::Leaf { agent, cwd, env, agent_bin } => {
             let id = ids.pane();
             agents.push((
                 id,
@@ -108,6 +113,7 @@ fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen, agents: &mut Vec<PaneSpawn>) -
                     agent: agent.clone(),
                     cwd: cwd.clone().map(PathBuf::from),
                     env: env.clone(),
+                    agent_bin: agent_bin.clone(),
                 },
             ));
             Node::Leaf(id)
@@ -247,12 +253,17 @@ pub fn save(state: &AppState, panes: &std::collections::HashMap<PaneId, PaneMeta
 }
 
 pub fn load() -> Option<Snapshot> {
+    // On parse failure the file is renamed aside: within 5s the autosave
+    // would overwrite it with a fresh state, and the next boot would copy
+    // that over boot-bak — silently destroying the only good copy.
     let p = path()?;
-    let text = std::fs::read_to_string(p).ok()?;
+    let text = std::fs::read_to_string(&p).ok()?;
     match serde_json::from_str(&text) {
         Ok(s) => Some(s),
         Err(e) => {
-            tracing::warn!(error = %e, "session snapshot unreadable; starting fresh");
+            let bad = p.with_extension("json.bad");
+            let _ = std::fs::rename(&p, &bad);
+            tracing::warn!(error = %e, kept = %bad.display(), "session snapshot unreadable; starting fresh");
             None
         }
     }
@@ -270,7 +281,8 @@ mod tests {
         s.split_focused(Dir::Down, false);
         s.new_tab();
         s.new_workspace("x".into(), std::path::PathBuf::from("/tmp"), None);
-        s.rename_active_workspace("proj".into());
+        let ws_id = s.active_workspace().id;
+        s.rename_workspace_by_id(ws_id, "proj".into());
 
         // Mark the focused pane of ws1/tab1 as a claude pane living in its
         // own folder — the workspace cwd may have drifted elsewhere.
@@ -281,6 +293,7 @@ mod tests {
                 agent: Some("claude:uuid-1".to_string()),
                 cwd: Some(std::path::PathBuf::from("/projects/real-home")),
                 env: vec![("CLAUDE_CONFIG_DIR".into(), "/home/u/.claude-oleh".into())],
+                agent_bin: Some("/usr/local/bin/claude".into()),
             },
         )]);
         let snap = Snapshot::of(&s, &metas);

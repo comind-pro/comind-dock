@@ -259,8 +259,10 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<Inp
                     let name = buffer.trim().to_string();
                     if !name.is_empty() {
                         match kind {
-                            PromptKind::RenameTab => rt.state.rename_active_tab(name),
-                            PromptKind::RenameWorkspace => rt.state.rename_active_workspace(name),
+                            PromptKind::RenameTab(id) => rt.state.rename_tab_by_id(id, name),
+                            PromptKind::RenameWorkspace(id) => {
+                                rt.state.rename_workspace_by_id(id, name)
+                            }
                             PromptKind::WorktreeBranch(ws) => {
                                 rt.state.input_mode = InputMode::Terminal;
                                 if let Some(wi) = rt.state.workspace_index(ws) {
@@ -325,15 +327,17 @@ fn dispatch(rt: &mut Runtime, action: Action, area: Rect) -> io::Result<InputOut
             let pane = rt.state.new_tab();
             rt.spawn_pane(pane, area.width, area.height)?;
             if rt.cfg.ui.prompt_new_tab_name {
+                let id = rt.state.active_tab().id;
                 rt.state.input_mode =
-                    InputMode::Prompt { kind: PromptKind::RenameTab, buffer: String::new() };
+                    InputMode::Prompt { kind: PromptKind::RenameTab(id), buffer: String::new() };
             }
         }
         Action::NextTab => rt.state.next_tab(),
         Action::PrevTab => rt.state.prev_tab(),
         Action::RenameTab => {
+            let id = rt.state.active_tab().id;
             rt.state.input_mode =
-                InputMode::Prompt { kind: PromptKind::RenameTab, buffer: String::new() };
+                InputMode::Prompt { kind: PromptKind::RenameTab(id), buffer: String::new() };
         }
         Action::CloseTab => {
             for pane in rt.state.active_tab_panes() {
@@ -347,8 +351,11 @@ fn dispatch(rt: &mut Runtime, action: Action, area: Rect) -> io::Result<InputOut
             rt.spawn_pane(pane, area.width, area.height)?;
         }
         Action::RenameWorkspace => {
-            rt.state.input_mode =
-                InputMode::Prompt { kind: PromptKind::RenameWorkspace, buffer: String::new() };
+            let id = rt.state.active_workspace().id;
+            rt.state.input_mode = InputMode::Prompt {
+                kind: PromptKind::RenameWorkspace(id),
+                buffer: String::new(),
+            };
         }
         Action::CloseWorkspace => {
             for pane in rt.state.active_workspace_panes() {
