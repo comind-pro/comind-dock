@@ -368,7 +368,14 @@ fn dispatch(rt: &mut Runtime, action: Action, area: Rect) -> io::Result<InputOut
         Action::ScrollbackEditor => {
             let focused = rt.state.focused_pane();
             if let Some(p) = rt.panes.get(&focused) {
-                let text = p.emu.scrollback_text();
+                let mut text = p.emu.scrollback_text();
+                if p.emu.on_alt_screen() {
+                    // The alt grid has no history — be honest about it.
+                    text.insert_str(
+                        0,
+                        "# fullscreen app: visible screen only, no scrollback\n\n",
+                    );
+                }
                 let path = std::env::temp_dir().join(format!("cdock-scrollback-{}.txt", focused.0));
                 match std::fs::write(&path, text) {
                     Ok(()) => {

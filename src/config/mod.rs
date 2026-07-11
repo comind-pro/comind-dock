@@ -219,10 +219,11 @@ pub struct ExperimentalCfg {
 }
 
 impl AdvancedCfg {
-    /// alacritty takes scrollback in lines; ~120 bytes/line heuristic
-    /// (documented in the annotated default config).
+    /// alacritty takes scrollback in lines. A stored row is a full-width
+    /// Vec<Cell> (~24 B/cell, ~4 KB at 180 cols) — the old 120 B/line
+    /// heuristic overshot real memory ~40x. 10k lines is plenty of history.
     pub fn scrollback_lines(&self) -> usize {
-        (self.scrollback_limit_bytes / 120) as usize
+        ((self.scrollback_limit_bytes / 4000) as usize).clamp(1000, 10_000)
     }
 }
 

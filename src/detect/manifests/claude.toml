@@ -14,7 +14,7 @@ id = "claude"
 [[rule]]
 priority = 100
 state = "blocked"
-all_of = ["❯ 1"]
+all_of = ["❯ 1. "]
 any_of = [
     "do you want to proceed",
     "do you want to",
@@ -26,14 +26,14 @@ none_of = ["esc to interrupt", "running stop hooks", "· ↓ ", "· ↑ "]
 [[rule]]
 priority = 100
 state = "blocked"
-all_of = ["❯ 2"]
+all_of = ["❯ 2. "]
 any_of = ["do you want to proceed", "do you want to", "would you like to", "yes, and don't ask again"]
 none_of = ["esc to interrupt", "running stop hooks", "· ↓ ", "· ↑ "]
 
 [[rule]]
 priority = 100
 state = "blocked"
-all_of = ["❯ 3"]
+all_of = ["❯ 3. "]
 any_of = ["do you want to proceed", "do you want to", "would you like to", "yes, and don't ask again"]
 none_of = ["esc to interrupt", "running stop hooks", "· ↓ ", "· ↑ "]
 

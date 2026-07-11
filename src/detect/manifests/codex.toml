@@ -15,7 +15,9 @@ any_of = [
 [[rule]]
 priority = 90
 state = "working"
-any_of = ["esc to interrupt", "working (", "thinking"]
+# "thinking" alone matches transcript reasoning headers long after the
+# task ends — only the live spinner form counts.
+any_of = ["esc to interrupt", "working (", "thinking ("]
 
 [[rule]]
 priority = 50

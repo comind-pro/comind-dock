@@ -41,6 +41,9 @@ struct Client {
     tx: mpsc::UnboundedSender<ServerMsg>,
     /// Previous frame buffer; None → send a full repaint.
     prev: Option<Buffer>,
+    /// Last reported terminal size — the shared area re-fits to a survivor
+    /// when another client leaves.
+    size: (u16, u16),
 }
 
 enum ClientCtl {
@@ -144,7 +147,7 @@ pub async fn run(
                     next_client += 1;
                     let (read_half, write_half) = stream.into_split();
                     let (out_tx, out_rx) = mpsc::unbounded_channel::<ServerMsg>();
-                    clients.insert(id, Client { tx: out_tx, prev: None });
+                    clients.insert(id, Client { tx: out_tx, prev: None, size: (0, 0) });
                     spawn_client_io(id, read_half, write_half, out_rx, ctl_tx.clone());
                     tracing::info!(client = id, "client connected");
                 }
@@ -160,6 +163,7 @@ pub async fn run(
                         }
                         if let Some(c) = clients.get_mut(&id) {
                             let _ = c.tx.send(ServerMsg::Welcome { version: PROTOCOL_VERSION });
+                            c.size = (cols, rows);
                         }
                         // Folder-scoped attach: last Hello wins; a plain
                         // attach widens the view back (the escape hatch
@@ -179,20 +183,25 @@ pub async fn run(
                     }
                     ClientMsg::Event(ev) => {
                         if let crossterm::event::Event::Resize(cols, rows) = ev {
+                            if let Some(c) = clients.get_mut(&id) {
+                                c.size = (cols, rows);
+                            }
                             resize_all(&mut area, &mut term, &mut clients, cols, rows)?;
                         }
                         match runtime::handle_input(&mut rt, ev, area)? {
                             InputOutcome::Continue => {}
                             InputOutcome::Detach => {
-                                for c in clients.values() {
+                                // Only the client that pressed prefix+q — a
+                                // second attached terminal keeps working.
+                                if let Some(c) = clients.remove(&id) {
                                     let _ = c.tx.send(ServerMsg::Detach);
                                 }
-                                clients.clear();
                                 rt.save_session();
-                                if opts.exit_when_no_clients {
+                                if clients.is_empty() && opts.exit_when_no_clients {
                                     flush_writers().await;
                                     return Ok(RunOutcome::Exit);
                                 }
+                                refit_area(&mut area, &mut term, &mut clients, &mut rt)?;
                             }
                             InputOutcome::Shutdown => {
                                 rt.save_session();
@@ -210,6 +219,7 @@ pub async fn run(
                             rt.save_session();
                             return Ok(RunOutcome::Exit);
                         }
+                        refit_area(&mut area, &mut term, &mut clients, &mut rt)?;
                     }
                 },
                 ClientCtl::Gone(id) => {
@@ -219,6 +229,7 @@ pub async fn run(
                         rt.save_session();
                         return Ok(RunOutcome::Exit);
                     }
+                    refit_area(&mut area, &mut term, &mut clients, &mut rt)?;
                 }
             },
             Some(ev) = rx.recv() => {
@@ -273,6 +284,38 @@ pub async fn run(
                     subs.push((spec, tx));
                 }
                 api::ConnMsg::Req(req, reply) => match req {
+                // git worktree add checks out a whole tree — seconds to
+                // minutes on big repos. Run it off-loop, then re-enter as a
+                // WorktreeOpen (finds the fresh checkout by branch).
+                api::Req::WorktreeCreate { workspace, branch } => {
+                    let Some(ws) =
+                        api::resolve_ws_pub(&rt, workspace).map(|wi| &rt.state.workspaces[wi])
+                    else {
+                        let _ = reply.send(serde_json::json!({"ok": false, "error": "no such workspace"}));
+                        continue;
+                    };
+                    let (repo, ws_id) = (ws.cwd.clone(), ws.id.0);
+                    let root = rt.cfg.worktrees.root();
+                    let inner_tx = api_tx.clone();
+                    std::thread::spawn(move || {
+                        match crate::git::worktree_add(&repo, &branch, &root) {
+                            Ok(path) => {
+                                let (otx, _orx) = tokio::sync::oneshot::channel();
+                                let _ = inner_tx.send(api::ConnMsg::Req(
+                                    api::Req::WorktreeOpen { workspace: Some(ws_id), branch },
+                                    otx,
+                                ));
+                                let _ = reply.send(serde_json::json!({
+                                    "ok": true, "path": path.to_string_lossy(),
+                                }));
+                            }
+                            Err(e) => {
+                                let _ =
+                                    reply.send(serde_json::json!({"ok": false, "error": e}));
+                            }
+                        }
+                    });
+                }
                 // The loop owns the manifest set and the exec decision.
                 api::Req::ReloadManifests => {
                     manifests = crate::detect::load_all();
@@ -305,6 +348,14 @@ pub async fn run(
                             return Ok(RunOutcome::Handoff(Box::new(h)));
                         }
                         Err(e) => {
+                            // Undo capture: the dup'd masters have no CLOEXEC
+                            // and would leak into every future child.
+                            for hp in &h.panes {
+                                unsafe { libc::close(hp.fd) };
+                            }
+                            if let Some(p) = runtime::handoff_path() {
+                                let _ = std::fs::remove_file(p);
+                            }
                             tracing::warn!(error = %e, "handoff refused: cannot persist state");
                             let _ = reply.send(serde_json::json!({"ok": false, "error": e}));
                         }
@@ -436,6 +487,21 @@ fn shutdown_clients(clients: &HashMap<ClientId, Client>) {
     for c in clients.values() {
         let _ = c.tx.send(ServerMsg::Shutdown);
     }
+}
+
+/// After a client leaves, re-fit the shared area to a survivor — otherwise
+/// the remaining client renders at the departed one's size forever.
+fn refit_area(
+    area: &mut Rect,
+    term: &mut Terminal<TestBackend>,
+    clients: &mut HashMap<ClientId, Client>,
+    rt: &mut Runtime,
+) -> io::Result<()> {
+    if let Some((cols, rows)) = clients.values().map(|c| c.size).find(|s| s.0 > 0) {
+        resize_all(area, term, clients, cols, rows)?;
+        rt.mark_dirty();
+    }
+    Ok(())
 }
 
 fn resize_all(

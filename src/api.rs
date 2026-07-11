@@ -223,12 +223,20 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                 }
                 None => rt.state.new_tab_in(wi, false),
             };
+            // Full size for the tab form: compute_panes only lays out the
+            // ACTIVE tab, so a background tab keeps its spawn size until
+            // focused — a half-width claude mis-wraps for pane read/wait.
+            let (w, h) = if split.is_some() {
+                (area.width.max(2) / 2, area.height.max(2) / 2)
+            } else {
+                (area.width.max(4), area.height.max(4))
+            };
             // An instantly-failing agent command must not cascade the tab
             // away — degrade into a shell with the error visible.
             match rt.spawn_pane_env(
                 pane,
-                area.width.max(2) / 2,
-                area.height.max(2) / 2,
+                w,
+                h,
                 Some(crate::agents::hold_on_failure(&command)),
                 env,
             ) {
@@ -450,6 +458,11 @@ pub const REFERENCE: &str = r#"[
   {"cmd":"subscribe","events":["agent-status","output"],"pane":1}
 ]"#;
 
+/// Public wrapper for the server loop (worktree-create runs off-loop).
+pub fn resolve_ws_pub(rt: &Runtime, id: Option<u64>) -> Option<usize> {
+    resolve_ws(rt, id)
+}
+
 /// Workspace index by public id; None id → the active workspace.
 fn resolve_ws(rt: &Runtime, id: Option<u64>) -> Option<usize> {
     match id {
@@ -472,7 +485,10 @@ fn wait(
     if !rt.panes.contains_key(&pane) {
         return Ok(err(format!("no such pane {pane}")));
     }
-    let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
+    // Even "no timeout" expires eventually: an abandoned CLI (Ctrl-C) leaves
+    // the waiter, its fd, and its per-chunk tail work behind forever.
+    let ms = timeout_ms.unwrap_or(24 * 3600 * 1000).min(24 * 3600 * 1000);
+    let deadline = Some(Instant::now() + Duration::from_millis(ms));
     Err(PendingWait { pane, cond, deadline })
 }
 
@@ -572,7 +588,12 @@ pub fn feed_waiters(waiters: &mut [(PendingWait, Replier)], pane: PaneId, chunk:
         {
             tail.push_str(&String::from_utf8_lossy(chunk));
             if tail.len() > 16 * 1024 {
-                let cut = tail.len() - 8 * 1024;
+                // Char-boundary-safe cut: agent TUIs stream multibyte glyphs
+                // and a raw byte offset would panic the whole server loop.
+                let mut cut = tail.len() - 8 * 1024;
+                while !tail.is_char_boundary(cut) {
+                    cut -= 1;
+                }
                 tail.drain(..cut);
             }
         }
@@ -583,6 +604,8 @@ pub fn feed_waiters(waiters: &mut [(PendingWait, Replier)], pane: PaneId, chunk:
 /// Called from the server's 500ms agent poll — that granularity is the
 /// wait resolution.
 pub fn check_waiters(rt: &Runtime, waiters: &mut Vec<(PendingWait, Replier)>) {
+    // The CLI hung up (Ctrl-C)? Nobody is listening — drop the waiter.
+    waiters.retain(|(_, tx)| !tx.is_closed());
     let mut i = 0;
     while i < waiters.len() {
         let (w, _) = &waiters[i];

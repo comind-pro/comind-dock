@@ -236,7 +236,17 @@ impl Snapshot {
 }
 
 pub fn path() -> Option<PathBuf> {
-    crate::logging::state_dir().map(|d| d.join("session.json"))
+    let name = std::env::var("CDOCK_SESSION").unwrap_or_else(|_| "default".to_string());
+    let dir = crate::logging::state_dir()?;
+    let named = dir.join(format!("session-{name}.json"));
+    // Migrate the pre-namespacing file once (default session only).
+    if name == "default" && !named.exists() {
+        let legacy = dir.join("session.json");
+        if legacy.exists() {
+            let _ = std::fs::rename(&legacy, &named);
+        }
+    }
+    Some(named)
 }
 
 pub fn save(state: &AppState, panes: &std::collections::HashMap<PaneId, PaneMeta>) {

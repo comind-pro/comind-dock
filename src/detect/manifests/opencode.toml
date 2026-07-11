@@ -4,7 +4,9 @@ id = "opencode"
 [[rule]]
 priority = 100
 state = "blocked"
-any_of = ["permission required", "approve", "allow once", "always allow"]
+# No bare "approve": the model's own prose ("once you approve, I'll…")
+# lingers in the transcript and would re-block an idle agent.
+any_of = ["permission required", "allow once", "always allow"]
 none_of = ["esc to interrupt", "esc interrupt"]
 
 [[rule]]

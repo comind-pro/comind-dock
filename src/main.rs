@@ -639,11 +639,12 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             let Some(session_id) = v["session_id"].as_str() else {
                 return Ok(true); // nothing to report
             };
-            api::request_with_timeout(
+            // No server (ephemeral session, plain terminal) → silently ok;
+            // the hook must never fail a claude launch.
+            let _ = api::request_with_timeout(
                 &Req::ReportAgentSession { pane, session_id: session_id.to_string() },
                 Duration::from_secs(3),
-            )
-            .map_err(|e| e.to_string())?;
+            );
             return Ok(true);
         }
     };
@@ -729,6 +730,7 @@ fn main() -> ExitCode {
     let result = if cli.server {
         run_server(cfg)
     } else if cli.no_session {
+        run_monolithic_pre();
         run_monolithic(cfg, folder)
     } else {
         attach_or_spawn(folder)
@@ -811,8 +813,17 @@ fn run_server(cfg: config::Config) -> std::io::Result<()> {
             server::ServerOpts { exit_when_no_clients: false },
         )
         .await;
-        let _ = std::fs::remove_file(&sock);
-        let _ = std::fs::remove_file(&api_sock);
+        // Unlink only on a real exit, under the lock, and only if nobody
+        // answers: on handoff the heir reuses these paths, and a rival that
+        // just bound them must not lose its sockets to our teardown.
+        if !matches!(result, Ok(server::RunOutcome::Handoff(_))) {
+            let _lock = sockets_lock();
+            for s in [&sock, &api_sock] {
+                if std::os::unix::net::UnixStream::connect(s).is_err() {
+                    let _ = std::fs::remove_file(s);
+                }
+            }
+        }
         result
     })?;
     drop(rt); // no tokio left behind the exec
@@ -900,6 +911,18 @@ fn take_handoff() -> Option<runtime::Handoff> {
 }
 
 /// --no-session: server task and thin client in one process over a socketpair.
+fn run_monolithic_pre() {
+    // A monolithic instance must not share the default session's snapshot
+    // (double agent-resume, two autosave writers) nor let its panes' hooks
+    // reach the background server's sockets: pin an ephemeral session name.
+    // Safety: called before any thread is spawned.
+    if std::env::var_os("CDOCK_SESSION").is_none() {
+        unsafe {
+            std::env::set_var("CDOCK_SESSION", format!("mono-{}", std::process::id()))
+        };
+    }
+}
+
 fn run_monolithic(cfg: config::Config, folder: Option<std::path::PathBuf>) -> std::io::Result<()> {
     let (client_side, server_side) = std::os::unix::net::UnixStream::pair()?;
     let rt = tokio::runtime::Runtime::new()?;

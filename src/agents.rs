@@ -137,7 +137,7 @@ fn parse_session(path: &std::path::Path) -> Option<ClaudeSession> {
             if let Some(t) =
                 t.map(|t| t.trim().to_string()).filter(|t| !t.is_empty() && !t.starts_with('<'))
             {
-                title = Some(t.chars().take(48).collect());
+                title = Some(truncate_clean(&t, 48));
             }
         }
         if cwd.is_some() && title.is_some() {
@@ -182,6 +182,20 @@ pub fn find_session_profile(id: &str) -> Option<std::path::PathBuf> {
 /// possibly the whole space.
 pub fn hold_on_failure(cmd: &str) -> String {
     format!("{cmd} || exec \"${{SHELL:-/bin/sh}}\"")
+}
+
+/// Truncate to at most `n` chars without stranding a ZWJ/variation
+/// selector/combining mark at the cut point (emoji-heavy OSC titles).
+pub fn truncate_clean(s: &str, n: usize) -> String {
+    let mut out: String = s.chars().take(n).collect();
+    while out
+        .chars()
+        .last()
+        .is_some_and(|c| c == '\u{200D}' || ('\u{FE00}'..='\u{FE0F}').contains(&c) || ('\u{0300}'..='\u{036F}').contains(&c))
+    {
+        out.pop();
+    }
+    out
 }
 
 /// Agent id from a process's executable path: a path COMPONENT must equal

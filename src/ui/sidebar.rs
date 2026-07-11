@@ -174,7 +174,7 @@ fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
                 let name = if title.trim().is_empty() {
                     agent.to_string()
                 } else {
-                    title.chars().take(16).collect::<String>()
+                    crate::agents::truncate_clean(title, 16)
                 };
                 let focused = pane == state.focused_pane();
                 let name_style = if focused {

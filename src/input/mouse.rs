@@ -590,7 +590,9 @@ fn run_menu_action(
                 pane,
                 area.width,
                 area.height,
-                Some(format!("'{bin}' update --handoff")),
+                // A failed update (offline, rate limit) must leave the error
+                // readable in a shell, not vanish the tab within a frame.
+                Some(crate::agents::hold_on_failure(&format!("'{bin}' update --handoff"))),
             )
         }
         MenuAction::Detach => return InputOutcome::Detach,

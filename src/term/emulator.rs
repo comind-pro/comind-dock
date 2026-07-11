@@ -150,6 +150,11 @@ impl Emulator {
         self.term.mode().intersects(TermMode::MOUSE_MODE)
     }
 
+    /// The pane app is on the alternate screen (fullscreen TUI).
+    pub fn on_alt_screen(&self) -> bool {
+        self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+
     /// Alt screen without mouse reporting: wheel becomes arrow keys.
     pub fn alternate_scroll(&self) -> bool {
         let mode = self.term.mode();
@@ -165,7 +170,14 @@ impl Emulator {
         let mut out = String::new();
         for l in top..=bottom {
             let row = &grid[Line(l)];
-            let s: String = (0..grid.columns()).map(|c| row[Column(c)].c).collect();
+            let s: String = (0..grid.columns())
+                .flat_map(|c| {
+                    let cell = &row[Column(c)];
+                    // Combining marks/VS16 live in the zerowidth list, not .c
+                    std::iter::once(cell.c)
+                        .chain(cell.zerowidth().unwrap_or(&[]).iter().copied())
+                })
+                .collect();
             out.push_str(s.trim_end());
             out.push('\n');
         }
@@ -185,7 +197,13 @@ impl Emulator {
         let mut out: Vec<String> = Vec::new();
         for l in (0..grid.screen_lines()).rev() {
             let row = &grid[Line(l as i32)];
-            let s: String = (0..grid.columns()).map(|c| row[Column(c)].c).collect();
+            let s: String = (0..grid.columns())
+                .flat_map(|c| {
+                    let cell = &row[Column(c)];
+                    std::iter::once(cell.c)
+                        .chain(cell.zerowidth().unwrap_or(&[]).iter().copied())
+                })
+                .collect();
             let t = s.trim_end();
             if !t.is_empty() {
                 out.push(t.to_string());

@@ -304,9 +304,17 @@ impl Runtime {
                 })
                 // Interpreter-hosted installs (npm/bun claude runs as
                 // "node") have no agent-named exe path — the OSC title is
-                // the only signal. Identity only: agent_pid stays what the
-                // scan found (None), so no shell-env misreads.
-                .or_else(|| crate::agents::detect(&title, ""));
+                // the only signal. Identity only, and ONLY while the shell
+                // still hosts a child: shells never reset the OSC title, so
+                // an unguarded fallback would resurrect phantom agents (and
+                // pin their session ids) forever after the agent exits.
+                .or_else(|| {
+                    let hosts_child = p
+                        .pty
+                        .child_pid
+                        .is_some_and(|c| !crate::platform::child_process_idents(c).is_empty());
+                    hosts_child.then(|| crate::agents::detect(&title, "")).flatten()
+                });
             let status = agent
                 .and_then(|a| crate::detect::manifest_for(manifests, a))
                 .and_then(|m| {
@@ -361,7 +369,7 @@ impl Runtime {
             let name = if title.trim().is_empty() {
                 agent.to_string()
             } else {
-                title.chars().take(24).collect()
+                crate::agents::truncate_clean(&title, 24)
             };
             if eff == Status::Blocked {
                 notices.push(Notice { pane: id, kind: NoticeKind::Blocked, name });
@@ -386,6 +394,10 @@ impl Runtime {
     /// panes are in now). Also auto-rename (unless renamed manually) and
     /// refresh the git branch.
     pub fn poll_workspaces(&mut self) {
+        // Prune branch entries of closed workspaces (worktree churn leaks).
+        let live: std::collections::HashSet<_> =
+            self.state.workspaces.iter().map(|w| w.id).collect();
+        self.branches.retain(|id, _| live.contains(id));
         for wi in 0..self.state.workspaces.len() {
             let ws = &self.state.workspaces[wi];
             let ws_id = ws.id;
@@ -644,9 +656,13 @@ pub fn build(
             // /bin/sh has no shell-rc PATH: prefer the recorded absolute
             // binary when it still exists (agent updates replace the path —
             // then the bare name + inherited PATH is the fallback).
-            if let Some(bin) = meta.agent_bin.as_deref().filter(|b| std::path::Path::new(b).is_file())
+            if let Some(bin) = meta
+                .agent_bin
+                .as_deref()
+                .filter(|b| std::path::Path::new(b).is_file() && !b.contains('\''))
                 && let Some(rest) = cmd.split_once(' ').map(|(_, r)| r.to_string())
             {
+                // Quote-hostile paths fall back to the bare name + PATH.
                 cmd = format!("'{bin}' {rest}");
             }
             crate::agents::hold_on_failure(&cmd)
@@ -830,7 +846,8 @@ pub struct HandoffPane {
 
 /// Where the exec-handoff state file lives.
 pub fn handoff_path() -> Option<std::path::PathBuf> {
-    crate::logging::state_dir().map(|d| d.join("handoff.json"))
+    let name = std::env::var("CDOCK_SESSION").unwrap_or_else(|_| "default".to_string());
+    crate::logging::state_dir().map(|d| d.join(format!("handoff-{name}.json")))
 }
 
 impl Default for Handoff {
