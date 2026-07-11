@@ -112,16 +112,23 @@ pub async fn run(
         let update_tx = update_check_tx;
         std::thread::spawn(move || {
             loop {
-                match crate::update::latest_release(&repo) {
+                // A failed check (network, GitHub rate limit) retries in
+                // 10min, not 6h — restarts reset the in-memory flag, so a
+                // silent failure would hide a known update for hours.
+                let next = match crate::update::latest_release(&repo) {
                     Ok((tag, _)) if crate::update::is_newer(&tag) => {
                         if update_tx.send(AppEvent::UpdateAvailable(tag)).is_err() {
                             return;
                         }
+                        Duration::from_secs(6 * 3600)
                     }
-                    Ok(_) => {}
-                    Err(e) => tracing::debug!(error = %e, "update check failed"),
-                }
-                std::thread::sleep(Duration::from_secs(6 * 3600));
+                    Ok(_) => Duration::from_secs(6 * 3600),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "update check failed; retrying in 10min");
+                        Duration::from_secs(600)
+                    }
+                };
+                std::thread::sleep(next);
             }
         });
     }
