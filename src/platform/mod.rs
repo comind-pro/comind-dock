@@ -5,7 +5,7 @@
 mod unix;
 
 #[cfg(unix)]
-pub use unix::{child_process_idents, process_cwd};
+pub use unix::{child_process_idents, process_cwd, process_env_var};
 
 #[cfg(not(unix))]
 pub fn process_cwd(_pid: u32) -> Option<std::path::PathBuf> {
@@ -13,6 +13,11 @@ pub fn process_cwd(_pid: u32) -> Option<std::path::PathBuf> {
 }
 
 #[cfg(not(unix))]
-pub fn child_process_idents(_pid: u32) -> Vec<String> {
+pub fn child_process_idents(_pid: u32) -> Vec<(u32, String)> {
     Vec::new()
+}
+
+#[cfg(not(unix))]
+pub fn process_env_var(_pid: u32, _key: &str) -> Option<String> {
+    None
 }

@@ -460,9 +460,13 @@ fn run_menu_action(
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
+                    let label = match s.profile_label() {
+                        Some(p) => format!("{} · {} · @{}", s.title, folder, p),
+                        None => format!("{} · {}", s.title, folder),
+                    };
                     MenuItem {
-                        label: format!("{} · {}", s.title, folder),
-                        action: MenuAction::ResumeClaudeSession(s.id, s.cwd),
+                        label,
+                        action: MenuAction::ResumeClaudeSession(s.id, s.cwd, s.config_dir),
                     }
                 })
                 .collect();
@@ -473,7 +477,7 @@ fn run_menu_action(
             }
             Ok(())
         }
-        MenuAction::ResumeClaudeSession(id, cwd) => {
+        MenuAction::ResumeClaudeSession(id, cwd, config_dir) => {
             // Land in the space anchored at the session's folder (reuse or
             // create) — the conversation is folder-bound.
             let pane = match rt.state.workspaces.iter().position(|w| w.cwd == cwd) {
@@ -489,12 +493,15 @@ fn run_menu_action(
                     rt.state.new_workspace(name, cwd.clone(), None)
                 }
             };
+            let env = config_dir
+                .map(|d| vec![("CLAUDE_CONFIG_DIR".to_string(), d.display().to_string())])
+                .unwrap_or_default();
             rt.spawn_pane_full(
                 pane,
                 area.width.max(2) / 2,
                 area.height.max(2) / 2,
                 Some(format!("claude --resume {id}")),
-                Vec::new(),
+                env,
                 Some(cwd),
             )
         }

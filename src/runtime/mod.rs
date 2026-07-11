@@ -33,6 +33,10 @@ pub struct PaneRuntime {
     /// Recognized agent CLI in this pane (spawn command, title, or a child
     /// process of the shell) — refreshed by the agent poll.
     pub agent: Option<&'static str>,
+    /// Pid of the agent process itself (may be a shell's child).
+    pub agent_pid: Option<u32>,
+    /// CLAUDE_CONFIG_DIR of the agent process — which profile it runs as.
+    pub agent_config_dir: Option<String>,
     /// Detection-engine result for agent panes.
     pub status: crate::detect::Status,
     /// Last status the UI showed — drives redraws and notifications.
@@ -191,6 +195,8 @@ impl Runtime {
                 emu,
                 pty,
                 agent: crate::agents::detect("", &program),
+                agent_pid: None,
+                agent_config_dir: None,
                 program,
                 last_output: std::time::Instant::now(),
                 status: crate::detect::Status::Unknown,
@@ -249,14 +255,22 @@ impl Runtime {
             // inside the shell — `claude` typed into a zsh pane must count.
             // Idents are exe paths, word-matched like titles: Claude Code's
             // process is literally named "2.1.206", only its path says claude.
-            let agent = crate::agents::detect(&title, &p.program).or_else(|| {
-                p.pty
+            let mut agent_pid = None;
+            let agent = match crate::agents::detect(&title, &p.program) {
+                Some(a) => {
+                    agent_pid = p.pty.child_pid;
+                    Some(a)
+                }
+                None => p
+                    .pty
                     .child_pid
                     .map(crate::platform::child_process_idents)
                     .unwrap_or_default()
                     .iter()
-                    .find_map(|ident| crate::agents::detect(ident, ""))
-            });
+                    .find_map(|(pid, ident)| {
+                        crate::agents::detect(ident, "").inspect(|_| agent_pid = Some(*pid))
+                    }),
+            };
             let status = agent
                 .and_then(|a| crate::detect::manifest_for(manifests, a))
                 .and_then(|m| {
@@ -269,6 +283,16 @@ impl Runtime {
             if p.agent != agent {
                 p.agent = agent;
                 self.dirty = true; // agent row appears/leaves the sidebar
+            }
+            if p.agent_pid != agent_pid {
+                p.agent_pid = agent_pid;
+                // Which profile: the agent process's own CLAUDE_CONFIG_DIR.
+                let dir = agent_pid
+                    .and_then(|pid| crate::platform::process_env_var(pid, "CLAUDE_CONFIG_DIR"));
+                if p.agent_config_dir != dir {
+                    p.agent_config_dir = dir;
+                    self.dirty = true;
+                }
             }
             p.status = status;
             let eff = p.effective_status();
@@ -412,8 +436,15 @@ impl Runtime {
             // The pane's own folder — an agent must resume where its
             // conversation lives, wherever the workspace anchor drifted.
             let cwd = p.pty.child_pid.and_then(crate::platform::process_cwd);
+            // Profile env rides along so restore resumes under the same
+            // CLAUDE_CONFIG_DIR.
+            let env = p
+                .agent_config_dir
+                .as_ref()
+                .map(|d| vec![("CLAUDE_CONFIG_DIR".to_string(), d.clone())])
+                .unwrap_or_default();
             if agent.is_some() || cwd.is_some() {
-                metas.insert(*id, crate::state::snapshot::PaneMeta { agent, cwd });
+                metas.insert(*id, crate::state::snapshot::PaneMeta { agent, cwd, env });
             }
         }
         crate::state::snapshot::save(&self.state, &metas);
@@ -526,8 +557,8 @@ pub fn build(
     for (pane, meta) in initial_panes {
         let resume = meta.agent.as_deref().map(crate::agents::resume_command);
         // The pane's own saved folder wins over the workspace anchor —
-        // agent conversations are folder-bound.
-        rt.spawn_pane_full(pane, area.width, area.height, resume, Vec::new(), meta.cwd)?;
+        // agent conversations are folder-bound; env carries the profile.
+        rt.spawn_pane_full(pane, area.width, area.height, resume, meta.env, meta.cwd)?;
     }
     // Branches known before the first frame — the sidebar subtitle must not
     // repaint from counts to branch a poll-tick later.
@@ -737,6 +768,8 @@ pub fn build_from_handoff(
                         emu: Emulator::new(nudged.0, nudged.1, hp.id, tx.clone(), scrollback),
                         pty,
                         agent: crate::agents::detect("", &hp.program),
+                        agent_pid: None,
+                        agent_config_dir: None,
                         program: hp.program,
                         last_output: std::time::Instant::now(),
                         status: crate::detect::Status::Unknown,

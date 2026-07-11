@@ -19,6 +19,8 @@ use super::{AppState, InputMode};
 pub struct PaneMeta {
     pub agent: Option<String>,
     pub cwd: Option<PathBuf>,
+    /// Extra env restore must respawn with (e.g. CLAUDE_CONFIG_DIR profile).
+    pub env: Vec<(String, String)>,
 }
 
 /// A pane to spawn on restore with its metadata.
@@ -61,6 +63,8 @@ pub enum NodeSnap {
         agent: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        env: Vec<(String, String)>,
     },
     Split { dir: DirSnap, ratio: f32, a: Box<NodeSnap>, b: Box<NodeSnap> },
 }
@@ -79,6 +83,7 @@ fn node_to_snap(node: &Node, panes: &std::collections::HashMap<PaneId, PaneMeta>
             NodeSnap::Leaf {
                 agent: meta.agent,
                 cwd: meta.cwd.map(|c| c.to_string_lossy().into_owned()),
+                env: meta.env,
             }
         }
         Node::Split { dir, ratio, a, b } => NodeSnap::Split {
@@ -95,9 +100,16 @@ fn node_to_snap(node: &Node, panes: &std::collections::HashMap<PaneId, PaneMeta>
 
 fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen, agents: &mut Vec<PaneSpawn>) -> Node {
     match snap {
-        NodeSnap::Leaf { agent, cwd } => {
+        NodeSnap::Leaf { agent, cwd, env } => {
             let id = ids.pane();
-            agents.push((id, PaneMeta { agent: agent.clone(), cwd: cwd.clone().map(PathBuf::from) }));
+            agents.push((
+                id,
+                PaneMeta {
+                    agent: agent.clone(),
+                    cwd: cwd.clone().map(PathBuf::from),
+                    env: env.clone(),
+                },
+            ));
             Node::Leaf(id)
         }
         NodeSnap::Split { dir, ratio, a, b } => Node::Split {
@@ -259,6 +271,7 @@ mod tests {
             PaneMeta {
                 agent: Some("claude:uuid-1".to_string()),
                 cwd: Some(std::path::PathBuf::from("/projects/real-home")),
+                env: vec![("CLAUDE_CONFIG_DIR".into(), "/home/u/.claude-oleh".into())],
             },
         )]);
         let snap = Snapshot::of(&s, &metas);
@@ -278,6 +291,11 @@ mod tests {
             agent[0].1.cwd.as_deref(),
             Some(std::path::Path::new("/projects/real-home")),
             "the agent restores in ITS folder, not the workspace's"
+        );
+        assert_eq!(
+            agent[0].1.env,
+            vec![("CLAUDE_CONFIG_DIR".to_string(), "/home/u/.claude-oleh".to_string())],
+            "the profile env survives the round trip"
         );
         assert!(restored.check_invariants());
     }

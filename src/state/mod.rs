@@ -46,8 +46,9 @@ pub enum MenuAction {
     StartProfile(String, Option<ids::PaneId>),
     /// Submenu of recent Claude Code sessions on the system.
     ContinuePicker,
-    /// Resume conversation `id` in a space anchored at its folder.
-    ResumeClaudeSession(String, std::path::PathBuf),
+    /// Resume conversation `id` in a space anchored at its folder;
+    /// the third field is the CLAUDE_CONFIG_DIR profile (None = default).
+    ResumeClaudeSession(String, std::path::PathBuf, Option<std::path::PathBuf>),
     /// Open the profiles directory in $EDITOR.
     EditProfiles,
     /// The prefix+? keybinding overlay.

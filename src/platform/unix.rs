@@ -50,28 +50,29 @@ pub fn process_cwd(pid: u32) -> Option<PathBuf> {
     Some(PathBuf::from(String::from_utf8_lossy(&path_bytes[..end]).into_owned()))
 }
 
-/// Executable paths (fallback: names) of a process's direct children — how a
-/// pane knows an agent CLI runs inside its shell. Full paths, not p_comm:
-/// Claude Code execs a version-named binary ("2.1.206"), only its path still
-/// says "claude".
+/// (pid, executable path — fallback name) of a process's direct children:
+/// how a pane knows an agent CLI runs inside its shell, and which pid to ask
+/// about the agent's environment. Full paths, not p_comm: Claude Code execs
+/// a version-named binary ("2.1.206"), only its path still says "claude".
 #[cfg(target_os = "linux")]
-pub fn child_process_idents(pid: u32) -> Vec<String> {
+pub fn child_process_idents(pid: u32) -> Vec<(u32, String)> {
     let Ok(kids) = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")) else {
         return Vec::new();
     };
     kids.split_whitespace()
         .filter_map(|c| {
-            std::fs::read_link(format!("/proc/{c}/exe"))
+            let cpid: u32 = c.parse().ok()?;
+            let ident = std::fs::read_link(format!("/proc/{c}/exe"))
                 .map(|p| p.to_string_lossy().into_owned())
                 .or_else(|_| std::fs::read_to_string(format!("/proc/{c}/comm")))
-                .ok()
+                .ok()?;
+            Some((cpid, ident.trim().to_string()))
         })
-        .map(|s| s.trim().to_string())
         .collect()
 }
 
 #[cfg(target_os = "macos")]
-pub fn child_process_idents(pid: u32) -> Vec<String> {
+pub fn child_process_idents(pid: u32) -> Vec<(u32, String)> {
     use std::os::raw::{c_int, c_void};
 
     // proc_listpids(PROC_PPID_ONLY, ppid) → child pids; proc_pidpath → exe
@@ -108,9 +109,55 @@ pub fn child_process_idents(pid: u32) -> Vec<String> {
             if len <= 0 {
                 len = unsafe { proc_name(p, buf.as_mut_ptr() as *mut c_void, 64) };
             }
-            (len > 0).then(|| String::from_utf8_lossy(&buf[..len as usize]).into_owned())
+            (len > 0)
+                .then(|| (p as u32, String::from_utf8_lossy(&buf[..len as usize]).into_owned()))
         })
         .collect()
+}
+
+/// One environment variable of a live process — how a pane learns which
+/// CLAUDE_CONFIG_DIR its agent runs under (profiles are config dirs).
+#[cfg(target_os = "linux")]
+pub fn process_env_var(pid: u32, key: &str) -> Option<String> {
+    let raw = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    let prefix = format!("{key}=");
+    raw.split(|b| *b == 0)
+        .filter_map(|c| std::str::from_utf8(c).ok())
+        .find_map(|c| c.strip_prefix(&prefix).map(str::to_string))
+}
+
+#[cfg(target_os = "macos")]
+pub fn process_env_var(pid: u32, key: &str) -> Option<String> {
+    // sysctl KERN_PROCARGS2: argc, exec path, argv, then the environment as
+    // NUL-separated KEY=VALUE strings. We scan every chunk for the prefix —
+    // an argv element spoofing "KEY=" is theoretical for our keys.
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let mut size: libc::size_t = 0;
+    unsafe {
+        if libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0)
+            != 0
+        {
+            return None;
+        }
+        let mut buf = vec![0u8; size];
+        if libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        ) != 0
+        {
+            return None;
+        }
+        buf.truncate(size);
+        let prefix = format!("{key}=");
+        buf[4.min(buf.len())..]
+            .split(|b| *b == 0)
+            .filter_map(|c| std::str::from_utf8(c).ok())
+            .find_map(|c| c.strip_prefix(&prefix).map(str::to_string))
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -128,7 +175,10 @@ mod tests {
         let idents = super::child_process_idents(std::process::id());
         let _ = child.kill();
         let _ = child.wait();
-        // Full exe path, so word-matching sees every path segment.
-        assert!(idents.iter().any(|n| n.ends_with("/sleep")), "children: {idents:?}");
+        // Full exe path, so word-matching sees every path segment; pid rides along.
+        assert!(
+            idents.iter().any(|(pid, n)| *pid > 0 && n.ends_with("/sleep")),
+            "children: {idents:?}"
+        );
     }
 }

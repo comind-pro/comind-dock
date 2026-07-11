@@ -190,9 +190,16 @@ fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
                     ]),
                     target: Some(Target::Pane(pane)),
                 });
+                // Which profile the agent runs as, when not the default.
+                let profile = p
+                    .agent_config_dir
+                    .as_deref()
+                    .and_then(crate::agents::profile_label_from_dir)
+                    .map(|l| format!(" @{l}"))
+                    .unwrap_or_default();
                 out.push(Row {
                     line: Line::from(Span::styled(
-                        format!("    {status} · {agent}"),
+                        format!("    {status} · {agent}{profile}"),
                         Style::new().fg(theme.muted),
                     )),
                     target: Some(Target::Pane(pane)),

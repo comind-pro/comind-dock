@@ -34,17 +34,59 @@ pub struct ClaudeSession {
     pub id: String,
     pub cwd: std::path::PathBuf,
     pub title: String,
+    /// CLAUDE_CONFIG_DIR profile the session belongs to; None = default
+    /// (~/.claude). Short label for menus: profile_label().
+    pub config_dir: Option<std::path::PathBuf>,
+    /// Transcript mtime — global recency ordering across profiles.
+    pub mtime: std::time::SystemTime,
 }
 
-/// Most recent Claude Code sessions across every project on the system
-/// (~/.claude/projects/*/<uuid>.jsonl, newest first). Title = first real
-/// user message; cwd from the transcript itself (the dir slug is lossy).
+impl ClaudeSession {
+    /// "oleh" for ~/.claude-oleh, None for the default profile.
+    pub fn profile_label(&self) -> Option<String> {
+        profile_label_from_dir(&self.config_dir.as_ref()?.to_string_lossy())
+    }
+}
+
+/// Short profile label from a CLAUDE_CONFIG_DIR path: ".claude-oleh" →
+/// "oleh"; the default ".claude" (or anything unnamed) → None.
+pub fn profile_label_from_dir(dir: &str) -> Option<String> {
+    let name = std::path::Path::new(dir).file_name()?.to_string_lossy();
+    match name.strip_prefix(".claude-") {
+        Some(rest) if !rest.is_empty() => Some(rest.to_string()),
+        _ if name == ".claude" => None,
+        // A custom dir without the .claude- convention: use its name as-is.
+        _ => Some(name.trim_start_matches('.').to_string()),
+    }
+}
+
+/// Most recent Claude Code sessions across every project AND every profile
+/// on the system (~/.claude*/projects/*/<uuid>.jsonl, newest first). A
+/// profile is a CLAUDE_CONFIG_DIR like ~/.claude-oleh; the default ~/.claude
+/// carries no profile. Title = first real user message; cwd from the
+/// transcript itself (the dir slug is lossy).
 pub fn recent_claude_sessions(limit: usize) -> Vec<ClaudeSession> {
     let Some(home) = std::env::var_os("HOME") else { return Vec::new() };
-    sessions_under(&std::path::PathBuf::from(home).join(".claude/projects"), limit)
+    let home = std::path::PathBuf::from(home);
+    let Ok(entries) = std::fs::read_dir(&home) else { return Vec::new() };
+    let mut out = Vec::new();
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name == ".claude" || name.starts_with(".claude-") {
+            let config_dir = (name != ".claude").then(|| e.path());
+            out.extend(sessions_under(&e.path().join("projects"), limit, config_dir));
+        }
+    }
+    out.sort_by_key(|s| std::cmp::Reverse(s.mtime));
+    out.truncate(limit);
+    out
 }
 
-fn sessions_under(root: &std::path::Path, limit: usize) -> Vec<ClaudeSession> {
+fn sessions_under(
+    root: &std::path::Path,
+    limit: usize,
+    config_dir: Option<std::path::PathBuf>,
+) -> Vec<ClaudeSession> {
     let Ok(projects) = std::fs::read_dir(root) else { return Vec::new() };
 
     let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = projects
@@ -58,11 +100,13 @@ fn sessions_under(root: &std::path::Path, limit: usize) -> Vec<ClaudeSession> {
     files.sort_by_key(|(mtime, _)| std::cmp::Reverse(*mtime));
 
     let mut out = Vec::new();
-    for (_, path) in files {
+    for (mtime, path) in files {
         if out.len() >= limit {
             break;
         }
-        if let Some(s) = parse_session(&path) {
+        if let Some(mut s) = parse_session(&path) {
+            s.config_dir = config_dir.clone();
+            s.mtime = mtime;
             out.push(s);
         }
     }
@@ -100,7 +144,13 @@ fn parse_session(path: &std::path::Path) -> Option<ClaudeSession> {
             break;
         }
     }
-    Some(ClaudeSession { id, cwd: cwd?, title: title.unwrap_or_else(|| "(no prompt)".into()) })
+    Some(ClaudeSession {
+        id,
+        cwd: cwd?,
+        title: title.unwrap_or_else(|| "(no prompt)".into()),
+        config_dir: None,
+        mtime: std::time::SystemTime::UNIX_EPOCH,
+    })
 }
 
 /// Agent id if the pane looks like a known agent CLI.
@@ -212,24 +262,38 @@ mod tests {
         mk("proj-two", "mid", 100);
         std::fs::write(root.join("proj-one/notes.txt"), "not a session").unwrap();
 
-        let all = sessions_under(&root, 10);
+        let all = sessions_under(&root, 10, None);
         let ids: Vec<&str> = all.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["new", "mid", "old"], "newest first, across projects");
 
-        let limited = sessions_under(&root, 2);
+        let limited = sessions_under(&root, 2, None);
         assert_eq!(limited.len(), 2);
         assert_eq!(limited[0].id, "new");
 
-        assert!(sessions_under(&root.join("missing"), 5).is_empty());
+        assert!(sessions_under(&root.join("missing"), 5, None).is_empty());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn profile_labels() {
+        assert_eq!(profile_label_from_dir("/Users/x/.claude"), None);
+        assert_eq!(profile_label_from_dir("/Users/x/.claude-oleh"), Some("oleh".into()));
+        assert_eq!(profile_label_from_dir("/Users/x/.claude-science"), Some("science".into()));
+        assert_eq!(profile_label_from_dir("/opt/custom-claude-cfg"), Some("custom-claude-cfg".into()));
     }
 
     /// Live-system sanity: `cargo test -- --ignored print_recent`.
     #[test]
     #[ignore]
     fn print_recent_sessions() {
-        for s in recent_claude_sessions(6) {
-            eprintln!("{} · {} · {}", s.id, s.title, s.cwd.display());
+        for s in recent_claude_sessions(8) {
+            eprintln!(
+                "{} · {} · {} · @{}",
+                s.id,
+                s.title,
+                s.cwd.display(),
+                s.profile_label().unwrap_or_else(|| "default".into())
+            );
         }
     }
 
