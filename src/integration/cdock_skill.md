@@ -57,6 +57,22 @@ substring of the visible screen.
 "$CDOCK_BIN" agent start --profile reviewer      # spawn by profile
 ```
 
+## Define your own subagents (workspace-scoped)
+
+You can author agent roles for THIS workspace and spawn subagents with
+them. They live in cdock metadata (not the repo), keyed to this folder:
+
+```bash
+"$CDOCK_BIN" profile new researcher --ws          # scaffold, prints the dir
+# then write <dir>/agent.md — the role/system prompt (and optionally
+# profile.toml: command, env, skills = ["..."] from the skill catalog)
+"$CDOCK_BIN" profile list                         # ws:researcher + globals
+"$CDOCK_BIN" agent start --profile researcher --split right
+# bare names prefer this workspace's agents; ws:/global: pick explicitly
+"$CDOCK_BIN" agent behavior 7 ws:researcher       # inject a role into a
+                                                  # RUNNING agent pane
+```
+
 ## Coordinate with other agents
 
 ```bash

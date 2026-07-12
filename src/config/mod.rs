@@ -70,6 +70,8 @@ pub struct TerminalCfg {
     pub shell_mode: ShellMode,
     /// `follow | home | current | <fixed path>`.
     pub new_cwd: String,
+    /// Editor for settings/profiles/skills (empty → $EDITOR → $VISUAL → nano).
+    pub editor: String,
 }
 
 impl Default for TerminalCfg {
@@ -78,8 +80,64 @@ impl Default for TerminalCfg {
             default_shell: String::new(),
             shell_mode: ShellMode::Auto,
             new_cwd: "follow".to_string(),
+            editor: String::new(),
         }
     }
+}
+
+impl TerminalCfg {
+    /// The editor command: config wins, then $EDITOR/$VISUAL, then nano —
+    /// friendlier than the classic vi fallback for non-vi hands.
+    pub fn editor_cmd(&self) -> String {
+        if !self.editor.trim().is_empty() {
+            return self.editor.clone();
+        }
+        std::env::var("EDITOR")
+            .or_else(|_| std::env::var("VISUAL"))
+            .ok()
+            .filter(|e| !e.trim().is_empty())
+            .unwrap_or_else(|| "nano".to_string())
+    }
+}
+
+/// Persist `[terminal] editor = "<value>"` into the config file with a
+/// targeted line edit — a full toml rewrite would drop the user's comments.
+pub fn set_editor(value: &str) -> Result<(), String> {
+    let path = config_path(None).ok_or("cannot determine config dir")?;
+    if !path.exists() {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&path, DEFAULT_CONFIG).map_err(|e| e.to_string())?;
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let line = format!("editor = {:?}", value);
+    let mut out = Vec::new();
+    let mut in_terminal = false;
+    let mut done = false;
+    for l in text.lines() {
+        let t = l.trim();
+        if t.starts_with('[') {
+            // Leaving [terminal] without having found an editor line.
+            if in_terminal && !done {
+                out.push(line.clone());
+                done = true;
+            }
+            in_terminal = t == "[terminal]";
+        } else if in_terminal && !done && t.starts_with("editor") {
+            out.push(line.clone());
+            done = true;
+            continue;
+        }
+        out.push(l.to_string());
+    }
+    if !done {
+        if !text.contains("[terminal]") {
+            out.push("[terminal]".to_string());
+        }
+        out.push(line);
+    }
+    std::fs::write(&path, out.join("\n") + "\n").map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

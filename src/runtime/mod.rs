@@ -251,7 +251,7 @@ impl Runtime {
 
     /// $EDITOR on a path, in a fresh tab.
     pub fn open_in_editor(&mut self, path: &std::path::Path, area: Rect) -> io::Result<()> {
-        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+        let editor = self.cfg.terminal.editor_cmd();
         let pane = self.state.new_tab();
         self.spawn_pane_cmd(pane, area.width, area.height, Some(format!("{editor} {}", path.display())))
     }
@@ -275,7 +275,9 @@ impl Runtime {
             .map(|w| w.cwd.clone())
             .ok_or("pane not in any workspace")?;
         let profile = crate::profile::load_behavior(ident_ref, &ws_cwd)?;
-        let text = profile.prompt_text().ok_or("behavior profile has an empty prompt")?;
+        let text = profile
+            .prompt_text_with(Some(&ws_cwd))
+            .ok_or("behavior profile has an empty prompt")?;
         let p = self.panes.get_mut(&pane).ok_or("no such pane")?;
         use alacritty_terminal::term::TermMode;
         if p.emu.term.mode().contains(TermMode::BRACKETED_PASTE) {

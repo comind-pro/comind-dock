@@ -61,8 +61,11 @@ pub enum MenuAction {
     /// Modal browser: profiles list → per-profile actions.
     ProfileBrowser,
     ProfileMenu(String),
-    /// Open one profile's directory in $EDITOR (a new tab).
-    ProfileEdit(String),
+    /// Open one profile file in $EDITOR (a new tab): (name, file).
+    ProfileEdit(String, &'static str),
+    /// Toggle-assign catalog skills to an agent profile.
+    ProfileSkills(String),
+    ToggleProfileSkill(String, String),
     /// Toast with the resolved launch command.
     ProfileInfo(String),
     /// Modal browser: skill catalog (name + source, read-only).
@@ -81,6 +84,9 @@ pub enum MenuAction {
     BehaviorPicker(ids::PaneId),
     /// Inject the behavior into the running session; None clears the mark.
     SetBehavior(ids::PaneId, Option<String>),
+    /// Submenu to pick the default editor (persisted into config.toml).
+    EditorPicker,
+    SetEditor(String),
     /// The prefix+? keybinding overlay.
     ShowKeybinds,
     ReloadConfig,

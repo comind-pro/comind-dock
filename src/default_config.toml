@@ -17,8 +17,8 @@ name = "default"      # "default" | "terminal" (follow the host palette)
 default_shell = ""    # empty → $SHELL → /bin/sh
 shell_mode = "auto"   # auto | login | non_login (auto: login shell on macOS)
 new_cwd = "follow"    # follow | home | current | /absolute/path
-                      # follow currently uses the launch cwd; per-pane cwd
-                      # tracking arrives with platform process info
+                      # follow = wherever the focused pane's process sits
+editor = ""           # settings/profiles editor (empty → $EDITOR → nano)
 
 [keys]
 prefix = "ctrl+b"

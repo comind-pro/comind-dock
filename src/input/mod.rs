@@ -285,7 +285,10 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<Inp
                                     None => crate::profile::scaffold(&name, None),
                                 };
                                 match created {
-                                    Ok(dir) => rt.open_in_editor(&dir, area)?,
+                                    // The role text is the thing to write
+                                    // first — nano/vim open the file, not
+                                    // a directory listing.
+                                    Ok(dir) => rt.open_in_editor(&dir.join("agent.md"), area)?,
                                     Err(e) => rt.add_plain_toast(format!("profile: {e}"), 10),
                                 }
                                 return Ok(InputOutcome::Continue);
@@ -399,7 +402,7 @@ fn dispatch(rt: &mut Runtime, action: Action, area: Rect) -> io::Result<InputOut
                 let path = std::env::temp_dir().join(format!("cdock-scrollback-{}.txt", focused.0));
                 match std::fs::write(&path, text) {
                     Ok(()) => {
-                        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+                        let editor = rt.cfg.terminal.editor_cmd();
                         let pane = rt.state.new_tab();
                         rt.spawn_pane_cmd(
                             pane,

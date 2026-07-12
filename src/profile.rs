@@ -184,14 +184,30 @@ pub fn load_behavior(ident: &str, ws_cwd: &std::path::Path) -> Result<Profile, S
     }
 }
 
+/// Name → profile with scope resolution: explicit "ws:"/"global:" prefixes
+/// win; a bare name tries the workspace's own agents first, then global —
+/// so an agent that scaffolded "researcher" into its space just says
+/// `--profile researcher` and gets its own definition.
+pub fn load_any(name: &str, ws_cwd: &std::path::Path) -> Result<Profile, String> {
+    if name.contains(':') {
+        return load_behavior(name, ws_cwd);
+    }
+    load_behavior(&format!("ws:{name}"), ws_cwd).or_else(|_| load(name))
+}
+
 impl Profile {
     /// The command + env the pane should run. Materialization stages one
     /// prompt file (role + memory + assigned skills + orchestrator roster)
     /// into the profile dir; the claude adapter rides it in as system
     /// prompt, other CLIs find it via $CDOCK_AGENT_PROFILE_DIR.
     pub fn resolve(&self) -> (String, Vec<(String, String)>) {
+        self.resolve_with(None)
+    }
+
+    /// `ws_cwd`: the space whose scoped agents join the orchestrator roster.
+    pub fn resolve_with(&self, ws_cwd: Option<&std::path::Path>) -> (String, Vec<(String, String)>) {
         let mut command = self.toml.command.clone();
-        let staged = self.stage_prompt();
+        let staged = self.stage_prompt_with(ws_cwd);
 
         // Claude adapter: the staged prompt rides in as system prompt.
         let base = command.split_whitespace().next().unwrap_or("");
@@ -210,14 +226,18 @@ impl Profile {
 
     /// The staged prompt CONTENT (role + memory + skills + roster) — for
     /// injecting a behavior into an already-running agent session.
-    pub fn prompt_text(&self) -> Option<String> {
-        let path = self.stage_prompt()?;
+    pub fn prompt_text_with(&self, ws_cwd: Option<&std::path::Path>) -> Option<String> {
+        let path = self.stage_prompt_with(ws_cwd)?;
         std::fs::read_to_string(path).ok().filter(|t| !t.trim().is_empty())
+    }
+
+    pub fn stage_prompt(&self) -> Option<PathBuf> {
+        self.stage_prompt_with(None)
     }
 
     /// Write `<dir>/staged-prompt.md` — regenerated on every launch, so it
     /// is inspectable but never hand-edited. None when there is nothing to say.
-    pub fn stage_prompt(&self) -> Option<PathBuf> {
+    pub fn stage_prompt_with(&self, ws_cwd: Option<&std::path::Path>) -> Option<PathBuf> {
         let mut text = String::new();
         for file in ["agent.md", "memory.md"] {
             if let Ok(t) = std::fs::read_to_string(self.dir.join(file)) {
@@ -244,18 +264,32 @@ impl Profile {
         }
 
         if self.toml.orchestrator {
-            let roster: String = list()
-                .iter()
-                .filter(|n| **n != self.name)
-                .map(|n| {
-                    let desc = load(n)
-                        .ok()
-                        .and_then(|p| std::fs::read_to_string(p.dir.join("agent.md")).ok())
-                        .and_then(|t| t.lines().find(|l| !l.trim().is_empty()).map(String::from))
-                        .unwrap_or_default();
-                    format!("- {n}: {desc}\n")
-                })
-                .collect();
+            let first_line = |p: &Profile| {
+                std::fs::read_to_string(p.dir.join("agent.md"))
+                    .ok()
+                    .and_then(|t| t.lines().find(|l| !l.trim().is_empty()).map(String::from))
+                    .unwrap_or_default()
+            };
+            let mut roster = String::new();
+            // The space's own agents first — `--profile <name>` prefers them.
+            if let Some(cwd) = ws_cwd {
+                for n in list_ws(cwd) {
+                    if n == self.name {
+                        continue;
+                    }
+                    if let Ok(p) = load_behavior(&format!("ws:{n}"), cwd) {
+                        roster.push_str(&format!("- {n} (this workspace): {}\n", first_line(&p)));
+                    }
+                }
+            }
+            for n in list() {
+                if n == self.name {
+                    continue;
+                }
+                if let Ok(p) = load(&n) {
+                    roster.push_str(&format!("- {n}: {}\n", first_line(&p)));
+                }
+            }
             text.push_str(&format!(
                 "\n## You are an orchestrator\n\n\
                  Spawn specialist agents into panes and coordinate them with the\n\
@@ -274,6 +308,31 @@ impl Profile {
         std::fs::write(&path, text).ok()?;
         Some(path)
     }
+}
+
+/// Persist `skills = [...]` in a profile's profile.toml with a targeted
+/// line edit (a full toml rewrite would drop the user's comments).
+pub fn set_skills(profile_dir: &std::path::Path, skills: &[String]) -> Result<(), String> {
+    let path = profile_dir.join("profile.toml");
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let quoted: Vec<String> = skills.iter().map(|s| format!("{s:?}")).collect();
+    let line = format!("skills = [{}]", quoted.join(", "));
+    let mut out = Vec::new();
+    let mut done = false;
+    for l in text.lines() {
+        if !done && l.trim_start().starts_with("skills") {
+            out.push(line.clone());
+            done = true;
+            continue;
+        }
+        out.push(l.to_string());
+    }
+    if !done {
+        // Before the first section header — top-level key territory.
+        let at = out.iter().position(|l| l.trim_start().starts_with('[')).unwrap_or(out.len());
+        out.insert(at, line);
+    }
+    std::fs::write(&path, out.join("\n") + "\n").map_err(|e| e.to_string())
 }
 
 const PROFILE_TOML_TEMPLATE: &str = r#"# Which agent CLI this profile runs.

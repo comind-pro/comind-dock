@@ -518,7 +518,7 @@ fn run_menu_action(
                         let _ = std::fs::write(&path, crate::config::DEFAULT_CONFIG);
                     }
                     let editor =
-                        std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+                        rt.cfg.terminal.editor_cmd();
                     let pane = rt.state.new_tab();
                     rt.spawn_pane_cmd(
                         pane,
@@ -537,17 +537,25 @@ fn run_menu_action(
                 .workspaces
                 .get(rt.state.active_workspace)
                 .and_then(|w| w.profile.clone());
-            let mut items: Vec<MenuItem> = crate::profile::list()
+            let ws_cwd = rt.state.workspaces.get(rt.state.active_workspace).map(|w| w.cwd.clone());
+            let mut items: Vec<MenuItem> = ws_cwd
+                .as_deref()
+                .map(crate::profile::list_ws)
+                .unwrap_or_default()
                 .into_iter()
                 .map(|name| MenuItem {
-                    label: if assoc.as_deref() == Some(name.as_str()) {
-                        format!("{name} (space default)")
-                    } else {
-                        name.clone()
-                    },
-                    action: MenuAction::StartProfile(name, split),
+                    label: format!("{name} (space)"),
+                    action: MenuAction::StartProfile(format!("ws:{name}"), split),
                 })
                 .collect();
+            items.extend(crate::profile::list().into_iter().map(|name| MenuItem {
+                label: if assoc.as_deref() == Some(name.as_str()) {
+                    format!("{name} (space default)")
+                } else {
+                    name.clone()
+                },
+                action: MenuAction::StartProfile(name, split),
+            }));
             items.sort_by_key(|i| !i.label.ends_with("(space default)"));
             if items.is_empty() {
                 tracing::info!("no profiles yet — `cdock profile new <name>`");
@@ -578,9 +586,16 @@ fn run_menu_action(
             }
             Ok(())
         }
-        MenuAction::StartProfile(name, split) => match crate::profile::load(&name) {
+        MenuAction::StartProfile(name, split) => {
+            let ws_cwd = rt
+                .state
+                .workspaces
+                .get(rt.state.active_workspace)
+                .map(|w| w.cwd.clone());
+            match crate::profile::load_any(&name, ws_cwd.as_deref().unwrap_or(std::path::Path::new("/")))
+            {
             Ok(p) => {
-                let (command, env) = p.resolve();
+                let (command, env) = p.resolve_with(ws_cwd.as_deref());
                 let pane = match split {
                     Some(target) => match rt.state.split_pane(target, Dir::Right) {
                         Some(p) => p,
@@ -600,7 +615,7 @@ fn run_menu_action(
                 tracing::warn!(profile = %name, error = %e, "profile launch failed");
                 Ok(())
             }
-        },
+        }},
         MenuAction::ContinuePicker => {
             // Sessions open in a pane with a LIVE agent are hidden — no
             // double resume. Panes whose agent exited (shell remains) keep a
@@ -708,23 +723,71 @@ fn run_menu_action(
                     label: "show command".to_string(),
                     action: MenuAction::ProfileInfo(name.clone()),
                 },
-                MenuItem { label: "edit".to_string(), action: MenuAction::ProfileEdit(name) },
+                MenuItem {
+                    label: "edit role (agent.md)".to_string(),
+                    action: MenuAction::ProfileEdit(name.clone(), "agent.md"),
+                },
+                MenuItem {
+                    label: "edit config (profile.toml)".to_string(),
+                    action: MenuAction::ProfileEdit(name.clone(), "profile.toml"),
+                },
+                MenuItem {
+                    label: "skills...".to_string(),
+                    action: MenuAction::ProfileSkills(name),
+                },
             ];
             rt.state.input_mode = InputMode::Menu { x, y, items };
             Ok(())
         }
-        MenuAction::ProfileEdit(name) => {
-            match crate::profile::profiles_dir() {
-                Some(dir) => {
-                    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-                    let pane = rt.state.new_tab();
-                    rt.spawn_pane_cmd(
-                        pane,
-                        area.width,
-                        area.height,
-                        Some(format!("{editor} {}", dir.join(&name).display())),
-                    )
+        MenuAction::ProfileSkills(name) => {
+            match crate::profile::load(&name) {
+                Ok(p) => {
+                    let assigned = &p.toml.skills;
+                    let items: Vec<MenuItem> = crate::profile::skill_catalog()
+                        .into_keys()
+                        .map(|skill| MenuItem {
+                            label: if assigned.contains(&skill) {
+                                format!("{skill} ✓")
+                            } else {
+                                skill.clone()
+                            },
+                            action: MenuAction::ToggleProfileSkill(name.clone(), skill),
+                        })
+                        .collect();
+                    if items.is_empty() {
+                        rt.add_plain_toast("no skills in the catalog yet".to_string(), 8);
+                    } else {
+                        rt.state.input_mode = InputMode::Menu { x, y, items };
+                    }
                 }
+                Err(e) => rt.add_plain_toast(format!("profile: {e}"), 10),
+            }
+            Ok(())
+        }
+        MenuAction::ToggleProfileSkill(name, skill) => {
+            match crate::profile::load(&name) {
+                Ok(p) => {
+                    let mut skills = p.toml.skills.clone();
+                    match skills.iter().position(|s| s == &skill) {
+                        Some(i) => {
+                            skills.remove(i);
+                        }
+                        None => skills.push(skill),
+                    }
+                    if let Err(e) = crate::profile::set_skills(&p.dir, &skills) {
+                        rt.add_plain_toast(format!("skills: {e}"), 10);
+                    }
+                    // Reopen with the fresh checkmarks — toggling several
+                    // skills in a row shouldn't need re-navigating.
+                    return run_menu_action(rt, MenuAction::ProfileSkills(name), x, y, area);
+                }
+                Err(e) => rt.add_plain_toast(format!("profile: {e}"), 10),
+            }
+            Ok(())
+        }
+        MenuAction::ProfileEdit(name, file) => {
+            match crate::profile::profiles_dir() {
+                Some(dir) => rt.open_in_editor(&dir.join(&name).join(file), area),
                 None => Ok(()),
             }
         }
@@ -807,7 +870,7 @@ fn run_menu_action(
             Ok(())
         }
         MenuAction::SkillEdit(source) => {
-            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+            let editor = rt.cfg.terminal.editor_cmd();
             let pane = rt.state.new_tab();
             rt.spawn_pane_cmd(pane, area.width, area.height, Some(format!("{editor} {source}")))
         }
@@ -843,7 +906,7 @@ fn run_menu_action(
             match crate::profile::profiles_dir() {
                 Some(dir) => {
                     let _ = std::fs::create_dir_all(&dir);
-                    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+                    let editor = rt.cfg.terminal.editor_cmd();
                     let pane = rt.state.new_tab();
                     rt.spawn_pane_cmd(
                         pane,
@@ -854,6 +917,28 @@ fn run_menu_action(
                 }
                 None => Ok(()),
             }
+        }
+        MenuAction::EditorPicker => {
+            let current = rt.cfg.terminal.editor_cmd();
+            let items: Vec<MenuItem> = ["nano", "vim", "vi", "hx", "micro", "code --wait"]
+                .into_iter()
+                .map(|e| MenuItem {
+                    label: if e == current { format!("{e} ✓") } else { e.to_string() },
+                    action: MenuAction::SetEditor(e.to_string()),
+                })
+                .collect();
+            rt.state.input_mode = InputMode::Menu { x, y, items };
+            Ok(())
+        }
+        MenuAction::SetEditor(editor) => {
+            match crate::config::set_editor(&editor) {
+                Ok(()) => {
+                    rt.cfg.terminal.editor = editor.clone();
+                    rt.add_plain_toast(format!("editor → {editor}"), 6);
+                }
+                Err(e) => rt.add_plain_toast(format!("editor: {e}"), 10),
+            }
+            Ok(())
         }
         MenuAction::ShowKeybinds => {
             rt.state.input_mode = InputMode::Help;

@@ -380,6 +380,10 @@ enum ProfileCmd {
         name: String,
         #[arg(long)]
         from: Option<String>,
+        /// Scope to THIS workspace (cwd): lives in cdock metadata, not the
+        /// repo; `agent start --profile <name>` here prefers it.
+        #[arg(long, conflicts_with = "from")]
+        ws: bool,
     },
 }
 
@@ -717,7 +721,12 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
         }
         Cmd::Agent { sub: AgentCmd::Start { command, profile, split, workspace } } => {
             let (command, env) = match profile {
-                Some(name) => profile::load(&name)?.resolve(),
+                // Workspace-scoped agents (this cwd) win over global ones;
+                // "ws:"/"global:" prefixes pick explicitly.
+                Some(name) => {
+                    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+                    profile::load_any(&name, &cwd)?.resolve_with(Some(&cwd))
+                }
                 None => (command.expect("clap: command or profile"), Vec::new()),
             };
             Req::AgentStart { command, split, workspace, env }
@@ -833,14 +842,20 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
         Cmd::Profile { sub } => {
             return match sub {
                 ProfileCmd::List => {
+                    if let Ok(cwd) = std::env::current_dir() {
+                        for name in profile::list_ws(&cwd) {
+                            println!("ws:{name}");
+                        }
+                    }
                     for name in profile::list() {
                         println!("{name}");
                     }
                     Ok(true)
                 }
                 ProfileCmd::Show { name } => {
-                    let p = profile::load(&name)?;
-                    let (command, env) = p.resolve();
+                    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+                    let p = profile::load_any(&name, &cwd)?;
+                    let (command, env) = p.resolve_with(Some(&cwd));
                     let files: Vec<String> = ["profile.toml", "agent.md", "memory.md"]
                         .iter()
                         .filter(|f| p.dir.join(f).exists())
@@ -858,8 +873,13 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                     );
                     Ok(true)
                 }
-                ProfileCmd::New { name, from } => {
-                    let dir = profile::scaffold(&name, from.as_deref())?;
+                ProfileCmd::New { name, from, ws } => {
+                    let dir = if ws {
+                        let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+                        profile::scaffold_ws(&cwd, &name)?
+                    } else {
+                        profile::scaffold(&name, from.as_deref())?
+                    };
                     println!("created {} — edit profile.toml and agent.md", dir.display());
                     Ok(true)
                 }
