@@ -104,13 +104,17 @@ impl TerminalCfg {
 /// targeted line edit — a full toml rewrite would drop the user's comments.
 pub fn set_editor(value: &str) -> Result<(), String> {
     let path = config_path(None).ok_or("cannot determine config dir")?;
+    set_editor_at(&path, value)
+}
+
+fn set_editor_at(path: &std::path::Path, value: &str) -> Result<(), String> {
     if !path.exists() {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        std::fs::write(&path, DEFAULT_CONFIG).map_err(|e| e.to_string())?;
+        std::fs::write(path, DEFAULT_CONFIG).map_err(|e| e.to_string())?;
     }
-    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let line = format!("editor = {:?}", value);
     let mut out = Vec::new();
     let mut in_terminal = false;
@@ -137,7 +141,7 @@ pub fn set_editor(value: &str) -> Result<(), String> {
         }
         out.push(line);
     }
-    std::fs::write(&path, out.join("\n") + "\n").map_err(|e| e.to_string())
+    std::fs::write(path, out.join("\n") + "\n").map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -428,6 +432,31 @@ description = "open lazygit"
         let (cfg, warnings) = from_str("[update\ncheck =");
         assert_eq!(cfg, Config::default());
         assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn set_editor_preserves_comments_and_replaces_line() {
+        let dir = std::env::temp_dir().join(format!("cdock-ed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            "# top comment\n[terminal]\nnew_cwd = \"follow\" # keep me\n[keys]\nprefix = \"ctrl+b\"\n",
+        )
+        .unwrap();
+        set_editor_at(&path, "vim").unwrap();
+        let t = std::fs::read_to_string(&path).unwrap();
+        assert!(t.contains("# top comment") && t.contains("# keep me"), "{t}");
+        assert!(t.contains("editor = \"vim\""), "{t}");
+        let (cfg, w) = from_str(&t);
+        assert!(w.is_empty());
+        assert_eq!(cfg.terminal.editor, "vim");
+        assert_eq!(cfg.keys.prefix, "ctrl+b");
+        // Replace, not duplicate.
+        set_editor_at(&path, "nano").unwrap();
+        let t = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(t.matches("editor =").count(), 1, "{t}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
