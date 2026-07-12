@@ -80,7 +80,7 @@ pub fn render(view: &View, rt: &Runtime, frame: &mut Frame) {
     match &mode {
         crate::state::InputMode::Help => help::render_help(&rt.keymap, &rt.theme, full, frame),
         crate::state::InputMode::Prompt { kind, buffer } => {
-            help::render_prompt(*kind, buffer, &rt.theme, full, frame);
+            help::render_prompt(kind, buffer, &rt.theme, full, frame);
         }
         crate::state::InputMode::Search { buffer } => {
             help::render_search(buffer, &rt.theme, full, frame);

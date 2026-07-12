@@ -287,6 +287,12 @@ enum AgentCmd {
         #[arg(long)]
         agent: Option<String>,
     },
+    /// Attach a behavior profile to an agent pane (or clear with "clear").
+    Behavior {
+        pane: String,
+        /// global:<name> | ws:<name> | clear
+        behavior: String,
+    },
     /// Spawn an agent in a new tab (or a split of the focused pane).
     Start {
         /// Command to run, e.g. "claude" or "codex --model o3".
@@ -686,6 +692,10 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 .map_err(|e| e.to_string())?;
                 return Ok(true);
             }
+        },
+        Cmd::Agent { sub: AgentCmd::Behavior { pane, behavior } } => Req::AgentBehavior {
+            pane: parse_pane(&pane)?,
+            behavior: (behavior != "clear").then_some(behavior),
         },
         Cmd::Agent { sub: AgentCmd::Explain { pane, file, agent } } => {
             if let Some(path) = file {

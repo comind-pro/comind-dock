@@ -3,8 +3,10 @@
 //! `agent.md` (who the agent is), optional `memory.md` (per-role memory).
 //! Resolution happens CLI-side: a profile turns into a plain command + env
 //! for the AgentStart API request; the server knows nothing about profiles.
-//! ponytail: claude adapter only (--append-system-prompt); skill-catalog
-//! assignment, orchestrator flag, and the editor UI come later.
+//! Scopes: global (~/.config/comind-dock/agents/) and per-workspace
+//! metadata (~/.config/comind-dock/workspaces/<cwd-slug>/agents/) — the
+//! workspace kind lives OUTSIDE the repo, keyed by the space's folder.
+//! ponytail: claude adapter only (--append-system-prompt).
 
 use std::path::PathBuf;
 
@@ -74,6 +76,31 @@ pub fn skill_add(name: &str, source: &str, description: &str) -> Result<(), Stri
     save_catalog(&cat)
 }
 
+/// Scaffold ~/.config/comind-dock/skills/<name>/SKILL.md and register it
+/// in the catalog. Refuses to overwrite.
+pub fn skill_new(name: &str) -> Result<PathBuf, String> {
+    if name.is_empty() || name.contains(['/', '.']) {
+        return Err(format!("bad skill name {name:?}"));
+    }
+    let dir = crate::config::config_path(None)
+        .and_then(|p| p.parent().map(|d| d.join("skills").join(name)))
+        .ok_or("cannot determine config dir")?;
+    if dir.exists() {
+        return Err(format!("skill {name:?} already exists at {}", dir.display()));
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let md = dir.join("SKILL.md");
+    std::fs::write(
+        &md,
+        format!(
+            "# {name}\n\nDescribe the skill: when to use it, the steps, the constraints.\n"
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    skill_add(name, &dir.display().to_string(), "")?;
+    Ok(md)
+}
+
 pub fn skill_remove(name: &str) -> Result<(), String> {
     let mut cat = skill_catalog_strict()?;
     if cat.remove(name).is_none() {
@@ -99,8 +126,16 @@ pub fn profiles_dir() -> Option<PathBuf> {
     crate::config::config_path(None).and_then(|p| p.parent().map(|d| d.join("agents")))
 }
 
-pub fn list() -> Vec<String> {
-    let Some(dir) = profiles_dir() else { return Vec::new() };
+/// Per-workspace agent metadata: profiles scoped to one space, keyed by its
+/// folder (slug = absolute path with '/' → '%'), OUTSIDE the repo itself.
+pub fn ws_profiles_dir(cwd: &std::path::Path) -> Option<PathBuf> {
+    let slug = cwd.to_string_lossy().replace('/', "%");
+    crate::config::config_path(None)
+        .and_then(|p| p.parent().map(|d| d.join("workspaces").join(slug).join("agents")))
+}
+
+fn list_in(dir: Option<PathBuf>) -> Vec<String> {
+    let Some(dir) = dir else { return Vec::new() };
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
     let mut names: Vec<String> = entries
         .flatten()
@@ -111,8 +146,16 @@ pub fn list() -> Vec<String> {
     names
 }
 
-pub fn load(name: &str) -> Result<Profile, String> {
-    let dir = profiles_dir().ok_or("cannot determine config dir")?.join(name);
+pub fn list() -> Vec<String> {
+    list_in(profiles_dir())
+}
+
+/// Workspace-scoped profiles for a space folder.
+pub fn list_ws(cwd: &std::path::Path) -> Vec<String> {
+    list_in(ws_profiles_dir(cwd))
+}
+
+fn load_in(dir: PathBuf, name: &str) -> Result<Profile, String> {
     let text = std::fs::read_to_string(dir.join("profile.toml"))
         .map_err(|e| format!("no profile {name:?} ({e}); see `cdock profile list`"))?;
     let toml: ProfileToml =
@@ -121,6 +164,24 @@ pub fn load(name: &str) -> Result<Profile, String> {
         return Err(format!("profile {name:?} has no command"));
     }
     Ok(Profile { name: name.to_string(), dir, toml })
+}
+
+pub fn load(name: &str) -> Result<Profile, String> {
+    let dir = profiles_dir().ok_or("cannot determine config dir")?.join(name);
+    load_in(dir, name)
+}
+
+/// Behavior ident ("global:<name>" | "ws:<name>") → profile; ws idents
+/// resolve against the given space folder.
+pub fn load_behavior(ident: &str, ws_cwd: &std::path::Path) -> Result<Profile, String> {
+    match ident.split_once(':') {
+        Some(("ws", name)) => {
+            let dir = ws_profiles_dir(ws_cwd).ok_or("cannot determine config dir")?.join(name);
+            load_in(dir, name)
+        }
+        Some(("global", name)) => load(name),
+        _ => Err(format!("bad behavior ident {ident:?}")),
+    }
 }
 
 impl Profile {
@@ -147,9 +208,16 @@ impl Profile {
         (command, env)
     }
 
+    /// The staged prompt CONTENT (role + memory + skills + roster) — for
+    /// injecting a behavior into an already-running agent session.
+    pub fn prompt_text(&self) -> Option<String> {
+        let path = self.stage_prompt()?;
+        std::fs::read_to_string(path).ok().filter(|t| !t.trim().is_empty())
+    }
+
     /// Write `<dir>/staged-prompt.md` — regenerated on every launch, so it
     /// is inspectable but never hand-edited. None when there is nothing to say.
-    fn stage_prompt(&self) -> Option<PathBuf> {
+    pub fn stage_prompt(&self) -> Option<PathBuf> {
         let mut text = String::new();
         for file in ["agent.md", "memory.md"] {
             if let Ok(t) = std::fs::read_to_string(self.dir.join(file)) {
@@ -227,10 +295,19 @@ each session to it — it rides along into every future launch of this role.
 /// Scaffold ~/.config/comind-dock/agents/<name>/ (optionally copying an
 /// existing profile). Refuses to overwrite.
 pub fn scaffold(name: &str, from: Option<&str>) -> Result<PathBuf, String> {
+    scaffold_at(profiles_dir(), name, from)
+}
+
+/// Scaffold a workspace-scoped profile under the space's metadata dir.
+pub fn scaffold_ws(cwd: &std::path::Path, name: &str) -> Result<PathBuf, String> {
+    scaffold_at(ws_profiles_dir(cwd), name, None)
+}
+
+fn scaffold_at(base: Option<PathBuf>, name: &str, from: Option<&str>) -> Result<PathBuf, String> {
     if name.is_empty() || name.contains(['/', '.']) {
         return Err(format!("bad profile name {name:?}"));
     }
-    let dir = profiles_dir().ok_or("cannot determine config dir")?.join(name);
+    let dir = base.ok_or("cannot determine config dir")?.join(name);
     if dir.exists() {
         return Err(format!("profile {name:?} already exists at {}", dir.display()));
     }
@@ -258,6 +335,34 @@ pub fn scaffold(name: &str, from: Option<&str>) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ws_scoped_profiles_and_behavior_idents() {
+        // Redirect the config root so nothing touches the real one.
+        let root = std::env::temp_dir().join(format!("cdock-wsprof-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        // Safety: single-threaded test env access.
+        unsafe { std::env::set_var("CDOCK_CONFIG_PATH", root.join("config.toml")) };
+
+        let cwd = std::path::Path::new("/projects/demo");
+        let dir = scaffold_ws(cwd, "researcher").unwrap();
+        assert!(dir.join("profile.toml").exists());
+        assert!(dir.display().to_string().contains("%projects%demo"), "{}", dir.display());
+        assert_eq!(list_ws(cwd), vec!["researcher".to_string()]);
+        assert!(list_ws(std::path::Path::new("/other")).is_empty());
+
+        let p = load_behavior("ws:researcher", cwd).unwrap();
+        assert_eq!(p.name, "researcher");
+        assert!(load_behavior("ws:researcher", std::path::Path::new("/other")).is_err());
+        assert!(load_behavior("junk", cwd).is_err());
+
+        // Duplicate scaffold refuses.
+        assert!(scaffold_ws(cwd, "researcher").is_err());
+
+        unsafe { std::env::remove_var("CDOCK_CONFIG_PATH") };
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn claude_adapter_stages_prompt() {

@@ -10,13 +10,17 @@ use ids::{IdGen, PaneId};
 use layout::{Dir, Side};
 use workspace::{Tab, Workspace};
 
-/// What a rename prompt is renaming.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a text prompt is naming.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptKind {
     RenameTab(ids::TabId),
     RenameWorkspace(ids::WorkspaceId),
     /// Branch name for a new worktree of the workspace with this id.
     WorktreeBranch(ids::WorkspaceId),
+    /// Name for a new skill (scaffold + catalog + editor).
+    NewSkill,
+    /// Name for a new profile: None = global, Some(cwd) = workspace-scoped.
+    NewProfile(Option<std::path::PathBuf>),
 }
 
 /// One context-menu entry.
@@ -65,6 +69,18 @@ pub enum MenuAction {
     SkillBrowser,
     /// Open a skill's source path in $EDITOR (a new tab).
     SkillEdit(String),
+    /// Prompt for a new skill name.
+    SkillNew,
+    /// Prompt for a new profile name (None = global, Some = for that space).
+    ProfileNew(Option<std::path::PathBuf>),
+    /// Options menu for an agent pane (sidebar right-click).
+    AgentOptions(ids::PaneId),
+    /// Jump to a pane wherever it lives.
+    FocusPane(ids::PaneId),
+    /// Pick a behavior (global or space-scoped profile) for an agent pane.
+    BehaviorPicker(ids::PaneId),
+    /// Inject the behavior into the running session; None clears the mark.
+    SetBehavior(ids::PaneId, Option<String>),
     /// The prefix+? keybinding overlay.
     ShowKeybinds,
     ReloadConfig,

@@ -23,6 +23,8 @@ pub struct PaneMeta {
     pub env: Vec<(String, String)>,
     /// Absolute exe path of the agent (resume without relying on PATH).
     pub agent_bin: Option<String>,
+    /// Behavior profile ident attached to the pane ("global:x" | "ws:x").
+    pub behavior: Option<String>,
     /// Pane id at SAVE time — keys the screens-<session>/pane-<id>.txt
     /// file; restore-side only (save derives it from the layout leaf).
     pub saved_pane: Option<u64>,
@@ -75,6 +77,8 @@ pub enum NodeSnap {
         env: Vec<(String, String)>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_bin: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        behavior: Option<String>,
         /// Pane id at save time — names the screen-history file.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pane: Option<u64>,
@@ -98,6 +102,7 @@ fn node_to_snap(node: &Node, panes: &std::collections::HashMap<PaneId, PaneMeta>
                 cwd: meta.cwd.map(|c| c.to_string_lossy().into_owned()),
                 env: meta.env,
                 agent_bin: meta.agent_bin,
+                behavior: meta.behavior,
                 pane: Some(id.0),
             }
         }
@@ -115,7 +120,7 @@ fn node_to_snap(node: &Node, panes: &std::collections::HashMap<PaneId, PaneMeta>
 
 fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen, agents: &mut Vec<PaneSpawn>) -> Node {
     match snap {
-        NodeSnap::Leaf { agent, cwd, env, agent_bin, pane } => {
+        NodeSnap::Leaf { agent, cwd, env, agent_bin, behavior, pane } => {
             let id = ids.pane();
             agents.push((
                 id,
@@ -124,6 +129,7 @@ fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen, agents: &mut Vec<PaneSpawn>) -
                     cwd: cwd.clone().map(PathBuf::from),
                     env: env.clone(),
                     agent_bin: agent_bin.clone(),
+                    behavior: behavior.clone(),
                     saved_pane: *pane,
                 },
             ));
@@ -412,6 +418,7 @@ mod tests {
                 cwd: Some(std::path::PathBuf::from("/projects/real-home")),
                 env: vec![("CLAUDE_CONFIG_DIR".into(), "/home/u/.claude-oleh".into())],
                 agent_bin: Some("/usr/local/bin/claude".into()),
+                behavior: Some("ws:researcher".into()),
                 saved_pane: None,
             },
         )]);
@@ -442,6 +449,11 @@ mod tests {
             agent[0].1.saved_pane,
             Some(claude_pane.0),
             "the OLD pane id rides along so restore finds the screen file"
+        );
+        assert_eq!(
+            agent[0].1.behavior.as_deref(),
+            Some("ws:researcher"),
+            "the behavior ident survives the round trip"
         );
         assert!(restored.check_invariants());
     }

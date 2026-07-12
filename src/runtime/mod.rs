@@ -46,6 +46,9 @@ pub struct PaneRuntime {
     /// When the current agent process first appeared — the `since` cutoff
     /// for codex/opencode session-file discovery (they have no hooks).
     pub agent_since: Option<std::time::SystemTime>,
+    /// Attached behavior profile ident ("global:<name>" | "ws:<name>") —
+    /// injected into the live session, re-applied as system prompt on resume.
+    pub behavior: Option<String>,
     /// Consecutive polls with no agent — releases the session mapping.
     agent_gone_polls: u8,
     /// Detection-engine result for agent panes.
@@ -233,6 +236,7 @@ impl Runtime {
                 agent_bin: None,
                 reported: None,
             agent_since: None,
+            behavior: None,
                 agent_gone_polls: 0,
                 program,
                 last_output: std::time::Instant::now(),
@@ -242,6 +246,48 @@ impl Runtime {
                 last_size: (cols, rows),
             },
         );
+        Ok(())
+    }
+
+    /// $EDITOR on a path, in a fresh tab.
+    pub fn open_in_editor(&mut self, path: &std::path::Path, area: Rect) -> io::Result<()> {
+        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+        let pane = self.state.new_tab();
+        self.spawn_pane_cmd(pane, area.width, area.height, Some(format!("{editor} {}", path.display())))
+    }
+
+    /// Inject a behavior profile into a pane's LIVE session: the staged
+    /// prompt is pasted (bracketed when the app asked) and submitted. The
+    /// ident is remembered so a cold restore resumes with the same role as
+    /// system prompt.
+    pub fn apply_behavior(&mut self, pane: PaneId, ident: Option<String>) -> Result<(), String> {
+        let Some(ident_ref) = ident.as_deref() else {
+            if let Some(p) = self.panes.get_mut(&pane) {
+                p.behavior = None;
+                self.dirty = true;
+            }
+            return Ok(());
+        };
+        let ws_cwd = self
+            .state
+            .locate_pane(pane)
+            .and_then(|(wi, _)| self.state.workspaces.get(wi))
+            .map(|w| w.cwd.clone())
+            .ok_or("pane not in any workspace")?;
+        let profile = crate::profile::load_behavior(ident_ref, &ws_cwd)?;
+        let text = profile.prompt_text().ok_or("behavior profile has an empty prompt")?;
+        let p = self.panes.get_mut(&pane).ok_or("no such pane")?;
+        use alacritty_terminal::term::TermMode;
+        if p.emu.term.mode().contains(TermMode::BRACKETED_PASTE) {
+            p.pty.write(b"\x1b[200~");
+            p.pty.write(text.as_bytes());
+            p.pty.write(b"\x1b[201~");
+        } else {
+            p.pty.write(text.as_bytes());
+        }
+        p.pty.write(b"\r");
+        p.behavior = ident;
+        self.dirty = true;
         Ok(())
     }
 
@@ -621,6 +667,7 @@ impl Runtime {
                         cwd,
                         env,
                         agent_bin: p.agent_bin.clone(),
+                        behavior: p.behavior.clone(),
                         saved_pane: None, // save-side: the layout leaf carries the id
                     },
                 );
@@ -779,6 +826,18 @@ pub fn build(
                 // Quote-hostile paths fall back to the bare name + PATH.
                 cmd = format!("'{bin}' {rest}");
             }
+            // An attached behavior rides back in as system prompt (claude
+            // adapter only — other CLIs got it as a chat message live and
+            // their conversation history already carries it).
+            if a.starts_with("claude")
+                && let Some(ident) = meta.behavior.as_deref()
+                && let Some(cwd) = meta.cwd.as_deref()
+                && let Ok(profile) = crate::profile::load_behavior(ident, cwd)
+                && let Some(staged) = profile.stage_prompt()
+                && !staged.display().to_string().contains('\'')
+            {
+                cmd.push_str(&format!(" --append-system-prompt \"$(cat '{}')\"", staged.display()));
+            }
             crate::agents::hold_on_failure(&cmd)
         });
         // Seed the session mapping now: the first autosave fires before the
@@ -824,6 +883,9 @@ pub fn build(
                 .map(|w| w.cwd.clone())
         });
         rt.spawn_pane_full(pane, area.width, area.height, resume, env, cwd)?;
+        if let Some(p) = rt.panes.get_mut(&pane) {
+            p.behavior = meta.behavior.clone();
+        }
         // Replay the pane's saved screen tail into the EMULATOR only, before
         // any child output lands (PTY reads drain later, via the channel).
         // Never write it to the PTY — the shell would eat it as input.
@@ -967,6 +1029,9 @@ pub struct HandoffPane {
     pub pid: Option<u32>,
     pub program: String,
     pub size: (u16, u16),
+    /// Attached behavior ident — survives the exec (metadata only).
+    #[serde(default)]
+    pub behavior: Option<String>,
 }
 
 /// Where the exec-handoff state file lives.
@@ -990,7 +1055,14 @@ impl Default for Handoff {
 
 impl Default for HandoffPane {
     fn default() -> Self {
-        HandoffPane { id: PaneId(0), fd: -1, pid: None, program: String::new(), size: (0, 0) }
+        HandoffPane {
+            id: PaneId(0),
+            fd: -1,
+            pid: None,
+            program: String::new(),
+            size: (0, 0),
+            behavior: None,
+        }
     }
 }
 
@@ -1012,6 +1084,7 @@ pub fn capture_handoff(rt: &Runtime, area: Rect) -> Handoff {
                 pid: p.pty.child_pid,
                 program: p.program.clone(),
                 size: p.last_size,
+                behavior: p.behavior.clone(),
             })
         })
         .collect();
@@ -1081,6 +1154,7 @@ pub fn build_from_handoff(
                         agent_bin: None,
                         reported: None,
                         agent_since: None,
+                        behavior: hp.behavior.clone(),
                         agent_gone_polls: 0,
                         program: hp.program,
                         last_output: std::time::Instant::now(),

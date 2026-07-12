@@ -335,17 +335,29 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 && sb.contains(pos)
             {
                 let theme = rt.theme;
-                if let Some(sidebar::Target::Workspace(wi)) =
-                    sidebar::hit(rt, &theme, ev.column - sb.x, ev.row - sb.y, (sb.width, sb.height))
+                match sidebar::hit(rt, &theme, ev.column - sb.x, ev.row - sb.y, (sb.width, sb.height))
                 {
-                    rt.state.active_workspace = wi;
-                    let ws_id = rt.state.workspaces[wi].id;
-                    rt.state.input_mode = InputMode::Menu {
-                        x: ev.column,
-                        y: ev.row,
-                        items: menu::space_items(ws_id),
-                    };
-                    rt.mark_dirty();
+                    Some(sidebar::Target::Workspace(wi)) => {
+                        rt.state.active_workspace = wi;
+                        let ws_id = rt.state.workspaces[wi].id;
+                        rt.state.input_mode = InputMode::Menu {
+                            x: ev.column,
+                            y: ev.row,
+                            items: menu::space_items(ws_id),
+                        };
+                        rt.mark_dirty();
+                    }
+                    // Agent row: the options menu (behavior, focus, close).
+                    Some(sidebar::Target::Pane(pane)) => {
+                        return run_menu_action(
+                            rt,
+                            MenuAction::AgentOptions(pane),
+                            ev.column,
+                            ev.row,
+                            area,
+                        );
+                    }
+                    _ => {}
                 }
                 return InputOutcome::Continue;
             }
@@ -671,6 +683,15 @@ fn run_menu_action(
                 })
                 .collect();
             items.push(MenuItem {
+                label: "+ new global profile...".to_string(),
+                action: MenuAction::ProfileNew(None),
+            });
+            let ws_cwd = rt.state.workspaces.get(rt.state.active_workspace).map(|w| w.cwd.clone());
+            items.push(MenuItem {
+                label: "+ new profile for this space...".to_string(),
+                action: MenuAction::ProfileNew(ws_cwd),
+            });
+            items.push(MenuItem {
                 label: "(open folder in editor)".to_string(),
                 action: MenuAction::EditProfiles,
             });
@@ -707,6 +728,84 @@ fn run_menu_action(
                 None => Ok(()),
             }
         }
+        MenuAction::SkillNew => {
+            rt.state.input_mode =
+                InputMode::Prompt { kind: crate::state::PromptKind::NewSkill, buffer: String::new() };
+            Ok(())
+        }
+        MenuAction::ProfileNew(scope) => {
+            rt.state.input_mode = InputMode::Prompt {
+                kind: crate::state::PromptKind::NewProfile(scope),
+                buffer: String::new(),
+            };
+            Ok(())
+        }
+        MenuAction::AgentOptions(pane) => {
+            let behavior = rt.panes.get(&pane).and_then(|p| p.behavior.clone());
+            let items = vec![
+                MenuItem {
+                    label: match behavior {
+                        Some(b) => format!("behavior: {}...", b.split_once(':').map_or(b.as_str(), |(_, n)| n)),
+                        None => "attach behavior...".to_string(),
+                    },
+                    action: MenuAction::BehaviorPicker(pane),
+                },
+                MenuItem { label: "focus".to_string(), action: MenuAction::FocusPane(pane) },
+                MenuItem { label: "close pane".to_string(), action: MenuAction::ClosePane(pane) },
+            ];
+            rt.state.input_mode = InputMode::Menu { x, y, items };
+            Ok(())
+        }
+        MenuAction::FocusPane(pane) => {
+            rt.state.focus_pane(pane);
+            Ok(())
+        }
+        MenuAction::BehaviorPicker(pane) => {
+            // Space-scoped behaviors first (this pane's workspace metadata),
+            // then the global ones.
+            let ws_cwd = rt
+                .state
+                .locate_pane(pane)
+                .and_then(|(wi, _)| rt.state.workspaces.get(wi))
+                .map(|w| w.cwd.clone());
+            let mut items: Vec<MenuItem> = Vec::new();
+            if let Some(cwd) = &ws_cwd {
+                items.extend(crate::profile::list_ws(cwd).into_iter().map(|n| MenuItem {
+                    label: format!("{n} (space)"),
+                    action: MenuAction::SetBehavior(pane, Some(format!("ws:{n}"))),
+                }));
+            }
+            items.extend(crate::profile::list().into_iter().map(|n| MenuItem {
+                label: format!("{n} (global)"),
+                action: MenuAction::SetBehavior(pane, Some(format!("global:{n}"))),
+            }));
+            items.push(MenuItem {
+                label: "+ new for this space...".to_string(),
+                action: MenuAction::ProfileNew(ws_cwd),
+            });
+            items.push(MenuItem {
+                label: "+ new global...".to_string(),
+                action: MenuAction::ProfileNew(None),
+            });
+            items.push(MenuItem {
+                label: "(clear)".to_string(),
+                action: MenuAction::SetBehavior(pane, None),
+            });
+            rt.state.input_mode = InputMode::Menu { x, y, items };
+            Ok(())
+        }
+        MenuAction::SetBehavior(pane, ident) => {
+            let label = ident.clone();
+            match rt.apply_behavior(pane, ident) {
+                Ok(()) => {
+                    if let Some(l) = label {
+                        rt.add_plain_toast(format!("behavior {l} → %{}", pane.0), 8);
+                    }
+                }
+                Err(e) => rt.add_plain_toast(format!("behavior: {e}"), 10),
+            }
+            Ok(())
+        }
         MenuAction::SkillEdit(source) => {
             let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
             let pane = rt.state.new_tab();
@@ -735,11 +834,9 @@ fn run_menu_action(
                     action: MenuAction::SkillEdit(entry.source),
                 })
                 .collect();
-            if items.is_empty() {
-                rt.add_plain_toast("no skills yet — `cdock skill add`".to_string(), 10);
-            } else {
-                rt.state.input_mode = InputMode::Menu { x, y, items };
-            }
+            let mut items = items;
+            items.push(MenuItem { label: "+ new skill...".to_string(), action: MenuAction::SkillNew });
+            rt.state.input_mode = InputMode::Menu { x, y, items };
             Ok(())
         }
         MenuAction::EditProfiles => {

@@ -270,6 +270,26 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<Inp
                                 }
                                 return Ok(InputOutcome::Continue);
                             }
+                            PromptKind::NewSkill => {
+                                rt.state.input_mode = InputMode::Terminal;
+                                match crate::profile::skill_new(&name) {
+                                    Ok(md) => rt.open_in_editor(&md, area)?,
+                                    Err(e) => rt.add_plain_toast(format!("skill: {e}"), 10),
+                                }
+                                return Ok(InputOutcome::Continue);
+                            }
+                            PromptKind::NewProfile(scope) => {
+                                rt.state.input_mode = InputMode::Terminal;
+                                let created = match &scope {
+                                    Some(cwd) => crate::profile::scaffold_ws(cwd, &name),
+                                    None => crate::profile::scaffold(&name, None),
+                                };
+                                match created {
+                                    Ok(dir) => rt.open_in_editor(&dir, area)?,
+                                    Err(e) => rt.add_plain_toast(format!("profile: {e}"), 10),
+                                }
+                                return Ok(InputOutcome::Continue);
+                            }
                         }
                     }
                     rt.state.input_mode = InputMode::Terminal;

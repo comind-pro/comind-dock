@@ -71,11 +71,14 @@ pub fn render_help(keymap: &Keymap, theme: &Theme, area: Rect, frame: &mut Frame
 }
 
 /// One-line centered input prompt (rename tab/workspace).
-pub fn render_prompt(kind: PromptKind, buffer: &str, theme: &Theme, area: Rect, frame: &mut Frame) {
+pub fn render_prompt(kind: &PromptKind, buffer: &str, theme: &Theme, area: Rect, frame: &mut Frame) {
     let title = match kind {
         PromptKind::RenameTab(_) => " rename tab ",
         PromptKind::RenameWorkspace(_) => " rename space ",
         PromptKind::WorktreeBranch(_) => " new worktree: branch name ",
+        PromptKind::NewSkill => " new skill: name ",
+        PromptKind::NewProfile(None) => " new global profile: name ",
+        PromptKind::NewProfile(Some(_)) => " new space profile: name ",
     };
     render_input_box(title, buffer, theme, area, frame);
 }

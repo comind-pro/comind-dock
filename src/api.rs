@@ -68,6 +68,10 @@ pub enum Req {
     ReloadManifests,
     /// Full detection trace for a pane (server loop owns the manifests).
     AgentExplain { pane: u64 },
+    /// Attach a behavior profile ("global:<name>" | "ws:<name>") to an
+    /// agent pane: injected into the live session, resumed as system
+    /// prompt. Null behavior clears the mark.
+    AgentBehavior { pane: u64, behavior: Option<String> },
     /// Re-read config/keymap/theme. Also on the sidebar app menu.
     ReloadConfig,
     /// exec() the current binary in place: same pid, panes survive.
@@ -273,6 +277,12 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                     rt.state.close_pane(pane);
                     Ok(err(e))
                 }
+            }
+        }
+        Req::AgentBehavior { pane, behavior } => {
+            match rt.apply_behavior(PaneId(pane), behavior) {
+                Ok(()) => Ok(json!({"ok": true})),
+                Err(e) => Ok(err(e)),
             }
         }
         Req::ReportAgentSession { pane, session_id, pid } => {
@@ -514,6 +524,7 @@ pub const REFERENCE: &str = r#"[
   {"cmd":"report-metadata","pane":1,"title":"builder"},
   {"cmd":"reload-manifests"},
   {"cmd":"agent-explain","pane":1},
+  {"cmd":"agent-behavior","pane":1,"behavior":"global:researcher"},
   {"cmd":"reload-config"},
   {"cmd":"handoff"},
   {"cmd":"shutdown"},
