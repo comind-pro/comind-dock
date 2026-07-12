@@ -1,10 +1,13 @@
 # Roadmap
 
+**Status: all six phases shipped** (v0.4.x). This file is kept as the
+historical plan; what remains open is listed at the bottom.
+
 Six phases. Each phase ships something usable; later phases never require
 rewriting earlier ones because the architecture rules (pure state, pure
 render, platform isolation, server-neutral naming) apply from day one.
 
-## Phase 1 — Core multiplexer (MVP)
+## ✅ Phase 1 — Core multiplexer (MVP)
 
 Single-process TUI, no server split yet (but state/runtime separation from
 the start so the split is a transport change, not a rewrite).
@@ -22,7 +25,7 @@ the start so the split is a transport change, not a rewrite).
 
 **Done when:** daily-drivable as a mouse-first terminal multiplexer.
 
-## Phase 2 — Server/client split & persistence
+## ✅ Phase 2 — Server/client split & persistence
 
 - Headless server owning PTYs/emulators; thin client with hello/welcome
   handshake, protocol version, semantic-frame encoding + client-side diff.
@@ -36,7 +39,7 @@ the start so the split is a transport change, not a rewrite).
 
 **Done when:** close the terminal, reattach, everything is still there.
 
-## Phase 3 — Agent awareness
+## ✅ Phase 3 — Agent awareness
 
 - Detection engine: bottom-buffer snapshots, TOML manifests, region/priority/
   gate rule semantics, explain trace.
@@ -50,7 +53,7 @@ the start so the split is a transport change, not a rewrite).
 
 **Done when:** the sidebar reliably tells you which agent needs you.
 
-## Phase 4 — Automation surface
+## ✅ Phase 4 — Automation surface
 
 - JSON socket API: request/response, event subscriptions, one-shot waits,
   published JSON Schema, bootstrap snapshot.
@@ -63,7 +66,7 @@ the start so the split is a transport change, not a rewrite).
 **Done when:** an agent inside a pane can spawn a sibling, run tests in it,
 and wait for the result — no human in the loop.
 
-## Phase 5 — Ecosystem
+## ✅ Phase 5 — Ecosystem
 
 - Git worktrees: grouped child workspaces, create/open/remove, safe deletion.
 - Integrations: per-agent hook installers (lifecycle authority + session
@@ -80,7 +83,7 @@ and wait for the result — no human in the loop.
 
 **Done when:** third parties can extend the runtime without forking it.
 
-## Phase 6 — Distribution & reach
+## ✅ Phase 6 — Distribution & reach
 
 - Update system: stable/preview channels, static JSON feeds, checksum
   verification, package-manager detection, release notes on startup.
@@ -98,3 +101,11 @@ and wait for the result — no human in the loop.
 
 **Done when:** `curl | sh` on a fresh machine gives the full experience, and
 `cdock update` keeps it fresh.
+
+## Open items (deliberate deferrals)
+
+- Windows/ConPTY — no Windows machine to validate against.
+- kitty graphics protocol — ratatui's cell renderer cannot show raster.
+- IME composition — crossterm exposes no IME events.
+- Homebrew tap — the formula lives in `packaging/homebrew/`; it needs a
+  `comind-pro/homebrew-tap` repo before `brew install` works.

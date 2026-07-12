@@ -21,12 +21,6 @@ shows "update ready" when a new release ships — or with `cdock update
 --handoff`, which swaps the running server in place without killing a
 single pane.
 
-### Homebrew
-
-```sh
-brew install comind-pro/tap/cdock
-```
-
 ### Nix
 
 ```sh
@@ -35,15 +29,32 @@ nix run github:comind-pro/comind-dock
 
 ## Status
 
-**Phase 1 (core multiplexer MVP) implemented.** `cdock` is a working
-single-process terminal multiplexer: PTY panes with full VT emulation,
-workspace → tab → pane split tree, prefix-key input model with a
-configurable keymap, mouse support (click focus, border drag, selection
-copy, scroll), and TOML configuration (`cdock --default-config`).
-Server/client split and persistence land in Phase 2; the full plan is in
-[docs/ROADMAP.md](docs/ROADMAP.md).
+**All roadmap phases shipped** (current release: v0.4.x). Highlights:
 
-Build and run:
+- Background server owns the panes; thin clients attach/detach at will,
+  named sessions (`cdock --session`), remote attach over ssh.
+- Agent detection engine (TOML manifests + `cdock agent explain` rule
+  traces) with sounds/toasts when an agent blocks or finishes; hooks can
+  report authoritative states (`cdock pane report-agent`).
+- Exact session continuation: each claude pane resumes ITS conversation
+  (SessionStart hook, multiple `~/.claude*` profiles), codex/opencode
+  bind by session files; screen history replays above the fresh prompt.
+- Live handoff: `cdock update --handoff` swaps the running server binary
+  in place — no pane dies. Self-update from GitHub Releases with
+  stable/preview channels.
+- Agent profiles (roles): global and workspace-scoped, created from the
+  UI or CLI, attachable to a RUNNING agent (`cdock agent behavior`);
+  skill catalog; orchestrator profiles that spawn specialist subagents.
+- Full automation surface: every UI action is also a CLI command and a
+  JSON socket API (`cdock api schema`), with event subscriptions,
+  `wait` primitives, and two-way `cdock pane attach`.
+- Plugins: linked or `gh:owner/repo`-installed, with actions, managed
+  panes, and agent-status hooks. Git worktrees as child spaces.
+
+Deliberate deferrals: Windows/ConPTY, kitty graphics, IME composition
+(details in [docs/ROADMAP.md](docs/ROADMAP.md)).
+
+Build and run from source:
 
 ```sh
 cargo build --release
@@ -76,9 +87,10 @@ cargo build --release
 
 ## Contributing
 
-The project is open source under MIT. During the specification phase,
-contributions are welcome as issues and discussion on the feature and
-architecture documents. Once Phase 1 starts, standard PR flow applies.
+Open source under MIT, standard PR flow. `cargo clippy --all-targets`
+clean and `cargo test` green before every PR; new behavior needs a test.
+For local development use the isolated dev namespace (`ln -sf cdock
+target/debug/cdock-dev`) so your live session stays untouched.
 
 ## License
 

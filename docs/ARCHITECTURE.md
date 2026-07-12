@@ -1,4 +1,9 @@
-# Target Architecture
+# Architecture
+
+> Written as the target design; as of v0.4.x this is the implemented
+> architecture (the remote SSH bridge shipped as `cdock session attach
+> ssh:host` — a remote cdock over `ssh -t` — rather than a local bridge
+> process).
 
 comind-dock ships as a single binary that wears different hats depending on
 argv: persistent headless server, thin TUI client, remote SSH bridge, CLI

@@ -1,5 +1,10 @@
 # Feature Catalog
 
+> Written as the design catalog; as of v0.4.x it is implemented, with
+> these exceptions: Windows/ConPTY, kitty graphics, IME composition
+> (deferred — see docs/ROADMAP.md), and a few spec details that shipped
+> in simplified form (marked `ponytail:` in the code).
+
 Complete user-facing feature set for comind-dock. Keybindings below assume the
 default prefix `ctrl+b` (written `prefix`); every binding is configurable.
 Nearly every action is reachable three ways: keyboard, mouse, and the `cdock`

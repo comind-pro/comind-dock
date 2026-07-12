@@ -62,7 +62,7 @@ repo = "comind-pro/comind-dock"           # GitHub update feed
 channel = "stable"                        # stable | preview (prereleases too)
 
 [advanced]
-scrollback_limit_bytes = 10000000   # converted to lines at ~120 bytes/line
+scrollback_limit_bytes = 10000000   # → emulator lines (clamped 1k–10k)
 
 [experimental]
 allow_nested = false                # allow cdock inside a cdock pane
