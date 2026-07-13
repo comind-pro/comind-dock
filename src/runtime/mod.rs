@@ -1027,10 +1027,8 @@ pub fn build(
         // Replay the pane's saved screen tail into the EMULATOR only, before
         // any child output lands (PTY reads drain later, via the channel).
         // Never write it to the PTY — the shell would eat it as input.
-        if let Some(text) = meta
-            .saved_pane
-            .zip(crate::state::snapshot::screens_dir())
-            .and_then(|(old, dir)| {
+        if let Some(text) =
+            meta.saved_pane.zip(crate::state::snapshot::screens_dir()).and_then(|(old, dir)| {
                 crate::state::snapshot::restore_screen(rt.cfg.restore.screen_history, &dir, old)
             })
             && let Some(p) = rt.panes.get_mut(&pane)
