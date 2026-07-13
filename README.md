@@ -57,9 +57,16 @@ you get a sound and a clickable toast. That is the whole point of the thing.
 
 ## Cost of running it
 
-Ten agents streaming output continuously, measured on the release build:
-**47 MB, ~5% of one core** with the UI attached; **40 MB, ~1%** detached
-(the agents keep running, nothing is rendered). Idle panes cost nothing.
+Measured on the release build (macOS, arm64) with ten agent panes each
+streaming 20 lines/second — a deliberately noisy worst case, since real
+agents are quiet most of the time:
+
+| | memory | CPU |
+|---|---|---|
+| detached (agents running, nothing rendered) | 41 MB | 0.7% of one core |
+| attached (UI drawing, server + client) | 53 MB | ~3% of one core |
+
+Idle panes cost nothing: the dock only works when a pane produces output.
 
 ## Documentation
 

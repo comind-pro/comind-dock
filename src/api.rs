@@ -628,6 +628,9 @@ fn pane_list(rt: &Runtime) -> Value {
                     "program": p.program,
                     "title": title,
                     "agent": p.agent,
+                    // The pid a status report must come from (hooks pass
+                    // $PPID); null until the agent process is spotted.
+                    "agent_pid": p.agent_pid,
                     "status": p.effective_status().word(),
                     // "done" | "blocked" while the user has not looked at
                     // the pane since it finished/blocked (the sidebar marks
