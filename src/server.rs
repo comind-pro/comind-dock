@@ -598,7 +598,7 @@ pub async fn run(
             }
             _ = autosave.tick() => {
                 if !clients.is_empty() || !opts.exit_when_no_clients {
-                    rt.save_session();
+                    rt.save_session_bg();
                 }
             }
             _ = tick.tick() => {

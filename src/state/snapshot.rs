@@ -303,17 +303,58 @@ fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-pub fn save(state: &AppState, panes: &std::collections::HashMap<PaneId, PaneMeta>) {
-    let Some(p) = path() else { return };
-    let snap = Snapshot::of(state, panes);
-    match serde_json::to_string_pretty(&snap) {
+/// A snapshot staged on the event loop and persisted later — possibly on a
+/// blocking thread. The sequence number lets a late write of an older
+/// snapshot be dropped instead of clobbering a newer one.
+pub struct Pending {
+    seq: u64,
+    snap: Snapshot,
+    screens_enabled: bool,
+    screens: Vec<(u64, Option<String>)>,
+}
+
+pub fn stage(
+    state: &AppState,
+    panes: &std::collections::HashMap<PaneId, PaneMeta>,
+    screens_enabled: bool,
+    screens: Vec<(u64, Option<String>)>,
+) -> Pending {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    Pending {
+        seq: NEXT.fetch_add(1, Ordering::Relaxed),
+        snap: Snapshot::of(state, panes),
+        screens_enabled,
+        screens,
+    }
+}
+
+/// Persist a staged snapshot to the session's files. Safe to call from a
+/// blocking thread; concurrent calls serialize on an internal lock.
+pub fn persist(p: Pending) {
+    let Some(file) = path() else { return };
+    let Some(scr) = screens_dir() else { return };
+    persist_at(p, &file, &scr);
+}
+
+fn persist_at(p: Pending, file: &std::path::Path, screens: &std::path::Path) {
+    // Lock held across the writes: overlapping persists must not interleave,
+    // and an older seq must never land after a newer one.
+    static LAST: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+    let mut last = LAST.lock().unwrap();
+    if p.seq < *last {
+        return;
+    }
+    *last = p.seq;
+    match serde_json::to_string_pretty(&p.snap) {
         Ok(json) => {
-            if let Err(e) = write_atomic(&p, json.as_bytes()) {
+            if let Err(e) = write_atomic(file, json.as_bytes()) {
                 tracing::warn!(error = %e, "failed to save session snapshot");
             }
         }
         Err(e) => tracing::warn!(error = %e, "failed to serialize session snapshot"),
     }
+    persist_screens(p.screens_enabled, screens, &p.screens);
 }
 
 pub fn load() -> Option<Snapshot> {
@@ -557,6 +598,25 @@ mod tests {
         // Next autosave: pane 7 is on the alt screen → None keeps the file.
         save_screens(&dir, &[(7, None)]);
         assert_eq!(take_screen(&dir, 7).as_deref(), Some("primary tail\n"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn stale_persist_never_clobbers_newer_snapshot() {
+        let dir = std::env::temp_dir().join(format!("cdock-seq-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("session-test.json");
+        let scr = dir.join("screens");
+        let s1 = AppState::new("older".into(), std::path::PathBuf::from("/tmp"));
+        let mut s2 = AppState::new("newer".into(), std::path::PathBuf::from("/tmp"));
+        s2.new_tab();
+        let older = stage(&s1, &std::collections::HashMap::new(), false, Vec::new());
+        let newer = stage(&s2, &std::collections::HashMap::new(), false, Vec::new());
+        persist_at(newer, &file, &scr);
+        persist_at(older, &file, &scr); // late write of an older snapshot
+        let kept: Snapshot =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(kept.workspaces[0].tabs.len(), 2, "newer snapshot must survive");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

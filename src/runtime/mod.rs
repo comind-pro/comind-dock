@@ -669,10 +669,28 @@ impl Runtime {
         }
     }
 
-    /// Snapshot the session, remembering which agent ran in which pane.
+    /// Snapshot the session and write it out before returning. For the
+    /// paths that must not outlive the write: shutdown, handoff.
     pub fn save_session(&mut self) {
+        if let Some(p) = self.stage_session() {
+            crate::state::snapshot::persist(p);
+        }
+    }
+
+    /// Autosave: stage on the loop, write on a blocking thread — the pane
+    /// walk and serialization stay here, fsync and file churn move off the
+    /// event loop so PTY output never waits on the disk.
+    pub fn save_session_bg(&mut self) {
+        if let Some(p) = self.stage_session() {
+            tokio::task::spawn_blocking(move || crate::state::snapshot::persist(p));
+        }
+    }
+
+    /// Collect everything a snapshot needs, remembering which agent ran in
+    /// which pane.
+    fn stage_session(&mut self) -> Option<crate::state::snapshot::Pending> {
         if !self.persist {
-            return;
+            return None;
         }
         // agent_sessions holds FULL "agent:id" idents. Pre-0.4 servers and
         // handoffs stored bare claude uuids — normalize on read.
@@ -749,15 +767,12 @@ impl Runtime {
         for (id, ident) in discovered {
             self.agent_sessions.insert(id, ident);
         }
-        crate::state::snapshot::save(&self.state, &metas);
         // Screen history: a text tail per pane, replayed on cold restore.
         // Alt-screen panes are skipped — scrollback_text is just the TUI
         // frame there and replaying it is garbage.
-        if let Some(dir) = crate::state::snapshot::screens_dir() {
-            let enabled = self.cfg.restore.screen_history;
-            let screens = if enabled { self.screen_tails() } else { Vec::new() };
-            crate::state::snapshot::persist_screens(enabled, &dir, &screens);
-        }
+        let enabled = self.cfg.restore.screen_history;
+        let screens = if enabled { self.screen_tails() } else { Vec::new() };
+        Some(crate::state::snapshot::stage(&self.state, &metas, enabled, screens))
     }
 
     /// Per-pane screen tails. Alt-screen panes report None — the visible TUI
