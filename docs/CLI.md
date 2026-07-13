@@ -33,6 +33,9 @@ report-agent PANE STATE [--label TEXT] [--ttl-ms N]
                              hook/wrapper-reported status: working|blocked|
                              done|idle|clear — overrides screen detection
 report-metadata PANE --title TEXT
+rename PANE [NAME]           user-given name for an agent session; wins
+                             over the agent's own OSC title. Empty NAME
+                             clears it (back to the agent's title).
 ```
 
 ## `cdock agent <sub>`

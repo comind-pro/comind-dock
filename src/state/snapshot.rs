@@ -25,6 +25,8 @@ pub struct PaneMeta {
     pub agent_bin: Option<String>,
     /// Behavior profile ident attached to the pane ("global:x" | "ws:x").
     pub behavior: Option<String>,
+    /// User-given pane name (wins over the agent's OSC title).
+    pub name: Option<String>,
     /// Pane id at SAVE time — keys the screens-<session>/pane-<id>.txt
     /// file; restore-side only (save derives it from the layout leaf).
     pub saved_pane: Option<u64>,
@@ -79,6 +81,8 @@ pub enum NodeSnap {
         agent_bin: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         behavior: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
         /// Pane id at save time — names the screen-history file.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pane: Option<u64>,
@@ -103,6 +107,7 @@ fn node_to_snap(node: &Node, panes: &std::collections::HashMap<PaneId, PaneMeta>
                 env: meta.env,
                 agent_bin: meta.agent_bin,
                 behavior: meta.behavior,
+                name: meta.name,
                 pane: Some(id.0),
             }
         }
@@ -120,7 +125,7 @@ fn node_to_snap(node: &Node, panes: &std::collections::HashMap<PaneId, PaneMeta>
 
 fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen, agents: &mut Vec<PaneSpawn>) -> Node {
     match snap {
-        NodeSnap::Leaf { agent, cwd, env, agent_bin, behavior, pane } => {
+        NodeSnap::Leaf { agent, cwd, env, agent_bin, behavior, name, pane } => {
             let id = ids.pane();
             agents.push((
                 id,
@@ -130,6 +135,7 @@ fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen, agents: &mut Vec<PaneSpawn>) -
                     env: env.clone(),
                     agent_bin: agent_bin.clone(),
                     behavior: behavior.clone(),
+                    name: name.clone(),
                     saved_pane: *pane,
                 },
             ));
@@ -244,7 +250,12 @@ impl Snapshot {
             .flatten()
             .unwrap_or(0)
             .min(workspaces.len() - 1);
+        let pane_names = panes
+            .iter()
+            .filter_map(|(id, m)| m.name.clone().map(|n| (*id, n)))
+            .collect();
         let state = AppState {
+            pane_names,
             workspaces,
             active_workspace,
             sidebar_visible: true,
@@ -419,6 +430,7 @@ mod tests {
                 env: vec![("CLAUDE_CONFIG_DIR".into(), "/home/u/.claude-oleh".into())],
                 agent_bin: Some("/usr/local/bin/claude".into()),
                 behavior: Some("ws:researcher".into()),
+                name: Some("kafka refactor".into()),
                 saved_pane: None,
             },
         )]);
@@ -454,6 +466,16 @@ mod tests {
             agent[0].1.behavior.as_deref(),
             Some("ws:researcher"),
             "the behavior ident survives the round trip"
+        );
+        assert_eq!(
+            agent[0].1.name.as_deref(),
+            Some("kafka refactor"),
+            "the user's pane name survives the round trip"
+        );
+        assert_eq!(
+            restored.pane_name(agent[0].0),
+            Some("kafka refactor"),
+            "and is seeded into the restored state under the NEW pane id"
         );
         assert!(restored.check_invariants());
     }

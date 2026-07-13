@@ -813,10 +813,24 @@ fn run_menu_action(
                     },
                     action: MenuAction::BehaviorPicker(pane),
                 },
+                MenuItem {
+                    label: "rename…".to_string(),
+                    action: MenuAction::RenamePane(pane),
+                },
                 MenuItem { label: "focus".to_string(), action: MenuAction::FocusPane(pane) },
                 MenuItem { label: "close pane".to_string(), action: MenuAction::ClosePane(pane) },
             ];
             rt.state.input_mode = InputMode::Menu { x, y, items };
+            Ok(())
+        }
+        MenuAction::RenamePane(pane) => {
+            // Seed with the current name so editing beats retyping; empty
+            // submit clears back to the agent's own title.
+            let buffer = rt.state.pane_name(pane).unwrap_or_default().to_string();
+            rt.state.input_mode = InputMode::Prompt {
+                kind: crate::state::PromptKind::RenamePane(pane),
+                buffer,
+            };
             Ok(())
         }
         MenuAction::FocusPane(pane) => {

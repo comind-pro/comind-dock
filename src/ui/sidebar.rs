@@ -172,10 +172,12 @@ fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
                 let (dot, dot_style) = status_marker(status, theme);
                 // Reporter label ("running tests") beats the generic word.
                 let status = p.reported_label().unwrap_or(status.word());
-                let name = if title.trim().is_empty() {
-                    agent.to_string()
-                } else {
-                    crate::agents::truncate_clean(title, 16)
+                // User-given name wins; then the agent's OSC title; then
+                // the bare agent name.
+                let name = match state.pane_name(pane) {
+                    Some(n) => crate::agents::truncate_clean(n, 16),
+                    None if title.trim().is_empty() => agent.to_string(),
+                    None => crate::agents::truncate_clean(title, 16),
                 };
                 let focused = pane == state.focused_pane();
                 let name_style = if focused {

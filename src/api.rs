@@ -63,6 +63,9 @@ pub enum Req {
     },
     /// Presentation metadata from hooks: title override for the pane.
     ReportMetadata { pane: u64, title: Option<String> },
+    /// User-given pane name (empty clears it): wins over the agent's own
+    /// OSC title in the sidebar and notifications.
+    RenamePane { pane: u64, name: String },
     /// Re-read detection manifests from disk (bundled + overrides).
     /// Handled directly by the server loop, which owns the manifest set.
     ReloadManifests,
@@ -323,6 +326,16 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             rt.mark_dirty();
             Ok(json!({"ok": true}))
         }
+        Req::RenamePane { pane, name } => {
+            let pane = PaneId(pane);
+            if !rt.panes.contains_key(&pane) {
+                return Ok(err(format!("no such pane {pane}")));
+            }
+            rt.state.rename_pane(pane, name);
+            rt.mark_dirty();
+            rt.save_session();
+            Ok(json!({"ok": true}))
+        }
         Req::ReportMetadata { pane, title } => {
             let pane = PaneId(pane);
             if !rt.panes.contains_key(&pane) {
@@ -522,6 +535,7 @@ pub const REFERENCE: &str = r#"[
   {"cmd":"report-agent-session","pane":1,"session_id":"uuid"},
   {"cmd":"report-agent","pane":1,"state":"blocked","label":"awaiting review","ttl_ms":60000},
   {"cmd":"report-metadata","pane":1,"title":"builder"},
+  {"cmd":"rename-pane","pane":1,"name":"kafka refactor"},
   {"cmd":"reload-manifests"},
   {"cmd":"agent-explain","pane":1},
   {"cmd":"agent-behavior","pane":1,"behavior":"global:researcher"},

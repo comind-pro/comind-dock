@@ -257,6 +257,14 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<Inp
             match key.code {
                 KeyCode::Enter => {
                     let name = buffer.trim().to_string();
+                    // Rename-pane accepts the empty string: it clears the
+                    // custom name and falls back to the agent's own title.
+                    if let PromptKind::RenamePane(pane) = kind {
+                        rt.state.rename_pane(pane, name);
+                        rt.state.input_mode = InputMode::Terminal;
+                        rt.save_session();
+                        return Ok(InputOutcome::Continue);
+                    }
                     if !name.is_empty() {
                         match kind {
                             PromptKind::RenameTab(id) => rt.state.rename_tab_by_id(id, name),
@@ -278,6 +286,7 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<Inp
                                 }
                                 return Ok(InputOutcome::Continue);
                             }
+                            PromptKind::RenamePane(_) => unreachable!("handled above"),
                             PromptKind::NewProfile(scope) => {
                                 rt.state.input_mode = InputMode::Terminal;
                                 let created = match &scope {

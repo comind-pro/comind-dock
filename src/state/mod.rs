@@ -21,6 +21,8 @@ pub enum PromptKind {
     NewSkill,
     /// Name for a new profile: None = global, Some(cwd) = workspace-scoped.
     NewProfile(Option<std::path::PathBuf>),
+    /// Custom name for a pane / agent session (empty clears it).
+    RenamePane(ids::PaneId),
 }
 
 /// One context-menu entry.
@@ -80,6 +82,8 @@ pub enum MenuAction {
     AgentOptions(ids::PaneId),
     /// Jump to a pane wherever it lives.
     FocusPane(ids::PaneId),
+    /// Prompt for a custom pane/agent name.
+    RenamePane(ids::PaneId),
     /// Pick a behavior (global or space-scoped profile) for an agent pane.
     BehaviorPicker(ids::PaneId),
     /// Inject the behavior into the running session; None clears the mark.
@@ -155,6 +159,11 @@ pub struct AppState {
     /// Modal UI state — never persisted (handoff/restore resets to Terminal).
     #[serde(skip)]
     pub input_mode: InputMode,
+    /// User-given names for panes (agent sessions). A custom name always
+    /// wins over the agent's own OSC title. Crosses the handoff with the
+    /// state; persisted per pane in the snapshot.
+    #[serde(default)]
+    pub pane_names: std::collections::HashMap<PaneId, String>,
     #[serde(default)]
     ids: IdGen,
 }
@@ -172,6 +181,7 @@ impl AppState {
         let tab = Tab::new(ids.tab(), "1".to_string(), pane);
         let ws = Workspace::new(ids.workspace(), workspace_name, cwd, tab);
         Self {
+            pane_names: std::collections::HashMap::new(),
             workspaces: vec![ws],
             active_workspace: 0,
             sidebar_visible: true,
@@ -297,6 +307,7 @@ impl AppState {
 
     /// Close a pane, cascading tab → workspace → app.
     pub fn close_pane(&mut self, pane: PaneId) -> CloseOutcome {
+        self.pane_names.remove(&pane);
         let wi = self
             .workspaces
             .iter()
@@ -511,6 +522,21 @@ impl AppState {
     }
 
     /// Rename by id — prompts resolve at Enter time, indexes may shift.
+    /// Set (or clear, when empty) a pane's user-given name.
+    pub fn rename_pane(&mut self, pane: PaneId, name: String) {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            self.pane_names.remove(&pane);
+        } else {
+            self.pane_names.insert(pane, name);
+        }
+    }
+
+    /// The user's name for a pane, if any.
+    pub fn pane_name(&self, pane: PaneId) -> Option<&str> {
+        self.pane_names.get(&pane).map(String::as_str)
+    }
+
     pub fn rename_tab_by_id(&mut self, id: ids::TabId, name: String) {
         for ws in &mut self.workspaces {
             if let Some(t) = ws.tabs.iter_mut().find(|t| t.id == id) {

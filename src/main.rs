@@ -269,6 +269,13 @@ enum PaneCmd {
         #[arg(long)]
         title: String,
     },
+    /// Name an agent session; the name wins over the agent's own title.
+    /// An empty name clears it.
+    Rename {
+        pane: String,
+        #[arg(default_value = "")]
+        name: String,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -679,6 +686,9 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             }
             PaneCmd::ReportAgent { pane, state, label, ttl_ms } => {
                 Req::ReportAgent { pane: parse_pane(&pane)?, state, label, ttl_ms }
+            }
+            PaneCmd::Rename { pane, name } => {
+                Req::RenamePane { pane: parse_pane(&pane)?, name }
             }
             PaneCmd::ReportMetadata { pane, title } => {
                 Req::ReportMetadata { pane: parse_pane(&pane)?, title: Some(title) }

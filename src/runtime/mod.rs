@@ -471,10 +471,11 @@ impl Runtime {
             changes.push(StatusChange { pane: id, agent, from: prev, to: eff });
 
             let Some(agent) = agent else { continue };
-            let name = if title.trim().is_empty() {
-                agent.to_string()
-            } else {
-                crate::agents::truncate_clean(&title, 24)
+            // Same precedence as the sidebar: user name > OSC title > agent.
+            let name = match self.state.pane_name(id) {
+                Some(n) => crate::agents::truncate_clean(n, 24),
+                None if title.trim().is_empty() => agent.to_string(),
+                None => crate::agents::truncate_clean(&title, 24),
             };
             if eff == Status::Blocked {
                 notices.push(Notice { pane: id, kind: NoticeKind::Blocked, name });
@@ -661,7 +662,8 @@ impl Runtime {
             {
                 env.push(("CDOCK_AGENT_PROFILE".to_string(), name));
             }
-            if agent.is_some() || cwd.is_some() {
+            let name = self.state.pane_name(*id).map(str::to_string);
+            if agent.is_some() || cwd.is_some() || name.is_some() {
                 metas.insert(
                     *id,
                     crate::state::snapshot::PaneMeta {
@@ -670,6 +672,7 @@ impl Runtime {
                         env,
                         agent_bin: p.agent_bin.clone(),
                         behavior: p.behavior.clone(),
+                        name,
                         saved_pane: None, // save-side: the layout leaf carries the id
                     },
                 );

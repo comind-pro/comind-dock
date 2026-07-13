@@ -71,6 +71,8 @@ them. They live in cdock metadata (not the repo), keyed to this folder:
 # bare names prefer this workspace's agents; ws:/global: pick explicitly
 "$CDOCK_BIN" agent behavior 7 ws:researcher       # inject a role into a
                                                   # RUNNING agent pane
+"$CDOCK_BIN" pane rename 7 "kafka consumers"     # name the session (shown
+                                                  # in the sidebar)
 ```
 
 ## Coordinate with other agents

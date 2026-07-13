@@ -19,6 +19,7 @@ pub fn pane_items(pane: PaneId) -> Vec<MenuItem> {
         ("new pane below", MenuAction::SplitDown(pane)),
         ("new pane above", MenuAction::SplitUp(pane)),
         ("new agent here…", MenuAction::AgentPicker(Some(pane))),
+        ("rename…", MenuAction::RenamePane(pane)),
         ("close pane", MenuAction::ClosePane(pane)),
     ]
     .into_iter()
