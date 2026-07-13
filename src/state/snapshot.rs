@@ -337,11 +337,17 @@ fn screen_file(dir: &std::path::Path, id: u64) -> PathBuf {
 
 /// Last `SCREEN_MAX_LINES` lines, hard-capped at `SCREEN_MAX_BYTES`. The
 /// byte cut lands after a newline, so it can't split a UTF-8 char either.
-fn screen_tail(text: &str) -> &str {
-    let mut s = match text.rmatch_indices('\n').nth(SCREEN_MAX_LINES) {
-        Some((i, _)) => &text[i + 1..],
-        None => text,
+fn screen_tail(text: &str) -> String {
+    // The separator an earlier restore replayed is plain emulator text now.
+    // Drop it, or every restart saves one more and they stack up.
+    let cleaned: String = match text.contains(RESTORED_SEP) {
+        true => text.split_inclusive('\n').filter(|l| l.trim_end() != RESTORED_SEP).collect(),
+        false => text.to_owned(),
     };
+    let mut s: &str = &cleaned;
+    if let Some((i, _)) = s.rmatch_indices('\n').nth(SCREEN_MAX_LINES) {
+        s = &s[i + 1..];
+    }
     if s.len() > SCREEN_MAX_BYTES {
         let over = s.len() - SCREEN_MAX_BYTES;
         // ponytail: a single line longer than the whole cap is dropped.
@@ -350,8 +356,11 @@ fn screen_tail(text: &str) -> &str {
             None => "",
         };
     }
-    s
+    s.to_owned()
 }
+
+/// The separator replay draws between restored history and live output.
+const RESTORED_SEP: &str = "\u{2500}\u{2500} restored \u{2500}\u{2500}";
 
 /// Sanitized bytes to feed the emulator on restore: control chars (incl.
 /// ESC) stripped except \t, \n → \r\n, dim "restored" separator appended.
@@ -366,7 +375,7 @@ pub fn screen_replay(text: &str) -> Vec<u8> {
             c => out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes()),
         }
     }
-    out.extend_from_slice("\x1b[2m\u{2500}\u{2500} restored \u{2500}\u{2500}\x1b[0m\r\n".as_bytes());
+    out.extend_from_slice(format!("\x1b[2m{RESTORED_SEP}\x1b[0m\r\n").as_bytes());
     out
 }
 
@@ -537,6 +546,20 @@ mod tests {
 
         // Short text passes through untouched.
         assert_eq!(screen_tail("hi\n"), "hi\n");
+    }
+
+    /// Save → replay → save must not stack separators: the marker fed to the
+    /// emulator on restore is scooped back up by the next autosave.
+    #[test]
+    fn screen_tail_drops_replayed_separators() {
+        let replayed = String::from_utf8(screen_replay("prompt$\n")).unwrap();
+        // The emulator's text afterwards: no ESC, and CRLF reads back as LF.
+        let emu = replayed.replace("\r\n", "\n").replace("\u{1b}[2m", "").replace("\u{1b}[0m", "");
+        assert!(emu.contains(RESTORED_SEP), "the marker is in the emulator");
+
+        let saved = screen_tail(&format!("{emu}prompt$\n"));
+        assert!(!saved.contains(RESTORED_SEP), "but never lands back in the file: {saved:?}");
+        assert_eq!(saved, "prompt$\nprompt$\n", "real output is untouched");
     }
 
     #[test]
