@@ -31,8 +31,11 @@ Type `claude` in the pane and work as usual. Now:
   agent in them, with its status, its profile, and which space it lives in.
 - **Right-click anything** — a pane, a tab, an agent row, a space — for its
   menu: rename, split, close, new agent, attach a role.
-- **Detach** with `ctrl+b q`. The agents keep running. `cdock` again to come
-  back. Everything you had is still there, including the screen history.
+- **Detach** with `ctrl+b q`, or the **✕** at the right edge of the tab bar.
+  The agents keep running; `cdock` brings you back to exactly this state,
+  screen history included. Closing the terminal window does the same thing.
+  The **⏻** next to it is the other ending: it stops the dock, and the agents
+  stop with it.
 - **Split** with `ctrl+b v` (right) or `ctrl+b -` (below); new tab `ctrl+b c`;
   switch tabs with `ctrl+b 1..9`; `ctrl+b ?` lists every binding.
 

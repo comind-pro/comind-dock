@@ -95,6 +95,11 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                             rt.kill_pane(pane);
                         }
                     }
+                    Some(tabbar::Hit::Detach) => {
+                        // Close this terminal; the dock (and every agent in
+                        // it) keeps running.
+                        return InputOutcome::Detach;
+                    }
                     Some(tabbar::Hit::CloseApp) => {
                         return InputOutcome::Shutdown;
                     }
