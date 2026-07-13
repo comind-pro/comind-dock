@@ -685,15 +685,15 @@ impl Runtime {
         // Screen history: a text tail per pane, replayed on cold restore.
         // Alt-screen panes are skipped — scrollback_text is just the TUI
         // frame there and replaying it is garbage.
-        // ponytail: full-grid text walk every autosave; make it change-driven
-        // if it ever shows up in a profile.
         if let Some(dir) = crate::state::snapshot::screens_dir() {
             let screens: Vec<(u64, Option<String>)> = self
                 .panes
                 .iter()
                 .map(|(id, p)| {
                     // Alt-screen: keep the previously saved primary tail.
-                    let text = (!p.emu.on_alt_screen()).then(|| p.emu.scrollback_text());
+                    // Only the tail is ever stored — don't walk the rest.
+                    let text = (!p.emu.on_alt_screen())
+                        .then(|| p.emu.scrollback_tail(crate::state::snapshot::SCREEN_MAX_LINES));
                     (id.0, text)
                 })
                 .collect();
@@ -706,8 +706,19 @@ impl Runtime {
         folder_name(&resolve_cwd(&self.cfg.terminal))
     }
 
-    /// Folder for a brand-new space (per [terminal].new_cwd).
+    /// Folder for a brand-new space (per [terminal].new_cwd). "follow"
+    /// means the focused pane's live process cwd — same rule as new panes.
     pub fn new_space_cwd(&self) -> std::path::PathBuf {
+        if self.cfg.terminal.new_cwd == "follow"
+            && let Some(cwd) = self
+                .panes
+                .get(&self.state.focused_pane())
+                .and_then(|p| p.pty.child_pid)
+                .and_then(crate::platform::process_cwd)
+                .filter(|c| c.is_dir())
+        {
+            return cwd;
+        }
         resolve_cwd(&self.cfg.terminal)
     }
 
@@ -925,8 +936,8 @@ fn resolve_cwd(t: &crate::config::TerminalCfg) -> std::path::PathBuf {
     match t.new_cwd.as_str() {
         "home" => std::env::var_os("HOME").map(std::path::PathBuf::from),
         p if p.starts_with('/') => Some(std::path::PathBuf::from(p)),
-        // ponytail: "follow" = launch cwd until per-pane cwd tracking
-        // (platform process info) lands; "current" is the same today.
+        // "follow"/"current" without a live pane to follow (boot, or a
+        // dead process): the server's own cwd.
         _ => None,
     }
     .or_else(|| std::env::current_dir().ok())

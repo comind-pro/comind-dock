@@ -1,7 +1,8 @@
-//! Session snapshot: the tree STRUCTURE (workspaces, tabs, split shapes,
-//! names) saved on quit and restored on start. Pane ids are not persisted —
-//! restore allocates fresh ones and the runtime spawns fresh shells.
-//! ponytail: structure only; cwds and screen history are Phase 2 persistence.
+//! Session snapshot: the tree (workspaces, tabs, split shapes, names) plus
+//! per-pane restore metadata — the agent ident to resume, the pane's own
+//! cwd, profile env, behavior role, the user's name for it. Pane ids are
+//! reallocated on restore; the saved id survives only to key the pane's
+//! screen-history file (bottom of this module).
 
 use std::path::PathBuf;
 
@@ -321,7 +322,7 @@ pub fn load() -> Option<Snapshot> {
 // into the emulator on cold restore. ponytail: text only — styled replay
 // would mean serializing the grid; the words above the prompt are the value.
 
-const SCREEN_MAX_LINES: usize = 200;
+pub const SCREEN_MAX_LINES: usize = 200;
 const SCREEN_MAX_BYTES: usize = 64 * 1024;
 
 /// Where this session's per-pane screen tails live.

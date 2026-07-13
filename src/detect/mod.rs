@@ -3,7 +3,10 @@
 //! runs the agent's ordered manifest rules, highest priority wins.
 //! Manifests: bundled, overridden by ~/.config/comind-dock/manifests/*.toml
 //! (matched by id), hot-reloadable via `cdock server reload-manifests`.
-//! ponytail: the remote manifest feed arrives with the update system.
+//! Manifests ship with the binary; user overrides live in
+//! ~/.config/comind-dock/manifests. ponytail: no remote manifest feed —
+//! `cdock update` ships new manifests with each release, which is enough
+//! until detection rules need to move faster than releases do.
 
 use serde::{Deserialize, Serialize};
 

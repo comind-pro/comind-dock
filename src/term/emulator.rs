@@ -164,8 +164,20 @@ impl Emulator {
     /// The whole buffer — scrollback history plus the live screen — as
     /// plain text (per-line trailing blanks stripped, one trailing newline).
     pub fn scrollback_text(&self) -> String {
-        let grid = self.term.grid();
+        self.scrollback_from(self.term.topmost_line().0)
+    }
+
+    /// The last `max_lines` rows of the buffer, same formatting. The
+    /// autosave path only keeps a tail — walking 10k rows of grid every 5s
+    /// per pane to then throw 98% of it away was the loop's fattest tick.
+    pub fn scrollback_tail(&self, max_lines: usize) -> String {
+        let bottom = self.term.bottommost_line().0;
         let top = self.term.topmost_line().0;
+        self.scrollback_from(top.max(bottom - max_lines as i32 + 1))
+    }
+
+    fn scrollback_from(&self, top: i32) -> String {
+        let grid = self.term.grid();
         let bottom = self.term.bottommost_line().0;
         let mut out = String::new();
         for l in top..=bottom {
@@ -280,6 +292,22 @@ mod tests {
         assert!(text.contains("line 0\n"));
         assert!(text.contains("line 29"));
         assert!(!text.contains("line 29 ")); // trailing blanks stripped
+    }
+
+    #[test]
+    fn scrollback_tail_bounds_the_walk() {
+        let mut e = emu();
+        for i in 0..100 {
+            e.feed(format!("line {i}\r\n").as_bytes());
+        }
+        let tail = e.scrollback_tail(10);
+        assert!(!tail.contains("line 50"), "old rows are not walked: {tail:?}");
+        assert!(tail.contains("line 99"), "the live bottom is there");
+        assert!(tail.lines().count() <= 10);
+        // The unbounded walk still sees everything.
+        assert!(e.scrollback_text().contains("line 0"));
+        // A tail larger than the buffer is clamped, not out of bounds.
+        assert!(e.scrollback_tail(100_000).contains("line 0"));
     }
 
     #[test]
