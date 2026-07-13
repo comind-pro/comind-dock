@@ -1,25 +1,25 @@
 class Cdock < Formula
   desc "Terminal-native runtime and multiplexer for AI coding agents"
   homepage "https://github.com/comind-pro/comind-dock"
-  version "0.4.2"
+  version "0.4.3"
   license "MIT"
 
-  # ponytail: no macOS x86_64 asset in v0.4.2 — add an on_intel block when the release ships one
+  # ponytail: no macOS x86_64 asset in v0.4.3 — add an on_intel block when the release ships one
   on_macos do
     on_arm do
-      url "https://github.com/comind-pro/comind-dock/releases/download/v0.4.2/cdock-aarch64-macos.tar.gz"
-      sha256 "867e236c216086bd49687a5ac7e2fcd2fa2b64cd20ae4649f01246bb0ef72190"
+      url "https://github.com/comind-pro/comind-dock/releases/download/v0.4.3/cdock-aarch64-macos.tar.gz"
+      sha256 "8700a6f1fa62fd891ccbb56727f48bbec372e0eb3ded0901a4916d77e6b49944"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/comind-pro/comind-dock/releases/download/v0.4.2/cdock-aarch64-linux.tar.gz"
-      sha256 "716bed204d651e470607840bac1a657807400a2b5725d23e887de2e189233157"
+      url "https://github.com/comind-pro/comind-dock/releases/download/v0.4.3/cdock-aarch64-linux.tar.gz"
+      sha256 "57d0d63dbd931cb1cc25aba366007e36da17546bfe12fcbddf954e71c67f1377"
     end
     on_intel do
-      url "https://github.com/comind-pro/comind-dock/releases/download/v0.4.2/cdock-x86_64-linux.tar.gz"
-      sha256 "fc22c17ddd408e2191243ac633a789581b1d239eb483aaa86921d9a0e74c7ce3"
+      url "https://github.com/comind-pro/comind-dock/releases/download/v0.4.3/cdock-x86_64-linux.tar.gz"
+      sha256 "4418599141b74b87d54b3f97a7829a67766e4763e718341b33b72249b519a743"
     end
   end
 
