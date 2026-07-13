@@ -296,10 +296,7 @@ mod tests {
             Some(Status::Idle)
         );
         // A real approval still blocks.
-        assert_eq!(
-            classify(&m, "", &lines(&["waiting for your approval"])),
-            Some(Status::Blocked)
-        );
+        assert_eq!(classify(&m, "", &lines(&["waiting for your approval"])), Some(Status::Blocked));
     }
 
     /// v2.1.206 spinner has no "esc to interrupt", and the input box with
