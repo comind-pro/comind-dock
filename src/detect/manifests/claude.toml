@@ -51,10 +51,14 @@ all_of = ["❯ 5. "]
 any_of = ["do you want to proceed", "do you want to", "would you like to", "yes, and don't ask again"]
 none_of = ["esc to interrupt", "running stop hooks", "· ↓ ", "· ↑ "]
 
+# "esc to cancel" is NOT here: every ordinary Claude Code menu prints it —
+# the double-esc rewind picker, @/slash autocomplete, theme select, the
+# feedback form — and none of them wait on the user for the agent's sake.
+# Real approvals show a numbered dialog (above) or say so in words.
 [[rule]]
 priority = 95
 state = "blocked"
-any_of = ["waiting for your approval", "grant access", "esc to cancel"]
+any_of = ["waiting for your approval", "grant access"]
 none_of = ["esc to interrupt", "running stop hooks", "· ↓ ", "· ↑ "]
 
 [[rule]]

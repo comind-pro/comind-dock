@@ -279,6 +279,29 @@ mod tests {
         assert_eq!(classify(&m, "", &lines(&["random text"])), None);
     }
 
+    /// Menus the user opened themselves (rewind picker, autocomplete, theme
+    /// select) all print an "esc to cancel" hint — the agent is not blocked.
+    #[test]
+    fn a_user_opened_menu_is_not_a_permission_prompt() {
+        let m = claude();
+        assert_eq!(
+            classify(
+                &m,
+                "",
+                &lines(&[
+                    "↑/↓ to select · Enter to confirm · Tab/Esc to cancel",
+                    "⏵⏵ auto mode on (shift+tab to cycle)",
+                ])
+            ),
+            Some(Status::Idle)
+        );
+        // A real approval still blocks.
+        assert_eq!(
+            classify(&m, "", &lines(&["waiting for your approval"])),
+            Some(Status::Blocked)
+        );
+    }
+
     /// v2.1.206 spinner has no "esc to interrupt", and the input box with
     /// mode hints stays on screen mid-task — the token counter must win.
     #[test]
