@@ -41,8 +41,10 @@ fn github_token() -> Option<String> {
 /// Numeric parts + a final "is-release" rank: leading digits of each dot
 /// part parse even with a prerelease suffix ("1-rc2" → 1), and at equal
 /// numbers a full release outranks any prerelease ("0.4.1" > "0.4.1-rc1").
-/// ponytail: rc1 vs rc2 at the same version compares by the suffix string,
-/// which is right for rcN/betaN and good enough for this repo's tags.
+/// ponytail: rc1 vs rc2 at the same version compares by the suffix STRING —
+/// fine up to rc9, but "rc10" < "rc2" lexicographically. Known ceiling:
+/// this repo never ships double-digit rcs of one version; a real SemVer
+/// prerelease parse is the upgrade path if that ever changes.
 fn semver(tag: &str) -> (Vec<u64>, bool, String) {
     let v = tag.trim_start_matches('v');
     let nums: Vec<u64> = v
@@ -143,21 +145,21 @@ pub fn self_update(exe: &Path) -> Result<Option<String>, String> {
         .find(|u| u.ends_with(&name))
         .ok_or_else(|| format!("release {tag} has no asset {name}"))?;
 
+    let sha_url = sha_asset(&assets, &name)?;
+
     println!("downloading {url}");
     let tarball = curl(url)?;
 
-    if let Some(sha_url) = assets.iter().find(|u| u.ends_with(&format!("{name}.sha256"))) {
-        let expected = String::from_utf8_lossy(&curl(sha_url)?)
-            .split_whitespace()
-            .next()
-            .unwrap_or_default()
-            .to_string();
-        let actual = sha256_hex(&tarball);
-        if expected != actual {
-            return Err(format!("checksum mismatch: expected {expected}, got {actual}"));
-        }
-        println!("checksum ok");
+    let expected = String::from_utf8_lossy(&curl(sha_url)?)
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    let actual = sha256_hex(&tarball);
+    if expected.is_empty() || expected != actual {
+        return Err(format!("checksum mismatch: expected {expected}, got {actual}"));
     }
+    println!("checksum ok");
 
     // Unpack next to the target and rename over it (atomic on one fs).
     let dir = exe.parent().ok_or("binary has no parent dir")?;
@@ -215,6 +217,16 @@ pub fn take_pending_release_notes() -> Option<String> {
     take_pending_notes(&crate::logging::state_dir()?)
 }
 
+/// The `.sha256` asset for `name`, or an error — self-update never installs
+/// an unverified tarball, even when a release simply forgot the checksum.
+fn sha_asset<'a>(assets: &'a [String], name: &str) -> Result<&'a String, String> {
+    let suffix = format!("{name}.sha256");
+    assets
+        .iter()
+        .find(|u| u.ends_with(&suffix))
+        .ok_or_else(|| format!("release has no {suffix} asset; refusing unverified update"))
+}
+
 /// ponytail: no crypto dependency for one digest — shell out like install.sh.
 fn sha256_hex(data: &[u8]) -> String {
     use std::io::Write;
@@ -255,6 +267,16 @@ mod tests {
         assert!(semver("v0.4.1") > semver("v0.4.1-rc1"));
         assert!(semver("v0.4.1-rc2") > semver("v0.4.1-rc1"));
         assert!(is_newer("v99.0.0-rc1"), "prerelease of a newer version is newer");
+    }
+
+    #[test]
+    fn update_without_checksum_asset_is_refused() {
+        let name = "cdock-aarch64-macos.tar.gz";
+        let with = vec![format!("https://x/{name}"), format!("https://x/{name}.sha256")];
+        assert!(sha_asset(&with, name).is_ok());
+        let without = vec![format!("https://x/{name}")];
+        let err = sha_asset(&without, name).unwrap_err();
+        assert!(err.contains("sha256"), "error names the missing checksum: {err}");
     }
 
     #[test]
