@@ -249,6 +249,29 @@ impl Runtime {
         Ok(())
     }
 
+    /// Rename an agent session: ONE name for the sidebar, the tab bar and
+    /// the "+ continue" picker. An empty name clears the override (back to
+    /// the agent's own title). Persisted by conversation id, so it outlives
+    /// the pane. The pane's tab drops any custom name of its own — the
+    /// label follows this one, and two names for the same thing is the bug
+    /// we are fixing.
+    pub fn rename_pane(&mut self, pane: PaneId, name: String) {
+        let name = name.trim().to_string();
+        self.state.rename_pane(pane, name.clone());
+        if let Some(ident) = self.agent_sessions.get(&pane) {
+            crate::agents::set_session_name(ident, Some(name.as_str()).filter(|n| !n.is_empty()));
+        }
+        if let Some(tab) = self
+            .state
+            .locate_pane(pane)
+            .and_then(|(wi, ti)| self.state.workspaces.get(wi).and_then(|w| w.tabs.get(ti)))
+            .map(|t| t.id)
+        {
+            self.state.reset_tab_name(tab);
+        }
+        self.dirty = true;
+    }
+
     /// $EDITOR on a path, in a fresh tab.
     pub fn open_in_editor(&mut self, path: &std::path::Path, area: Rect) -> io::Result<()> {
         let editor = self.cfg.terminal.editor_cmd();
@@ -867,8 +890,17 @@ pub fn build(
         // agent's hook re-reports (claude) or before the file walk can
         // rediscover (codex/opencode), and must not strip the ident. The
         // map holds full "agent:id" idents.
-        if meta.agent.as_deref().is_some_and(|a| a.contains(':')) {
-            rt.agent_sessions.insert(pane, meta.agent.clone().unwrap_or_default());
+        if let Some(ident) = meta.agent.as_deref().filter(|a| a.contains(':')) {
+            rt.agent_sessions.insert(pane, ident.to_string());
+            // The name follows the CONVERSATION: a snapshot without one
+            // (older server, or the pane was renamed elsewhere) still gets
+            // the user's name back.
+            if meta.name.is_none()
+                && let Some(id) = ident.split_once(':').map(|(_, i)| i)
+                && let Some(name) = crate::agents::session_names().get(id)
+            {
+                rt.state.rename_pane(pane, name.clone());
+            }
         }
         // The pane's own saved folder wins over the workspace anchor —
         // agent conversations are folder-bound; env carries the profile.

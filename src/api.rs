@@ -331,8 +331,7 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             if !rt.panes.contains_key(&pane) {
                 return Ok(err(format!("no such pane {pane}")));
             }
-            rt.state.rename_pane(pane, name);
-            rt.mark_dirty();
+            rt.rename_pane(pane, name);
             rt.save_session();
             Ok(json!({"ok": true}))
         }

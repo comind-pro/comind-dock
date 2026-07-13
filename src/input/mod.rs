@@ -260,7 +260,25 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<Inp
                     // Rename-pane accepts the empty string: it clears the
                     // custom name and falls back to the agent's own title.
                     if let PromptKind::RenamePane(pane) = kind {
-                        rt.state.rename_pane(pane, name);
+                        rt.rename_pane(pane, name);
+                        rt.state.input_mode = InputMode::Terminal;
+                        rt.save_session();
+                        return Ok(InputOutcome::Continue);
+                    }
+                    // Renaming a tab that holds an agent names the AGENT —
+                    // the tab label follows it, and the sidebar and the
+                    // continue-picker show the same thing.
+                    if let PromptKind::RenameTab(id) = kind
+                        && let Some(pane) = rt
+                            .state
+                            .workspaces
+                            .iter()
+                            .flat_map(|w| &w.tabs)
+                            .find(|t| t.id == id)
+                            .map(|t| t.focused_pane)
+                        && rt.panes.get(&pane).is_some_and(|p| p.agent.is_some())
+                    {
+                        rt.rename_pane(pane, name);
                         rt.state.input_mode = InputMode::Terminal;
                         rt.save_session();
                         return Ok(InputOutcome::Continue);

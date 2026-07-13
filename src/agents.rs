@@ -64,6 +64,41 @@ pub fn inherit_claude_profile(env: &mut Vec<(String, String)>, parent_dir: Optio
     }
 }
 
+/// User-given names for conversations, keyed by session id — so the name
+/// shown in the sidebar, the tab bar and the "+ continue" picker is ONE
+/// name, and it survives the pane (and the server) that carried it.
+fn session_names_path() -> Option<std::path::PathBuf> {
+    crate::logging::state_dir().map(|d| d.join("session-names.json"))
+}
+
+pub fn session_names() -> std::collections::HashMap<String, String> {
+    session_names_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+/// Name a conversation (None forgets it). `ident` may be "claude:<id>".
+pub fn set_session_name(ident: &str, name: Option<&str>) {
+    let id = ident.split_once(':').map_or(ident, |(_, i)| i);
+    let Some(path) = session_names_path() else { return };
+    let mut map = session_names();
+    match name {
+        Some(n) if !n.trim().is_empty() => {
+            map.insert(id.to_string(), n.trim().to_string());
+        }
+        _ => {
+            map.remove(id);
+        }
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(text) = serde_json::to_string_pretty(&map) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
 /// Short profile label from a CLAUDE_CONFIG_DIR path: ".claude-oleh" →
 /// "oleh"; the default ".claude" (or anything unnamed) → None.
 pub fn profile_label_from_dir(dir: &str) -> Option<String> {
@@ -458,6 +493,28 @@ mod tests {
             newest_agent_session("goose", std::path::Path::new("/p"), std::time::SystemTime::now()),
             None
         );
+    }
+
+    #[test]
+    fn session_names_are_keyed_by_conversation_id() {
+        let dir = std::env::temp_dir().join(format!("cdock-names-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Safety: single-threaded test env access.
+        unsafe { std::env::set_var("XDG_STATE_HOME", &dir) };
+
+        assert!(session_names().is_empty());
+        // The full ident and the bare id name the same conversation.
+        set_session_name("claude:abc-123", Some("kafka refactor"));
+        assert_eq!(session_names().get("abc-123").map(String::as_str), Some("kafka refactor"));
+        set_session_name("abc-123", Some("renamed again"));
+        assert_eq!(session_names().get("abc-123").map(String::as_str), Some("renamed again"));
+        // Empty forgets it (back to the conversation's own first prompt).
+        set_session_name("claude:abc-123", None);
+        assert!(!session_names().contains_key("abc-123"));
+
+        unsafe { std::env::remove_var("XDG_STATE_HOME") };
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

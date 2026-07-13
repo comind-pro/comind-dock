@@ -638,12 +638,17 @@ fn run_menu_action(
             // Sessions open in a pane with a LIVE agent are hidden — no
             // double resume. Panes whose agent exited (shell remains) keep a
             // stale map entry; their conversations must stay listable.
-            let open: std::collections::HashSet<&String> = rt
+            // agent_sessions holds full "agent:id" idents; the picker's ids
+            // are bare — compare on the id, or every live session shows up
+            // here as resumable.
+            let open: std::collections::HashSet<String> = rt
                 .panes
                 .iter()
                 .filter(|(_, p)| p.agent.is_some())
                 .filter_map(|(id, _)| rt.agent_sessions.get(id))
+                .map(|ident| ident.split_once(':').map_or(ident.clone(), |(_, i)| i.to_string()))
                 .collect();
+            let names = crate::agents::session_names();
             let items: Vec<MenuItem> = crate::agents::recent_claude_sessions(9)
                 .into_iter()
                 .filter(|s| !open.contains(&s.id))
@@ -653,9 +658,12 @@ fn run_menu_action(
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
+                    // The user's name for this conversation wins over its
+                    // first prompt — same name as the sidebar and tab bar.
+                    let title = names.get(&s.id).cloned().unwrap_or_else(|| s.title.clone());
                     let label = match s.profile_label() {
-                        Some(p) => format!("{} · {} · @{}", s.title, folder, p),
-                        None => format!("{} · {}", s.title, folder),
+                        Some(p) => format!("{title} · {folder} · @{p}"),
+                        None => format!("{title} · {folder}"),
                     };
                     MenuItem {
                         label,
@@ -671,6 +679,7 @@ fn run_menu_action(
             Ok(())
         }
         MenuAction::ResumeClaudeSession(id, cwd, config_dir) => {
+            let stored_name = crate::agents::session_names().get(&id).cloned();
             // Land in the deepest space containing the session's folder
             // (cpgps/alert-service joins cpgps, not a new sibling space);
             // create one only when nothing contains it.
@@ -698,14 +707,21 @@ fn run_menu_action(
             let env = config_dir
                 .map(|d| vec![("CLAUDE_CONFIG_DIR".to_string(), d.display().to_string())])
                 .unwrap_or_default();
-            rt.spawn_pane_full(
+            let spawned = rt.spawn_pane_full(
                 pane,
                 area.width.max(2) / 2,
                 area.height.max(2) / 2,
                 Some(crate::agents::hold_on_failure(&format!("claude --resume {id}"))),
                 env,
                 Some(cwd),
-            )
+            );
+            // Bind the conversation now (the hook re-reports it in a moment)
+            // so its stored name shows immediately.
+            rt.agent_sessions.insert(pane, format!("claude:{id}"));
+            if let Some(name) = stored_name {
+                rt.state.rename_pane(pane, name);
+            }
+            spawned
         }
         MenuAction::ProfileBrowser => {
             let mut items: Vec<MenuItem> = crate::profile::list()
