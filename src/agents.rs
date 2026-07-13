@@ -258,7 +258,11 @@ pub fn newest_agent_session(
 }
 
 /// Files under `dir` (recursing at most `depth` levels) with their mtimes.
-fn walk_files(dir: &std::path::Path, depth: usize, out: &mut Vec<(std::time::SystemTime, std::path::PathBuf)>) {
+fn walk_files(
+    dir: &std::path::Path,
+    depth: usize,
+    out: &mut Vec<(std::time::SystemTime, std::path::PathBuf)>,
+) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let p = e.path();
@@ -359,11 +363,11 @@ pub fn hold_on_failure(cmd: &str) -> String {
 /// selector/combining mark at the cut point (emoji-heavy OSC titles).
 pub fn truncate_clean(s: &str, n: usize) -> String {
     let mut out: String = s.chars().take(n).collect();
-    while out
-        .chars()
-        .last()
-        .is_some_and(|c| c == '\u{200D}' || ('\u{FE00}'..='\u{FE0F}').contains(&c) || ('\u{0300}'..='\u{036F}').contains(&c))
-    {
+    while out.chars().last().is_some_and(|c| {
+        c == '\u{200D}'
+            || ('\u{FE00}'..='\u{FE0F}').contains(&c)
+            || ('\u{0300}'..='\u{036F}').contains(&c)
+    }) {
         out.pop();
     }
     out
@@ -628,7 +632,10 @@ mod tests {
         assert_eq!(profile_label_from_dir("/Users/x/.claude"), None);
         assert_eq!(profile_label_from_dir("/Users/x/.claude-oleh"), Some("oleh".into()));
         assert_eq!(profile_label_from_dir("/Users/x/.claude-science"), Some("science".into()));
-        assert_eq!(profile_label_from_dir("/opt/custom-claude-cfg"), Some("custom-claude-cfg".into()));
+        assert_eq!(
+            profile_label_from_dir("/opt/custom-claude-cfg"),
+            Some("custom-claude-cfg".into())
+        );
     }
 
     /// Live-system sanity: `cargo test -- --ignored print_recent`.

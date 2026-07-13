@@ -1,0 +1,6 @@
+# The code was hand-formatted to ~100 columns with calls, chains and literals
+# kept on one line where they fit. "Max" width heuristics is what preserves
+# that; rustfmt's defaults (60-col calls, 35-col struct literals) would break
+# most of the file into vertical lists.
+max_width = 100
+use_small_heuristics = "Max"

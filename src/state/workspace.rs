@@ -55,12 +55,7 @@ pub struct Workspace {
 
 impl Default for Workspace {
     fn default() -> Self {
-        Workspace::new(
-            WorkspaceId(0),
-            String::new(),
-            std::path::PathBuf::from("/"),
-            Tab::default(),
-        )
+        Workspace::new(WorkspaceId(0), String::new(), std::path::PathBuf::from("/"), Tab::default())
     }
 }
 

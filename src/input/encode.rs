@@ -370,10 +370,7 @@ mod tests {
     fn kitty_plain_char_stays_text_unless_report_all() {
         let k = key(KeyCode::Char('a'), KeyModifiers::NONE);
         assert_eq!(encode_key(&k, &DISAMBIG), Some(b"a".to_vec()));
-        assert_eq!(
-            encode_key(&k, &TermMode::REPORT_ALL_KEYS_AS_ESC),
-            Some(b"\x1b[97u".to_vec())
-        );
+        assert_eq!(encode_key(&k, &TermMode::REPORT_ALL_KEYS_AS_ESC), Some(b"\x1b[97u".to_vec()));
     }
 
     #[test]

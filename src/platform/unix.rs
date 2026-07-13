@@ -162,8 +162,14 @@ pub fn process_env_var(pid: u32, key: &str) -> Option<String> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
     let mut size: libc::size_t = 0;
     unsafe {
-        if libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0)
-            != 0
+        if libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        ) != 0
         {
             return None;
         }
@@ -217,9 +223,7 @@ mod tests {
 /// ponytail: macOS only; X11/Wayland would need xclip/wl-paste probing.
 #[cfg(target_os = "macos")]
 pub fn clipboard_has_image() -> bool {
-    let Ok(out) = std::process::Command::new("osascript")
-        .args(["-e", "clipboard info"])
-        .output()
+    let Ok(out) = std::process::Command::new("osascript").args(["-e", "clipboard info"]).output()
     else {
         return false;
     };

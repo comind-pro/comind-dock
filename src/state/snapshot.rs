@@ -88,7 +88,12 @@ pub enum NodeSnap {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pane: Option<u64>,
     },
-    Split { dir: DirSnap, ratio: f32, a: Box<NodeSnap>, b: Box<NodeSnap> },
+    Split {
+        dir: DirSnap,
+        ratio: f32,
+        a: Box<NodeSnap>,
+        b: Box<NodeSnap>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -251,10 +256,8 @@ impl Snapshot {
             .flatten()
             .unwrap_or(0)
             .min(workspaces.len() - 1);
-        let pane_names = panes
-            .iter()
-            .filter_map(|(id, m)| m.name.clone().map(|n| (*id, n)))
-            .collect();
+        let pane_names =
+            panes.iter().filter_map(|(id, m)| m.name.clone().map(|n| (*id, n))).collect();
         let state = AppState {
             pane_names,
             workspaces,
@@ -265,9 +268,9 @@ impl Snapshot {
             ids,
         };
         // Keep only panes that survived (degenerate tabs were skipped).
-        panes.retain(|(id, _)| state.workspaces.iter().any(|w| {
-            w.tabs.iter().any(|t| t.layout.contains(*id))
-        }));
+        panes.retain(|(id, _)| {
+            state.workspaces.iter().any(|w| w.tabs.iter().any(|t| t.layout.contains(*id)))
+        });
         state.check_invariants();
         Some((state, panes))
     }

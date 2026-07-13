@@ -262,11 +262,7 @@ impl AppState {
     /// All pane ids across every workspace and tab.
     #[cfg(test)]
     pub fn all_panes(&self) -> Vec<PaneId> {
-        self.workspaces
-            .iter()
-            .flat_map(|w| w.tabs.iter())
-            .flat_map(|t| t.layout.panes())
-            .collect()
+        self.workspaces.iter().flat_map(|w| w.tabs.iter()).flat_map(|t| t.layout.panes()).collect()
     }
 
     /// Split `target` in place WITHOUT moving the user's focus or active
@@ -316,10 +312,8 @@ impl AppState {
     /// Close a pane, cascading tab → workspace → app.
     pub fn close_pane(&mut self, pane: PaneId) -> CloseOutcome {
         self.pane_names.remove(&pane);
-        let wi = self
-            .workspaces
-            .iter()
-            .position(|w| w.tabs.iter().any(|t| t.layout.contains(pane)));
+        let wi =
+            self.workspaces.iter().position(|w| w.tabs.iter().any(|t| t.layout.contains(pane)));
         let Some(wi) = wi else { return CloseOutcome::PaneRemoved };
         let ws = &mut self.workspaces[wi];
         let ti = ws
@@ -376,11 +370,8 @@ impl AppState {
 
     pub fn toggle_zoom(&mut self) {
         let tab = self.active_tab_mut();
-        tab.zoomed = if tab.zoomed == Some(tab.focused_pane) {
-            None
-        } else {
-            Some(tab.focused_pane)
-        };
+        tab.zoomed =
+            if tab.zoomed == Some(tab.focused_pane) { None } else { Some(tab.focused_pane) };
     }
 
     /// New tab in the active workspace; returns the new pane id to spawn.
@@ -466,9 +457,11 @@ impl AppState {
     /// Rename by the folder — only while the user hasn't renamed manually.
     pub fn auto_rename_workspace(&mut self, wi: usize, name: String) {
         if let Some(ws) = self.workspaces.get_mut(wi)
-            && !ws.custom_name && ws.name != name {
-                ws.name = name;
-            }
+            && !ws.custom_name
+            && ws.name != name
+        {
+            ws.name = name;
+        }
     }
 
     /// Panes of any workspace by index (close-space from the menu).
@@ -585,10 +578,7 @@ impl AppState {
     /// Workspace/tab indices containing a pane.
     pub fn locate_pane(&self, pane: PaneId) -> Option<(usize, usize)> {
         self.workspaces.iter().enumerate().find_map(|(wi, ws)| {
-            ws.tabs
-                .iter()
-                .position(|t| t.layout.contains(pane))
-                .map(|ti| (wi, ti))
+            ws.tabs.iter().position(|t| t.layout.contains(pane)).map(|ti| (wi, ti))
         })
     }
 
@@ -747,7 +737,10 @@ mod tests {
         let mut s = AppState::new("a".into(), std::path::PathBuf::from("/proj/a"));
         s.new_workspace("b".into(), std::path::PathBuf::from("/proj/b/sub"), None);
         s.attach_scope(std::path::PathBuf::from("/proj/a"));
-        assert!(s.attach_scope(std::path::PathBuf::from("/proj/b")).is_none(), "prefix match reused");
+        assert!(
+            s.attach_scope(std::path::PathBuf::from("/proj/b")).is_none(),
+            "prefix match reused"
+        );
         assert_eq!(s.active_workspace().cwd, std::path::PathBuf::from("/proj/b/sub"));
     }
 

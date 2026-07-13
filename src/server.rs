@@ -80,8 +80,8 @@ impl Client {
         }
         self.size = (cols, rows);
         let a = self.area();
-        self.term = Terminal::new(TestBackend::new(a.width, a.height))
-            .expect("test backend is infallible");
+        self.term =
+            Terminal::new(TestBackend::new(a.width, a.height)).expect("test backend is infallible");
         self.prev = None;
         self.needs_full = true;
     }

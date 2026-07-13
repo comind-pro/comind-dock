@@ -45,10 +45,6 @@ pub fn init() -> std::io::Result<WorkerGuard> {
     let (writer, guard) = tracing_appender::non_blocking(appender);
 
     let filter = EnvFilter::try_from_env("CDOCK_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(writer)
-        .with_ansi(false)
-        .init();
+    tracing_subscriber::fmt().with_env_filter(filter).with_writer(writer).with_ansi(false).init();
     Ok(guard)
 }

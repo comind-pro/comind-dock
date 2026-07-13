@@ -104,10 +104,12 @@ mod tests {
     fn custom_overrides_and_warns() {
         let cfg = ThemeCfg {
             name: "default".into(),
-            custom: [("accent".to_string(), "#00ff00".to_string()),
-                     ("bogus".to_string(), "red".to_string())]
-                .into_iter()
-                .collect(),
+            custom: [
+                ("accent".to_string(), "#00ff00".to_string()),
+                ("bogus".to_string(), "red".to_string()),
+            ]
+            .into_iter()
+            .collect(),
         };
         let (theme, warnings) = resolve(&cfg);
         assert_eq!(theme.accent, Color::Rgb(0, 255, 0));

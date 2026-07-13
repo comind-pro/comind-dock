@@ -179,7 +179,12 @@ impl Node {
         (rects, dividers)
     }
 
-    fn layout_into(&self, area: Rect, rects: &mut Vec<(PaneId, Rect)>, dividers: &mut Vec<Divider>) {
+    fn layout_into(
+        &self,
+        area: Rect,
+        rects: &mut Vec<(PaneId, Rect)>,
+        dividers: &mut Vec<Divider>,
+    ) {
         match self {
             Node::Leaf(id) => rects.push((*id, area)),
             Node::Split { dir: Dir::Right, ratio, a, b } => {
@@ -263,12 +268,8 @@ pub fn neighbor(rects: &[(PaneId, Rect)], from: PaneId, side: Side) -> Option<Pa
             continue;
         }
         let overlap = match side {
-            Side::Left | Side::Right => {
-                overlap_len(fr.y, fr.height, r.y, r.height)
-            }
-            Side::Up | Side::Down => {
-                overlap_len(fr.x, fr.width, r.x, r.width)
-            }
+            Side::Left | Side::Right => overlap_len(fr.y, fr.height, r.y, r.height),
+            Side::Up | Side::Down => overlap_len(fr.x, fr.width, r.x, r.width),
         };
         if overlap > 0 && best.is_none_or(|(_, b)| overlap > b) {
             best = Some((*id, overlap));
@@ -357,7 +358,8 @@ mod tests {
         let (before, _) = n.layout(area());
         assert!(n.resize(p(1), Dir::Right, 0.1));
         let (after, _) = n.layout(area());
-        let w = |rects: &[(PaneId, Rect)], id| rects.iter().find(|(i, _)| *i == id).unwrap().1.width;
+        let w =
+            |rects: &[(PaneId, Rect)], id| rects.iter().find(|(i, _)| *i == id).unwrap().1.width;
         assert!(w(&after, p(1)) > w(&before, p(1)));
         // No vertical split anywhere → vertical resize is a no-op.
         assert!(!n.resize(p(1), Dir::Down, 0.1));

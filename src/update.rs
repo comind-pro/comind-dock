@@ -88,9 +88,7 @@ fn parse_release(v: &serde_json::Value) -> Result<Release, String> {
     let assets = v["assets"]
         .as_array()
         .map(|a| {
-            a.iter()
-                .filter_map(|x| x["browser_download_url"].as_str().map(String::from))
-                .collect()
+            a.iter().filter_map(|x| x["browser_download_url"].as_str().map(String::from)).collect()
         })
         .unwrap_or_default();
     let notes = v["body"].as_str().unwrap_or_default().to_string();
@@ -236,10 +234,8 @@ fn sha256_hex(data: &[u8]) -> String {
         let _ = stdin.write_all(data);
     }
     let out = child.wait_with_output().ok();
-    out.and_then(|o| {
-        String::from_utf8_lossy(&o.stdout).split_whitespace().next().map(String::from)
-    })
-    .unwrap_or_default()
+    out.and_then(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().next().map(String::from))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

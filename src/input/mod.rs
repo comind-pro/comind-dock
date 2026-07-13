@@ -120,9 +120,10 @@ fn is_prefix(rt: &Runtime, key: &KeyEvent) -> bool {
 /// prefix+1..9 tab jumps — a fixed indexed family, not per-key configurable.
 fn jump_tab_index(key: &KeyEvent) -> Option<usize> {
     if let KeyCode::Char(c @ '1'..='9') = key.code
-        && key.modifiers.is_empty() {
-            return Some(c as usize - '1' as usize);
-        }
+        && key.modifiers.is_empty()
+    {
+        return Some(c as usize - '1' as usize);
+    }
     None
 }
 
@@ -351,7 +352,11 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<Inp
 
 const RESIZE_STEP: f32 = 0.03;
 
-fn dispatch_bound(rt: &mut Runtime, bound: crate::config::keys::Bound, area: Rect) -> io::Result<InputOutcome> {
+fn dispatch_bound(
+    rt: &mut Runtime,
+    bound: crate::config::keys::Bound,
+    area: Rect,
+) -> io::Result<InputOutcome> {
     match bound {
         crate::config::keys::Bound::Builtin(action) => dispatch(rt, action, area),
         crate::config::keys::Bound::Command(cmd) => {
@@ -411,10 +416,8 @@ fn dispatch(rt: &mut Runtime, action: Action, area: Rect) -> io::Result<InputOut
         }
         Action::RenameWorkspace => {
             let id = rt.state.active_workspace().id;
-            rt.state.input_mode = InputMode::Prompt {
-                kind: PromptKind::RenameWorkspace(id),
-                buffer: String::new(),
-            };
+            rt.state.input_mode =
+                InputMode::Prompt { kind: PromptKind::RenameWorkspace(id), buffer: String::new() };
         }
         Action::CloseWorkspace => {
             for pane in rt.state.active_workspace_panes() {
@@ -430,10 +433,7 @@ fn dispatch(rt: &mut Runtime, action: Action, area: Rect) -> io::Result<InputOut
                 let mut text = p.emu.scrollback_text();
                 if p.emu.on_alt_screen() {
                     // The alt grid has no history — be honest about it.
-                    text.insert_str(
-                        0,
-                        "# fullscreen app: visible screen only, no scrollback\n\n",
-                    );
+                    text.insert_str(0, "# fullscreen app: visible screen only, no scrollback\n\n");
                 }
                 let path = std::env::temp_dir().join(format!("cdock-scrollback-{}.txt", focused.0));
                 match std::fs::write(&path, text) {

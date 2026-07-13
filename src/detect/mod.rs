@@ -219,7 +219,8 @@ pub fn manifest_for<'a>(manifests: &'a [Manifest], agent: &str) -> Option<&'a Ma
 /// same id (or adds a new agent).
 pub fn load_all() -> Vec<Manifest> {
     let mut manifests = bundled();
-    let Some(dir) = crate::config::config_path(None).and_then(|p| p.parent().map(|d| d.join("manifests")))
+    let Some(dir) =
+        crate::config::config_path(None).and_then(|p| p.parent().map(|d| d.join("manifests")))
     else {
         return manifests;
     };
@@ -229,9 +230,10 @@ pub fn load_all() -> Vec<Manifest> {
         if path.extension().is_none_or(|e| e != "toml") {
             continue;
         }
-        match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| {
-            toml::from_str::<Manifest>(&t).map_err(|e| e.to_string())
-        }) {
+        match std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|t| toml::from_str::<Manifest>(&t).map_err(|e| e.to_string()))
+        {
             Ok(m) => {
                 tracing::info!(id = %m.id, path = %path.display(), "manifest override");
                 manifests.retain(|b| b.id != m.id);
@@ -273,10 +275,7 @@ mod tests {
             classify(&m, "", &lines(&["Do you want to proceed?", "❯ 1. Yes"])),
             Some(Status::Blocked)
         );
-        assert_eq!(
-            classify(&m, "", &lines(&["❯ ", "? for shortcuts"])),
-            Some(Status::Idle)
-        );
+        assert_eq!(classify(&m, "", &lines(&["❯ ", "? for shortcuts"])), Some(Status::Idle));
         assert_eq!(classify(&m, "", &lines(&["random text"])), None);
     }
 
@@ -298,11 +297,7 @@ mod tests {
             Some(Status::Working)
         );
         assert_eq!(
-            classify(
-                &m,
-                "",
-                &lines(&["✳ Churning… (5s · ↑ 1.2k tokens)", "❯", "? for shortcuts"])
-            ),
+            classify(&m, "", &lines(&["✳ Churning… (5s · ↑ 1.2k tokens)", "❯", "? for shortcuts"])),
             Some(Status::Working)
         );
     }

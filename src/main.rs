@@ -236,21 +236,33 @@ enum PaneCmd {
         command: Option<String>,
     },
     /// Write text + Enter to a pane's PTY.
-    Run { pane: String, command: String },
+    Run {
+        pane: String,
+        command: String,
+    },
     /// Write literal text (no Enter).
-    SendText { pane: String, text: String },
+    SendText {
+        pane: String,
+        text: String,
+    },
     /// Read the last non-empty screen lines.
     Read {
         pane: String,
         #[arg(long)]
         lines: Option<usize>,
     },
-    Focus { pane: String },
+    Focus {
+        pane: String,
+    },
     /// Stream a pane's raw output to stdout until Ctrl-C.
-    Observe { pane: String },
+    Observe {
+        pane: String,
+    },
     /// Interactive attach: your keystrokes go to the pane, its output
     /// streams back. Detach with Ctrl-].
-    Attach { pane: String },
+    Attach {
+        pane: String,
+    },
     /// Report an agent state for a pane (hooks/wrappers): working |
     /// blocked | done | idle | clear.
     ReportAgent {
@@ -329,10 +341,7 @@ enum PluginCmd {
     /// Remove a linked plugin (refuses to delete real directories).
     Unlink { id: String },
     /// Run a plugin action in the foreground.
-    Action {
-        plugin: String,
-        action: String,
-    },
+    Action { plugin: String, action: String },
     /// Install a plugin: gh:owner/repo (shallow clone) or a local path.
     Install { spec: String },
     /// Open the panes a plugin declares under [[panes]].
@@ -357,7 +366,9 @@ enum SkillCmd {
 
 #[derive(clap::Subcommand, Debug)]
 enum WorkspaceCmd {
-    Focus { workspace: u64 },
+    Focus {
+        workspace: u64,
+    },
     /// New workspace ([terminal].new_cwd unless --cwd).
     Create {
         #[arg(long)]
@@ -367,17 +378,23 @@ enum WorkspaceCmd {
         ssh: Option<String>,
     },
     /// Kill every pane in the workspace.
-    Close { workspace: u64 },
+    Close {
+        workspace: u64,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
 enum TabCmd {
-    Focus { tab: u64 },
+    Focus {
+        tab: u64,
+    },
     Create {
         #[arg(long)]
         workspace: Option<u64>,
     },
-    Close { tab: u64 },
+    Close {
+        tab: u64,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -432,9 +449,9 @@ fn run_session_cmd(sub: SessionCmd) -> Result<bool, String> {
                 .flatten()
                 .filter_map(|e| {
                     let n = e.file_name().to_string_lossy().into_owned();
-                    n.strip_prefix("session-").and_then(|r| {
-                        r.strip_suffix(".json").or_else(|| r.strip_suffix(".sock"))
-                    }).map(str::to_string)
+                    n.strip_prefix("session-")
+                        .and_then(|r| r.strip_suffix(".json").or_else(|| r.strip_suffix(".sock")))
+                        .map(str::to_string)
                 })
                 .collect();
             names.sort();
@@ -442,10 +459,7 @@ fn run_session_cmd(sub: SessionCmd) -> Result<bool, String> {
             for name in names {
                 let snap = dir.join(format!("session-{name}.json"));
                 let size = std::fs::metadata(&snap).map(|m| m.len()).unwrap_or(0);
-                println!(
-                    "{name}	{}	{size}B",
-                    if running(&name) { "running" } else { "stopped" }
-                );
+                println!("{name}	{}	{size}B", if running(&name) { "running" } else { "stopped" });
             }
             Ok(true)
         }
@@ -615,10 +629,7 @@ fn install_hook_into(profile_dir: &std::path::Path) -> Result<(), String> {
     }
     let pretty = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
     std::fs::write(&path, pretty).map_err(|e| e.to_string())?;
-    println!(
-        "installed session + status hooks into {} (backup: .json.bak)",
-        path.display()
-    );
+    println!("installed session + status hooks into {} (backup: .json.bak)", path.display());
     Ok(())
 }
 
@@ -628,8 +639,7 @@ fn install_skill_into(profile_dir: &std::path::Path) -> Result<(), String> {
     let dir = profile_dir.join("skills/cdock");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join("SKILL.md");
-    std::fs::write(&path, include_str!("integration/cdock_skill.md"))
-        .map_err(|e| e.to_string())?;
+    std::fs::write(&path, include_str!("integration/cdock_skill.md")).map_err(|e| e.to_string())?;
     println!("installed agent skill at {}", path.display());
     Ok(())
 }
@@ -744,16 +754,13 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             PaneCmd::ReportAgent { pane, state, label, ttl_ms, pid } => {
                 Req::ReportAgent { pane: parse_pane(&pane)?, state, label, ttl_ms, pid }
             }
-            PaneCmd::Rename { pane, name } => {
-                Req::RenamePane { pane: parse_pane(&pane)?, name }
-            }
+            PaneCmd::Rename { pane, name } => Req::RenamePane { pane: parse_pane(&pane)?, name },
             PaneCmd::ReportMetadata { pane, title } => {
                 Req::ReportMetadata { pane: parse_pane(&pane)?, title: Some(title) }
             }
             PaneCmd::Observe { pane } => {
                 let pane = parse_pane(&pane)?;
-                let spec =
-                    api::SubSpec { events: vec!["output".to_string()], pane: Some(pane) };
+                let spec = api::SubSpec { events: vec!["output".to_string()], pane: Some(pane) };
                 api::subscribe(&spec, |v| {
                     if let Some(data) = v["data"].as_str() {
                         print!("{data}");
@@ -825,30 +832,30 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                     Ok(true)
                 }
                 PluginCmd::Action { plugin, action } => plugin::invoke(&plugin, &action),
-            PluginCmd::Install { spec } => {
-                println!("installed {}", plugin::install(&spec)?);
-                return Ok(true);
-            }
-            PluginCmd::Open { id } => {
-                let p = plugin::load(&id)?;
-                for mp in plugin::managed_panes(&p) {
-                    let v = api::request(&Req::Split {
-                        pane: None,
-                        direction: None,
-                        command: Some(mp.command.clone()),
-                    })
-                    .map_err(|e| e.to_string())?;
-                    // Honor the declared title when the split reports its pane.
-                    if let Some(pane) = v["pane"].as_u64() {
-                        let _ = api::request(&Req::ReportMetadata {
-                            pane,
-                            title: Some(mp.title.clone()),
-                        });
-                    }
-                    println!("{}	{v}", mp.title);
+                PluginCmd::Install { spec } => {
+                    println!("installed {}", plugin::install(&spec)?);
+                    return Ok(true);
                 }
-                return Ok(true);
-            }
+                PluginCmd::Open { id } => {
+                    let p = plugin::load(&id)?;
+                    for mp in plugin::managed_panes(&p) {
+                        let v = api::request(&Req::Split {
+                            pane: None,
+                            direction: None,
+                            command: Some(mp.command.clone()),
+                        })
+                        .map_err(|e| e.to_string())?;
+                        // Honor the declared title when the split reports its pane.
+                        if let Some(pane) = v["pane"].as_u64() {
+                            let _ = api::request(&Req::ReportMetadata {
+                                pane,
+                                title: Some(mp.title.clone()),
+                            });
+                        }
+                        println!("{}	{v}", mp.title);
+                    }
+                    return Ok(true);
+                }
             };
         }
         Cmd::Skill { sub } => {
@@ -885,7 +892,8 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             WorkspaceCmd::Focus { workspace } => Req::WorkspaceFocus { workspace },
             WorkspaceCmd::Create { cwd, ssh } => {
                 let Some(host) = ssh else {
-                    let v = api::request(&Req::WorkspaceCreate { cwd }).map_err(|e| e.to_string())?;
+                    let v =
+                        api::request(&Req::WorkspaceCreate { cwd }).map_err(|e| e.to_string())?;
                     println!("{v}");
                     return Ok(v["ok"].as_bool().unwrap_or(false));
                 };
@@ -987,13 +995,9 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
         },
         Cmd::Worktree { sub } => match sub {
             WorktreeCmd::List { workspace } => Req::WorktreeList { workspace },
-            WorktreeCmd::Create { branch, workspace } => {
-                Req::WorktreeCreate { workspace, branch }
-            }
+            WorktreeCmd::Create { branch, workspace } => Req::WorktreeCreate { workspace, branch },
             WorktreeCmd::Open { branch, workspace } => Req::WorktreeOpen { workspace, branch },
-            WorktreeCmd::Remove { workspace, force } => {
-                Req::WorktreeRemove { workspace, force }
-            }
+            WorktreeCmd::Remove { workspace, force } => Req::WorktreeRemove { workspace, force },
         },
         Cmd::Integration { sub: IntegrationCmd::Install { agent } } => {
             return match agent.as_str() {
@@ -1010,7 +1014,9 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                     if handoff {
                         println!("handing the running server off to the new binary…");
                         match api::request(&Req::Handoff) {
-                            Ok(v) if v["ok"] == true => println!("handoff requested — reconnecting"),
+                            Ok(v) if v["ok"] == true => {
+                                println!("handoff requested — reconnecting")
+                            }
                             Ok(v) => println!("handoff refused: {v}"),
                             Err(e) => println!("no running server to hand off ({e})"),
                         }
@@ -1132,7 +1138,9 @@ fn main() -> ExitCode {
         && std::env::var_os("CDOCK_ENV").is_some()
         && !cfg.experimental.allow_nested
     {
-        eprintln!("cdock: already running inside a cdock pane (CDOCK_ENV is set); refusing to nest");
+        eprintln!(
+            "cdock: already running inside a cdock pane (CDOCK_ENV is set); refusing to nest"
+        );
         eprintln!("cdock: set [experimental].allow_nested = true to override");
         return ExitCode::FAILURE;
     }
@@ -1221,10 +1229,7 @@ fn run_server(cfg: config::Config, warnings: Vec<String>) -> std::io::Result<()>
         let (listener, api_listener) = if heir {
             (bind(sock.clone()).await?, bind(api_sock.clone()).await?)
         } else {
-            (
-                tokio::net::UnixListener::bind(&sock)?,
-                tokio::net::UnixListener::bind(&api_sock)?,
-            )
+            (tokio::net::UnixListener::bind(&sock)?, tokio::net::UnixListener::bind(&api_sock)?)
         };
         drop(_sock_lock); // cleanup + bind done — let other launches proceed
         let result = server::run(
@@ -1321,7 +1326,11 @@ fn take_handoff() -> Option<runtime::Handoff> {
             if !owner_alive {
                 let _ = std::fs::remove_file(&path);
             }
-            tracing::warn!(their_pid = h.pid, owner_alive, "ignoring another process's handoff file");
+            tracing::warn!(
+                their_pid = h.pid,
+                owner_alive,
+                "ignoring another process's handoff file"
+            );
             None
         }
         Err(e) => {

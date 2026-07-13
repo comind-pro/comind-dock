@@ -40,11 +40,8 @@ pub fn render(
 ) {
     use ratatui::widgets::{Block, BorderType, Borders};
 
-    let border_style = if focused {
-        Style::new().fg(theme.accent)
-    } else {
-        Style::new().fg(theme.divider)
-    };
+    let border_style =
+        if focused { Style::new().fg(theme.accent) } else { Style::new().fg(theme.divider) };
     let title_style =
         if focused { Style::new().fg(theme.accent) } else { Style::new().fg(theme.muted) };
     let block = Block::new()
@@ -104,7 +101,10 @@ pub fn render(
 }
 
 /// Buffer-space selection test (display_iter points are buffer coords too).
-fn selected(sel: &alacritty_terminal::selection::SelectionRange, p: alacritty_terminal::index::Point) -> bool {
+fn selected(
+    sel: &alacritty_terminal::selection::SelectionRange,
+    p: alacritty_terminal::index::Point,
+) -> bool {
     if sel.is_block {
         p.line >= sel.start.line
             && p.line <= sel.end.line

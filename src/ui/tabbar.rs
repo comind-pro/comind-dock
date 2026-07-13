@@ -42,10 +42,11 @@ fn tab_label(rt: &Runtime, state: &AppState, ti: usize) -> String {
             return crate::agents::truncate_clean(name, 16);
         }
         if let Some(title) = rt.titles.get(&tab.focused_pane)
-            && !title.trim().is_empty() {
-                let short: String = title.chars().take(16).collect();
-                return short;
-            }
+            && !title.trim().is_empty()
+        {
+            let short: String = title.chars().take(16).collect();
+            return short;
+        }
         if let Some(p) = rt.panes.get(&tab.focused_pane) {
             return p.program.clone();
         }
@@ -123,9 +124,10 @@ pub fn hit(rt: &Runtime, x: u16, width: u16) -> Option<Hit> {
         if x >= cursor && x < cursor + w {
             // The trailing " ✕ " of a tab closes it.
             if let Some(Hit::Tab(ti)) = s.hit
-                && x >= cursor + w.saturating_sub(3) {
-                    return Some(Hit::CloseTab(ti));
-                }
+                && x >= cursor + w.saturating_sub(3)
+            {
+                return Some(Hit::CloseTab(ti));
+            }
             return s.hit;
         }
         cursor += w;

@@ -59,9 +59,8 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
             rt.mark_dirty();
 
             // Toasts float above all chrome: click = jump to the pane.
-            if let Some(i) = crate::ui::toast::rects(rt, area)
-                .iter()
-                .position(|(r, _)| r.contains(pos))
+            if let Some(i) =
+                crate::ui::toast::rects(rt, area).iter().position(|(r, _)| r.contains(pos))
             {
                 if let Some(pane) = rt.toasts.remove(i).pane {
                     rt.state.focus_pane(pane);
@@ -97,11 +96,8 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                     }
                     Some(tabbar::Hit::CloseApp) => {
                         // Ask. One click must not be able to kill every agent.
-                        rt.state.input_mode = InputMode::Menu {
-                            x: ev.column,
-                            y: ev.row,
-                            items: menu::exit_items(),
-                        };
+                        rt.state.input_mode =
+                            InputMode::Menu { x: ev.column, y: ev.row, items: menu::exit_items() };
                         rt.mark_dirty();
                     }
                     Some(tabbar::Hit::ShowSidebar) => {
@@ -115,7 +111,13 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 && sb.contains(pos)
             {
                 let theme = rt.theme;
-                match sidebar::hit(rt, &theme, ev.column - sb.x, ev.row - sb.y, (sb.width, sb.height)) {
+                match sidebar::hit(
+                    rt,
+                    &theme,
+                    ev.column - sb.x,
+                    ev.row - sb.y,
+                    (sb.width, sb.height),
+                ) {
                     Some(sidebar::Target::Workspace(wi)) => {
                         // Plain click switches; the menu lives on right-click.
                         rt.state.active_workspace = wi;
@@ -192,11 +194,9 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                     return InputOutcome::Continue; // border click: focus only
                 }
                 let (col, row) = (ev.column - inner.x, ev.row - inner.y);
-                let semantic = rt
-                    .last_click
-                    .is_some_and(|(t, x, y)| {
-                        t.elapsed() < DOUBLE_CLICK && x == ev.column && y == ev.row
-                    });
+                let semantic = rt.last_click.is_some_and(|(t, x, y)| {
+                    t.elapsed() < DOUBLE_CLICK && x == ev.column && y == ev.row
+                });
                 rt.last_click = Some((Instant::now(), ev.column, ev.row));
                 if let Some(p) = rt.panes.get_mut(&id) {
                     if p.emu.wants_mouse() {
@@ -219,16 +219,16 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 if delta_cells != 0 && extent > 0 {
                     let delta = delta_cells as f32 / extent as f32;
                     rt.state.active_tab_mut().layout.resize_split(before, after, delta);
-                    rt.drag = Some(MouseDrag::Divider { before, after, dir, extent, last_pos: now });
+                    rt.drag =
+                        Some(MouseDrag::Divider { before, after, dir, extent, last_pos: now });
                     rt.mark_dirty();
                 }
             }
             Some(MouseDrag::Select { pane }) => {
-                if let Some((_, r)) =
-                    view.pane_rects.iter().find(|(id, _)| *id == pane).copied()
-                {
+                if let Some((_, r)) = view.pane_rects.iter().find(|(id, _)| *id == pane).copied() {
                     let rect = crate::ui::content_rect(r);
-                    let col = ev.column.clamp(rect.x, rect.x + rect.width.saturating_sub(1)) - rect.x;
+                    let col =
+                        ev.column.clamp(rect.x, rect.x + rect.width.saturating_sub(1)) - rect.x;
                     let row = ev.row.clamp(rect.y, rect.y + rect.height.saturating_sub(1)) - rect.y;
                     if let Some(p) = rt.panes.get_mut(&pane) {
                         p.emu.update_selection(col, row);
@@ -259,36 +259,35 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
             }
         },
 
-        MouseEventKind::Up(MouseButton::Left) => {
-            match rt.drag.take() {
-                Some(MouseDrag::Select { pane }) => {
-                    let text = rt.panes.get(&pane).and_then(|p| p.emu.selection_text());
-                    if let Some(text) = text
-                        && !text.is_empty() {
-                            rt.host_write(osc52_bytes(&text));
-                        }
+        MouseEventKind::Up(MouseButton::Left) => match rt.drag.take() {
+            Some(MouseDrag::Select { pane }) => {
+                let text = rt.panes.get(&pane).and_then(|p| p.emu.selection_text());
+                if let Some(text) = text
+                    && !text.is_empty()
+                {
+                    rt.host_write(osc52_bytes(&text));
                 }
-                Some(MouseDrag::Divider { .. }) => {}
-                None => {
-                    if let Some((id, rect)) = pane_at(&view.pane_rects, pos) {
-                        let inner = crate::ui::content_rect(rect);
-                        if inner.contains(pos)
-                            && let Some(mode) = mouse_mode(rt, id)
-                        {
-                            let bytes = encode_mouse(
-                                mode,
-                                0,
-                                ev.column - inner.x,
-                                ev.row - inner.y,
-                                false,
-                                ev.modifiers,
-                            );
-                            send_mouse(rt, id, bytes);
-                        }
+            }
+            Some(MouseDrag::Divider { .. }) => {}
+            None => {
+                if let Some((id, rect)) = pane_at(&view.pane_rects, pos) {
+                    let inner = crate::ui::content_rect(rect);
+                    if inner.contains(pos)
+                        && let Some(mode) = mouse_mode(rt, id)
+                    {
+                        let bytes = encode_mouse(
+                            mode,
+                            0,
+                            ev.column - inner.x,
+                            ev.row - inner.y,
+                            false,
+                            ev.modifiers,
+                        );
+                        send_mouse(rt, id, bytes);
                     }
                 }
             }
-        }
+        },
 
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
             let up = ev.kind == MouseEventKind::ScrollUp;
@@ -353,8 +352,13 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 && sb.contains(pos)
             {
                 let theme = rt.theme;
-                match sidebar::hit(rt, &theme, ev.column - sb.x, ev.row - sb.y, (sb.width, sb.height))
-                {
+                match sidebar::hit(
+                    rt,
+                    &theme,
+                    ev.column - sb.x,
+                    ev.row - sb.y,
+                    (sb.width, sb.height),
+                ) {
                     Some(sidebar::Target::Workspace(wi)) => {
                         rt.state.active_workspace = wi;
                         let ws_id = rt.state.workspaces[wi].id;
@@ -384,11 +388,8 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 if !rt.state.focus_pane(id) {
                     return InputOutcome::Continue;
                 }
-                rt.state.input_mode = InputMode::Menu {
-                    x: ev.column,
-                    y: ev.row,
-                    items: menu::pane_items(id),
-                };
+                rt.state.input_mode =
+                    InputMode::Menu { x: ev.column, y: ev.row, items: menu::pane_items(id) };
                 rt.mark_dirty();
             }
         }
@@ -518,10 +519,8 @@ fn run_menu_action(
             Ok(())
         }
         MenuAction::NewWorktree(ws) => {
-            rt.state.input_mode = InputMode::Prompt {
-                kind: PromptKind::WorktreeBranch(ws),
-                buffer: String::new(),
-            };
+            rt.state.input_mode =
+                InputMode::Prompt { kind: PromptKind::WorktreeBranch(ws), buffer: String::new() };
             Ok(())
         }
         MenuAction::OpenSettings => {
@@ -535,8 +534,7 @@ fn run_menu_action(
                         }
                         let _ = std::fs::write(&path, crate::config::DEFAULT_CONFIG);
                     }
-                    let editor =
-                        rt.cfg.terminal.editor_cmd();
+                    let editor = rt.cfg.terminal.editor_cmd();
                     let pane = rt.state.new_tab();
                     rt.spawn_pane_cmd(
                         pane,
@@ -550,11 +548,8 @@ fn run_menu_action(
         }
         MenuAction::AgentPicker(split) => {
             // The space's assigned profile leads the list as the default.
-            let assoc = rt
-                .state
-                .workspaces
-                .get(rt.state.active_workspace)
-                .and_then(|w| w.profile.clone());
+            let assoc =
+                rt.state.workspaces.get(rt.state.active_workspace).and_then(|w| w.profile.clone());
             let ws_cwd = rt.state.workspaces.get(rt.state.active_workspace).map(|w| w.cwd.clone());
             let mut items: Vec<MenuItem> = ws_cwd
                 .as_deref()
@@ -605,41 +600,39 @@ fn run_menu_action(
             Ok(())
         }
         MenuAction::StartProfile(name, split) => {
-            let ws_cwd = rt
-                .state
-                .workspaces
-                .get(rt.state.active_workspace)
-                .map(|w| w.cwd.clone());
-            match crate::profile::load_any(&name, ws_cwd.as_deref().unwrap_or(std::path::Path::new("/")))
-            {
-            Ok(p) => {
-                let (command, mut env) = p.resolve_with(ws_cwd.as_deref());
-                // The new agent lives where its parent lives: the pane we
-                // split, else the focused one.
-                let parent = split.unwrap_or_else(|| rt.state.focused_pane());
-                let parent_dir =
-                    rt.panes.get(&parent).and_then(|p| p.agent_config_dir.clone());
-                crate::agents::inherit_claude_profile(&mut env, parent_dir.as_deref());
-                let pane = match split {
-                    Some(target) => match rt.state.split_pane(target, Dir::Right) {
-                        Some(p) => p,
-                        None => return InputOutcome::Continue, // pane died under the menu
-                    },
-                    None => rt.state.new_tab(),
-                };
-                rt.spawn_pane_env(
-                    pane,
-                    area.width.max(2) / 2,
-                    area.height.max(2) / 2,
-                    Some(crate::agents::hold_on_failure(&command)),
-                    env,
-                )
+            let ws_cwd = rt.state.workspaces.get(rt.state.active_workspace).map(|w| w.cwd.clone());
+            match crate::profile::load_any(
+                &name,
+                ws_cwd.as_deref().unwrap_or(std::path::Path::new("/")),
+            ) {
+                Ok(p) => {
+                    let (command, mut env) = p.resolve_with(ws_cwd.as_deref());
+                    // The new agent lives where its parent lives: the pane we
+                    // split, else the focused one.
+                    let parent = split.unwrap_or_else(|| rt.state.focused_pane());
+                    let parent_dir = rt.panes.get(&parent).and_then(|p| p.agent_config_dir.clone());
+                    crate::agents::inherit_claude_profile(&mut env, parent_dir.as_deref());
+                    let pane = match split {
+                        Some(target) => match rt.state.split_pane(target, Dir::Right) {
+                            Some(p) => p,
+                            None => return InputOutcome::Continue, // pane died under the menu
+                        },
+                        None => rt.state.new_tab(),
+                    };
+                    rt.spawn_pane_env(
+                        pane,
+                        area.width.max(2) / 2,
+                        area.height.max(2) / 2,
+                        Some(crate::agents::hold_on_failure(&command)),
+                        env,
+                    )
+                }
+                Err(e) => {
+                    tracing::warn!(profile = %name, error = %e, "profile launch failed");
+                    Ok(())
+                }
             }
-            Err(e) => {
-                tracing::warn!(profile = %name, error = %e, "profile launch failed");
-                Ok(())
-            }
-        }},
+        }
         MenuAction::ContinuePicker => {
             // Sessions open in a pane with a LIVE agent are hidden — no
             // double resume. Panes whose agent exited (shell remains) keep a
@@ -732,10 +725,7 @@ fn run_menu_action(
         MenuAction::ProfileBrowser => {
             let mut items: Vec<MenuItem> = crate::profile::list()
                 .into_iter()
-                .map(|name| MenuItem {
-                    label: name.clone(),
-                    action: MenuAction::ProfileMenu(name),
-                })
+                .map(|name| MenuItem { label: name.clone(), action: MenuAction::ProfileMenu(name) })
                 .collect();
             items.push(MenuItem {
                 label: "+ new global profile...".to_string(),
@@ -825,15 +815,15 @@ fn run_menu_action(
             }
             Ok(())
         }
-        MenuAction::ProfileEdit(name, file) => {
-            match crate::profile::profiles_dir() {
-                Some(dir) => rt.open_in_editor(&dir.join(&name).join(file), area),
-                None => Ok(()),
-            }
-        }
+        MenuAction::ProfileEdit(name, file) => match crate::profile::profiles_dir() {
+            Some(dir) => rt.open_in_editor(&dir.join(&name).join(file), area),
+            None => Ok(()),
+        },
         MenuAction::SkillNew => {
-            rt.state.input_mode =
-                InputMode::Prompt { kind: crate::state::PromptKind::NewSkill, buffer: String::new() };
+            rt.state.input_mode = InputMode::Prompt {
+                kind: crate::state::PromptKind::NewSkill,
+                buffer: String::new(),
+            };
             Ok(())
         }
         MenuAction::ProfileNew(scope) => {
@@ -848,15 +838,15 @@ fn run_menu_action(
             let items = vec![
                 MenuItem {
                     label: match behavior {
-                        Some(b) => format!("behavior: {}...", b.split_once(':').map_or(b.as_str(), |(_, n)| n)),
+                        Some(b) => format!(
+                            "behavior: {}...",
+                            b.split_once(':').map_or(b.as_str(), |(_, n)| n)
+                        ),
                         None => "attach behavior...".to_string(),
                     },
                     action: MenuAction::BehaviorPicker(pane),
                 },
-                MenuItem {
-                    label: "rename…".to_string(),
-                    action: MenuAction::RenamePane(pane),
-                },
+                MenuItem { label: "rename…".to_string(), action: MenuAction::RenamePane(pane) },
                 MenuItem { label: "focus".to_string(), action: MenuAction::FocusPane(pane) },
                 MenuItem { label: "close pane".to_string(), action: MenuAction::ClosePane(pane) },
             ];
@@ -900,10 +890,8 @@ fn run_menu_action(
             // Seed with the current name so editing beats retyping; empty
             // submit clears back to the agent's own title.
             let buffer = rt.state.pane_name(pane).unwrap_or_default().to_string();
-            rt.state.input_mode = InputMode::Prompt {
-                kind: crate::state::PromptKind::RenamePane(pane),
-                buffer,
-            };
+            rt.state.input_mode =
+                InputMode::Prompt { kind: crate::state::PromptKind::RenamePane(pane), buffer };
             Ok(())
         }
         MenuAction::FocusPane(pane) => {
@@ -979,32 +967,36 @@ fn run_menu_action(
                     label: if entry.description.is_empty() {
                         name.clone()
                     } else {
-                        format!("{name} — {}", crate::agents::truncate_clean(&entry.description, 32))
+                        format!(
+                            "{name} — {}",
+                            crate::agents::truncate_clean(&entry.description, 32)
+                        )
                     },
                     action: MenuAction::SkillEdit(entry.source),
                 })
                 .collect();
             let mut items = items;
-            items.push(MenuItem { label: "+ new skill...".to_string(), action: MenuAction::SkillNew });
+            items.push(MenuItem {
+                label: "+ new skill...".to_string(),
+                action: MenuAction::SkillNew,
+            });
             rt.state.input_mode = InputMode::Menu { x, y, items };
             Ok(())
         }
-        MenuAction::EditProfiles => {
-            match crate::profile::profiles_dir() {
-                Some(dir) => {
-                    let _ = std::fs::create_dir_all(&dir);
-                    let editor = rt.cfg.terminal.editor_cmd();
-                    let pane = rt.state.new_tab();
-                    rt.spawn_pane_cmd(
-                        pane,
-                        area.width,
-                        area.height,
-                        Some(format!("{editor} {}", dir.display())),
-                    )
-                }
-                None => Ok(()),
+        MenuAction::EditProfiles => match crate::profile::profiles_dir() {
+            Some(dir) => {
+                let _ = std::fs::create_dir_all(&dir);
+                let editor = rt.cfg.terminal.editor_cmd();
+                let pane = rt.state.new_tab();
+                rt.spawn_pane_cmd(
+                    pane,
+                    area.width,
+                    area.height,
+                    Some(format!("{editor} {}", dir.display())),
+                )
             }
-        }
+            None => Ok(()),
+        },
         MenuAction::EditorPicker => {
             let current = rt.cfg.terminal.editor_cmd();
             let items: Vec<MenuItem> = ["nano", "vim", "vi", "hx", "micro", "code --wait"]
@@ -1132,14 +1124,7 @@ fn sgr(button: u8, col: u16, row: u16, press: bool, mods: KeyModifiers) -> Vec<u
 /// negotiate SGR.
 fn x10(button: u8, col: u16, row: u16, press: bool, mods: KeyModifiers) -> Vec<u8> {
     let cb = (if press { button } else { 3 }) + button_mods(mods);
-    vec![
-        0x1b,
-        b'[',
-        b'M',
-        32 + cb,
-        32 + 1 + col.min(222) as u8,
-        32 + 1 + row.min(222) as u8,
-    ]
+    vec![0x1b, b'[', b'M', 32 + cb, 32 + 1 + col.min(222) as u8, 32 + 1 + row.min(222) as u8]
 }
 
 fn send_mouse(rt: &mut Runtime, pane: PaneId, bytes: Vec<u8>) {

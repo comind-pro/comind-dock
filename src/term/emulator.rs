@@ -186,8 +186,7 @@ impl Emulator {
                 .flat_map(|c| {
                     let cell = &row[Column(c)];
                     // Combining marks/VS16 live in the zerowidth list, not .c
-                    std::iter::once(cell.c)
-                        .chain(cell.zerowidth().unwrap_or(&[]).iter().copied())
+                    std::iter::once(cell.c).chain(cell.zerowidth().unwrap_or(&[]).iter().copied())
                 })
                 .collect();
             out.push_str(s.trim_end());
@@ -212,8 +211,7 @@ impl Emulator {
             let s: String = (0..grid.columns())
                 .flat_map(|c| {
                     let cell = &row[Column(c)];
-                    std::iter::once(cell.c)
-                        .chain(cell.zerowidth().unwrap_or(&[]).iter().copied())
+                    std::iter::once(cell.c).chain(cell.zerowidth().unwrap_or(&[]).iter().copied())
                 })
                 .collect();
             let t = s.trim_end();

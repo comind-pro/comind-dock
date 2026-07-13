@@ -40,7 +40,11 @@ pub fn render_help(keymap: &Keymap, theme: &Theme, area: Rect, frame: &mut Frame
         let desc = match &entry.bound {
             Bound::Builtin(action) => action.describe().to_string(),
             Bound::Command(cmd) => {
-                if cmd.description.is_empty() { cmd.command.clone() } else { cmd.description.clone() }
+                if cmd.description.is_empty() {
+                    cmd.command.clone()
+                } else {
+                    cmd.description.clone()
+                }
             }
         };
         let key = if entry.direct {
@@ -71,7 +75,13 @@ pub fn render_help(keymap: &Keymap, theme: &Theme, area: Rect, frame: &mut Frame
 }
 
 /// One-line centered input prompt (rename tab/workspace).
-pub fn render_prompt(kind: &PromptKind, buffer: &str, theme: &Theme, area: Rect, frame: &mut Frame) {
+pub fn render_prompt(
+    kind: &PromptKind,
+    buffer: &str,
+    theme: &Theme,
+    area: Rect,
+    frame: &mut Frame,
+) {
     let title = match kind {
         PromptKind::RenameTab(_) => " rename tab ",
         PromptKind::RenameWorkspace(_) => " rename space ",
@@ -98,9 +108,7 @@ fn render_input_box(title: &str, buffer: &str, theme: &Theme, area: Rect, frame:
         height: 3.min(area.height),
     };
     frame.render_widget(Clear, rect);
-    let block = Block::new()
-        .borders(Borders::ALL)
-        .title(title)
-        .border_style(Style::new().fg(theme.accent));
+    let block =
+        Block::new().borders(Borders::ALL).title(title).border_style(Style::new().fg(theme.accent));
     frame.render_widget(Paragraph::new(format!("{buffer}█")).block(block), rect);
 }

@@ -262,9 +262,10 @@ impl WorktreesCfg {
     pub fn root(&self) -> std::path::PathBuf {
         let d = &self.directory;
         if let Some(rest) = d.strip_prefix("~/")
-            && let Some(home) = std::env::var_os("HOME") {
-                return std::path::PathBuf::from(home).join(rest);
-            }
+            && let Some(home) = std::env::var_os("HOME")
+        {
+            return std::path::PathBuf::from(home).join(rest);
+        }
         std::path::PathBuf::from(d)
     }
 }

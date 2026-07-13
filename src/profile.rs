@@ -92,9 +92,7 @@ pub fn skill_new(name: &str) -> Result<PathBuf, String> {
     let md = dir.join("SKILL.md");
     std::fs::write(
         &md,
-        format!(
-            "# {name}\n\nDescribe the skill: when to use it, the steps, the constraints.\n"
-        ),
+        format!("# {name}\n\nDescribe the skill: when to use it, the steps, the constraints.\n"),
     )
     .map_err(|e| e.to_string())?;
     skill_add(name, &dir.display().to_string(), "")?;
@@ -205,7 +203,10 @@ impl Profile {
     }
 
     /// `ws_cwd`: the space whose scoped agents join the orchestrator roster.
-    pub fn resolve_with(&self, ws_cwd: Option<&std::path::Path>) -> (String, Vec<(String, String)>) {
+    pub fn resolve_with(
+        &self,
+        ws_cwd: Option<&std::path::Path>,
+    ) -> (String, Vec<(String, String)>) {
         let mut command = self.toml.command.clone();
         let staged = self.stage_prompt_with(ws_cwd);
 

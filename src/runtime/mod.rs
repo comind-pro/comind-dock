@@ -12,9 +12,9 @@ use crate::config::keys::Keymap;
 use crate::config::theme::Theme;
 use crate::config::{CommandKind, Config, CustomCommand, ShellMode};
 use crate::input;
+use crate::state::ids::PaneId;
 use crate::state::layout::{Dir, Divider};
 use crate::state::{AppState, CloseOutcome};
-use crate::state::ids::PaneId;
 use crate::term::emulator::Emulator;
 use crate::term::pty::{self, Pty};
 use event::{AppEvent, PtyData};
@@ -173,9 +173,10 @@ impl Runtime {
     pub fn send_key(&mut self, key: &crossterm::event::KeyEvent) {
         let focused = self.state.focused_pane();
         if let Some(p) = self.panes.get_mut(&focused)
-            && let Some(bytes) = input::encode::encode_key(key, p.emu.term.mode()) {
-                p.pty.write(&bytes);
-            }
+            && let Some(bytes) = input::encode::encode_key(key, p.emu.term.mode())
+        {
+            p.pty.write(&bytes);
+        }
     }
 
     /// Kill a pane's child; PtyExit drives the state change (single close path).
@@ -255,9 +256,9 @@ impl Runtime {
                 agent_config_dir: None,
                 agent_bin: None,
                 reported: None,
-            unseen: None,
-            agent_since: None,
-            behavior: None,
+                unseen: None,
+                agent_since: None,
+                behavior: None,
                 agent_gone_polls: 0,
                 program,
                 last_output: std::time::Instant::now(),
@@ -312,7 +313,12 @@ impl Runtime {
     pub fn open_in_editor(&mut self, path: &std::path::Path, area: Rect) -> io::Result<()> {
         let editor = self.cfg.terminal.editor_cmd();
         let pane = self.state.new_tab();
-        self.spawn_pane_cmd(pane, area.width, area.height, Some(format!("{editor} {}", path.display())))
+        self.spawn_pane_cmd(
+            pane,
+            area.width,
+            area.height,
+            Some(format!("{editor} {}", path.display())),
+        )
     }
 
     /// Inject a behavior profile into a pane's LIVE session: the staged
@@ -376,10 +382,7 @@ impl Runtime {
         // With [terminal].new_cwd = "follow", follow that tab's focused
         // pane. A vanished folder (deleted worktree in a snapshot) must not
         // brick the spawn — and with it the whole restore: fall back home.
-        let (wi, ti) = self
-            .state
-            .locate_pane(pane)
-            .unwrap_or((self.state.active_workspace, 0));
+        let (wi, ti) = self.state.locate_pane(pane).unwrap_or((self.state.active_workspace, 0));
         let ws = self.state.workspaces.get(wi).unwrap_or_else(|| self.state.active_workspace());
         let tab = ws.tabs.get(ti).unwrap_or_else(|| ws.active_tab());
         let follow = (t.new_cwd == "follow")
@@ -968,10 +971,8 @@ pub fn build(
         }
         // A pane that ran a cdock profile gets that profile's [env] block
         // re-merged (saved env keys win — they reflect what actually ran).
-        if let Some(name) = env
-            .iter()
-            .find(|(k, _)| k == "CDOCK_AGENT_PROFILE")
-            .map(|(_, v)| v.clone())
+        if let Some(name) =
+            env.iter().find(|(k, _)| k == "CDOCK_AGENT_PROFILE").map(|(_, v)| v.clone())
             && let Ok(profile) = crate::profile::load(&name)
         {
             let (_, profile_env) = profile.resolve();

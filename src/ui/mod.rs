@@ -6,9 +6,9 @@ pub mod tabbar;
 pub mod toast;
 pub mod view;
 
+use crate::runtime::Runtime;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use crate::runtime::Runtime;
 use view::View;
 
 /// Phase 1 of the frame: all geometry and mutation. Splits the screen into
@@ -25,8 +25,8 @@ pub fn compute_view(rt: &Runtime, area: Rect) -> View {
         (None, area)
     };
 
-    let hide_bar = rt.cfg.ui.hide_tab_bar_when_single_tab
-        && rt.state.active_workspace().tabs.len() == 1;
+    let hide_bar =
+        rt.cfg.ui.hide_tab_bar_when_single_tab && rt.state.active_workspace().tabs.len() == 1;
     let bar_height = if hide_bar { 0 } else { 1.min(content_col.height) };
     let tab_bar = Rect { height: bar_height, ..content_col };
     let content = Rect {

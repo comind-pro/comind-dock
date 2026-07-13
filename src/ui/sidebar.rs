@@ -262,8 +262,7 @@ pub fn max_scroll(rt: &Runtime, theme: &Theme, size: (u16, u16)) -> u16 {
 }
 
 pub fn render(rt: &Runtime, theme: &Theme, area: Rect, frame: &mut Frame) {
-    let lines: Vec<Line> =
-        rows(rt, theme, area.width).into_iter().map(|r| r.line).collect();
+    let lines: Vec<Line> = rows(rt, theme, area.width).into_iter().map(|r| r.line).collect();
     let scroll = clamped_scroll(rt, lines.len(), area.height);
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), area);
 }

@@ -26,7 +26,9 @@ pub enum ClientMsg {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ServerMsg {
-    Welcome { version: u32 },
+    Welcome {
+        version: u32,
+    },
     /// Pre-diffed ANSI bytes — the client writes them to its stdout as-is.
     Frame(Vec<u8>),
     /// Detach this client; the server keeps running.

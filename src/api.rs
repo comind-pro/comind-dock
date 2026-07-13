@@ -23,14 +23,29 @@ pub enum Req {
     /// Full runtime state in one reply: workspaces → tabs → panes.
     Snapshot,
     /// Split a pane (default: focused) and spawn a shell or command in it.
-    Split { pane: Option<u64>, direction: Option<String>, command: Option<String> },
+    Split {
+        pane: Option<u64>,
+        direction: Option<String>,
+        command: Option<String>,
+    },
     /// Write literal text to a pane's PTY (no Enter).
-    SendText { pane: u64, text: String },
+    SendText {
+        pane: u64,
+        text: String,
+    },
     /// Write text + Enter.
-    Run { pane: u64, command: String },
+    Run {
+        pane: u64,
+        command: String,
+    },
     /// Read the last non-empty screen lines of a pane.
-    Read { pane: u64, lines: Option<usize> },
-    Focus { pane: u64 },
+    Read {
+        pane: u64,
+        lines: Option<usize>,
+    },
+    Focus {
+        pane: u64,
+    },
     /// Spawn an agent (or any command) in a new tab, or a split of the
     /// focused pane when `split` is given. `env` rides into the pane
     /// (profiles resolve to command + env on the CLI side).
@@ -67,19 +82,30 @@ pub enum Req {
         pid: Option<u32>,
     },
     /// Presentation metadata from hooks: title override for the pane.
-    ReportMetadata { pane: u64, title: Option<String> },
+    ReportMetadata {
+        pane: u64,
+        title: Option<String>,
+    },
     /// User-given pane name (empty clears it): wins over the agent's own
     /// OSC title in the sidebar and notifications.
-    RenamePane { pane: u64, name: String },
+    RenamePane {
+        pane: u64,
+        name: String,
+    },
     /// Re-read detection manifests from disk (bundled + overrides).
     /// Handled directly by the server loop, which owns the manifest set.
     ReloadManifests,
     /// Full detection trace for a pane (server loop owns the manifests).
-    AgentExplain { pane: u64 },
+    AgentExplain {
+        pane: u64,
+    },
     /// Attach a behavior profile ("global:<name>" | "ws:<name>") to an
     /// agent pane: injected into the live session, resumed as system
     /// prompt. Null behavior clears the mark.
-    AgentBehavior { pane: u64, behavior: Option<String> },
+    AgentBehavior {
+        pane: u64,
+        behavior: Option<String>,
+    },
     /// Re-read config/keymap/theme. Also on the sidebar app menu.
     ReloadConfig,
     /// exec() the current binary in place: same pid, panes survive.
@@ -87,24 +113,52 @@ pub enum Req {
     /// Save and stop the whole session server (`cdock session stop`).
     Shutdown,
     /// Focus a workspace / tab by public id.
-    WorkspaceFocus { workspace: u64 },
+    WorkspaceFocus {
+        workspace: u64,
+    },
     /// Close a workspace: kill every pane in it (cascade does the rest).
-    WorkspaceClose { workspace: u64 },
+    WorkspaceClose {
+        workspace: u64,
+    },
     /// New workspace (cwd defaults to [terminal].new_cwd policy).
-    WorkspaceCreate { cwd: Option<String> },
-    TabFocus { tab: u64 },
-    TabClose { tab: u64 },
+    WorkspaceCreate {
+        cwd: Option<String>,
+    },
+    TabFocus {
+        tab: u64,
+    },
+    TabClose {
+        tab: u64,
+    },
     /// New tab in a workspace (default: the active one).
-    TabCreate { workspace: Option<u64> },
+    TabCreate {
+        workspace: Option<u64>,
+    },
     /// Worktrees of a workspace's repo (default: the active workspace).
-    WorktreeList { workspace: Option<u64> },
+    WorktreeList {
+        workspace: Option<u64>,
+    },
     /// Create branch + worktree and open it as a child space.
-    WorktreeCreate { workspace: Option<u64>, branch: String },
+    WorktreeCreate {
+        workspace: Option<u64>,
+        branch: String,
+    },
     /// Open an existing worktree (by branch) as a child space.
-    WorktreeOpen { workspace: Option<u64>, branch: String },
+    WorktreeOpen {
+        workspace: Option<u64>,
+        branch: String,
+    },
     /// Remove a worktree child space: git worktree remove + close its panes.
-    WorktreeRemove { workspace: u64, #[serde(default)] force: bool },
-    WaitAgentStatus { pane: u64, status: String, timeout_ms: Option<u64> },
+    WorktreeRemove {
+        workspace: u64,
+        #[serde(default)]
+        force: bool,
+    },
+    WaitAgentStatus {
+        pane: u64,
+        status: String,
+        timeout_ms: Option<u64>,
+    },
     WaitOutput {
         pane: u64,
         #[serde(rename = "match")]
@@ -226,9 +280,7 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             Ok(err("handled by the server loop"))
         }
         Req::SendText { pane, text } => Ok(write_pty(rt, pane, text.as_bytes())),
-        Req::Run { pane, command } => {
-            Ok(write_pty(rt, pane, format!("{command}\r").as_bytes()))
-        }
+        Req::Run { pane, command } => Ok(write_pty(rt, pane, format!("{command}\r").as_bytes())),
         Req::Read { pane, lines } => match rt.panes.get(&PaneId(pane)) {
             Some(p) => {
                 let text = p.emu.bottom_text(lines.unwrap_or(30)).join("\n");
@@ -270,13 +322,8 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             };
             // An instantly-failing agent command must not cascade the tab
             // away — degrade into a shell with the error visible.
-            match rt.spawn_pane_env(
-                pane,
-                w,
-                h,
-                Some(crate::agents::hold_on_failure(&command)),
-                env,
-            ) {
+            match rt.spawn_pane_env(pane, w, h, Some(crate::agents::hold_on_failure(&command)), env)
+            {
                 Ok(()) => {
                     rt.mark_dirty();
                     Ok(json!({"ok": true, "pane": pane.0}))
@@ -287,12 +334,10 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                 }
             }
         }
-        Req::AgentBehavior { pane, behavior } => {
-            match rt.apply_behavior(PaneId(pane), behavior) {
-                Ok(()) => Ok(json!({"ok": true})),
-                Err(e) => Ok(err(e)),
-            }
-        }
+        Req::AgentBehavior { pane, behavior } => match rt.apply_behavior(PaneId(pane), behavior) {
+            Ok(()) => Ok(json!({"ok": true})),
+            Err(e) => Ok(err(e)),
+        },
         Req::ReportAgentSession { pane, session_id, pid } => {
             let pane = PaneId(pane);
             let Some(p) = rt.panes.get(&pane) else {
@@ -578,11 +623,9 @@ pub fn resolve_ws_pub(rt: &Runtime, id: Option<u64>) -> Option<usize> {
 fn resolve_ws(rt: &Runtime, id: Option<u64>) -> Option<usize> {
     match id {
         None => Some(rt.state.active_workspace),
-        Some(id) => rt
-            .state
-            .workspaces
-            .iter()
-            .position(|w| w.id == crate::state::ids::WorkspaceId(id)),
+        Some(id) => {
+            rt.state.workspaces.iter().position(|w| w.id == crate::state::ids::WorkspaceId(id))
+        }
     }
 }
 
@@ -855,7 +898,10 @@ pub fn subscribe(spec: &SubSpec, mut f: impl FnMut(Value)) -> std::io::Result<()
     // The server never ends a subscription voluntarily — EOF means it went
     // away (handoff, crash). Exit non-zero so watching scripts notice
     // instead of dying silently with success.
-    Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "event stream ended (server restarted?)"))
+    Err(std::io::Error::new(
+        std::io::ErrorKind::UnexpectedEof,
+        "event stream ended (server restarted?)",
+    ))
 }
 
 /// Blocking one-shot request from the CLI side. No read timeout — wait-*
@@ -873,8 +919,9 @@ pub fn request_with_timeout(req: &Req, timeout: Duration) -> std::io::Result<Val
 
 fn request_inner(req: &Req, timeout: Option<Duration>) -> std::io::Result<Value> {
     let sock = socket_path().ok_or_else(|| std::io::Error::other("cannot determine state dir"))?;
-    let stream = std::os::unix::net::UnixStream::connect(&sock)
-        .map_err(|e| std::io::Error::other(format!("no cdock server on {sock:?} ({e}); start `cdock` first")))?;
+    let stream = std::os::unix::net::UnixStream::connect(&sock).map_err(|e| {
+        std::io::Error::other(format!("no cdock server on {sock:?} ({e}); start `cdock` first"))
+    })?;
     stream.set_read_timeout(timeout)?;
     stream.set_write_timeout(timeout)?;
     let mut stream = stream;

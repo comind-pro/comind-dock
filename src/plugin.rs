@@ -63,10 +63,8 @@ pub fn plugins_dir() -> Option<PathBuf> {
 pub fn list() -> Vec<Plugin> {
     let Some(dir) = plugins_dir() else { return Vec::new() };
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
-    let mut plugins: Vec<Plugin> = entries
-        .flatten()
-        .filter_map(|e| load_dir(&e.path()).ok())
-        .collect();
+    let mut plugins: Vec<Plugin> =
+        entries.flatten().filter_map(|e| load_dir(&e.path()).ok()).collect();
     plugins.sort_by(|a, b| a.manifest.id.cmp(&b.manifest.id));
     plugins
 }
@@ -154,7 +152,8 @@ fn install_github(url: &str) -> Result<String, String> {
     if dst.exists() {
         return Err(cleanup(format!(
             "plugin {:?} already present at {}",
-            plugin.manifest.id, dst.display()
+            plugin.manifest.id,
+            dst.display()
         )));
     }
     std::fs::rename(&tmp, &dst).map_err(|e| cleanup(e.to_string()))?;
@@ -169,7 +168,11 @@ pub fn link(path: &str) -> Result<String, String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let dst = dir.join(&plugin.manifest.id);
     if dst.exists() {
-        return Err(format!("plugin {:?} already present at {}", plugin.manifest.id, dst.display()));
+        return Err(format!(
+            "plugin {:?} already present at {}",
+            plugin.manifest.id,
+            dst.display()
+        ));
     }
     std::os::unix::fs::symlink(&src, &dst).map_err(|e| e.to_string())?;
     Ok(plugin.manifest.id)
