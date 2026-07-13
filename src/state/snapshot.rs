@@ -409,6 +409,23 @@ pub fn save_screens(dir: &std::path::Path, screens: &[(u64, Option<String>)]) {
     }
 }
 
+/// Persistence gate for screen tails ([restore] screen_history). Disabled
+/// doesn't just skip the write — it purges anything stored earlier, so
+/// flipping the flag off also scrubs old secrets from disk.
+pub fn persist_screens(enabled: bool, dir: &std::path::Path, screens: &[(u64, Option<String>)]) {
+    if enabled {
+        save_screens(dir, screens);
+    } else {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// Replay gate: when the feature is off, stored tails (e.g. from an older
+/// build) are never read back into a pane.
+pub fn restore_screen(enabled: bool, dir: &std::path::Path, id: u64) -> Option<String> {
+    if enabled { take_screen(dir, id) } else { None }
+}
+
 /// One-shot read of a pane's saved screen: the file is deleted on success.
 pub fn take_screen(dir: &std::path::Path, id: u64) -> Option<String> {
     let p = screen_file(dir, id);
@@ -527,6 +544,33 @@ mod tests {
         // Next autosave: pane 7 is on the alt screen → None keeps the file.
         save_screens(&dir, &[(7, None)]);
         assert_eq!(take_screen(&dir, 7).as_deref(), Some("primary tail\n"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn screens_disabled_purges_previously_stored_tails() {
+        let dir = std::env::temp_dir().join(format!("cdock-scroff-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        save_screens(&dir, &[(7, Some("old secret\n".into()))]);
+        persist_screens(false, &dir, &[(7, Some("new secret\n".into()))]);
+        assert!(!dir.exists(), "disabled persistence must purge stored tails");
+    }
+
+    #[test]
+    fn screens_opt_in_saves_and_replays() {
+        let dir = std::env::temp_dir().join(format!("cdock-scron-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        persist_screens(true, &dir, &[(7, Some("tail\n".into()))]);
+        assert_eq!(restore_screen(true, &dir, 7).as_deref(), Some("tail\n"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn replay_disabled_ignores_existing_file() {
+        let dir = std::env::temp_dir().join(format!("cdock-scrgate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        save_screens(&dir, &[(7, Some("stale secret\n".into()))]);
+        assert_eq!(restore_screen(false, &dir, 7), None, "off = never replayed");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

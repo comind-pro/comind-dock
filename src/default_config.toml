@@ -61,6 +61,10 @@ check = true                              # background release check (6h)
 repo = "comind-pro/comind-dock"           # GitHub update feed
 channel = "stable"                        # stable | preview (prereleases too)
 
+[restore]
+screen_history = false   # replay pane contents after a restart; output may
+                         # contain secrets, so this stays opt-in
+
 [advanced]
 scrollback_limit_bytes = 10000000   # → emulator lines (clamped 1k–10k)
 

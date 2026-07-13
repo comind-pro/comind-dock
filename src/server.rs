@@ -497,6 +497,7 @@ pub async fn run(
                 }
                 api::Req::Handoff => {
                     rt.save_session();
+                    rt.save_handoff_screens();
                     let h = runtime::capture_handoff(&rt, area);
                     // Persist BEFORE acking: a write failure (full disk) at
                     // the point of no return would kill every pane. Refuse

@@ -21,8 +21,18 @@ pub struct Config {
     pub ui: UiCfg,
     pub worktrees: WorktreesCfg,
     pub update: UpdateCfg,
+    pub restore: RestoreCfg,
     pub advanced: AdvancedCfg,
     pub experimental: ExperimentalCfg,
+}
+
+#[derive(Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct RestoreCfg {
+    /// Save pane screen tails to disk and replay them after a cold restart.
+    /// Off by default: the tails are raw terminal output and may contain
+    /// secrets (tokens, .env fragments). Disabling also purges stored tails.
+    pub screen_history: bool,
 }
 
 #[derive(Debug, PartialEq, Deserialize)]
@@ -408,6 +418,16 @@ description = "open lazygit"
         .unwrap();
         assert_eq!(cfg.keys.commands.len(), 1);
         assert_eq!(cfg.keys.commands[0].kind, CommandKind::Pane);
+    }
+
+    #[test]
+    fn screen_history_defaults_off_and_opts_in() {
+        assert!(
+            !Config::default().restore.screen_history,
+            "screen history must be off by default (tails may hold secrets)"
+        );
+        let cfg: Config = toml::from_str("[restore]\nscreen_history = true\n").unwrap();
+        assert!(cfg.restore.screen_history);
     }
 
     #[test]

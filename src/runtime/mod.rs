@@ -754,18 +754,32 @@ impl Runtime {
         // Alt-screen panes are skipped — scrollback_text is just the TUI
         // frame there and replaying it is garbage.
         if let Some(dir) = crate::state::snapshot::screens_dir() {
-            let screens: Vec<(u64, Option<String>)> = self
-                .panes
-                .iter()
-                .map(|(id, p)| {
-                    // Alt-screen: keep the previously saved primary tail.
-                    // Only the tail is ever stored — don't walk the rest.
-                    let text = (!p.emu.on_alt_screen())
-                        .then(|| p.emu.scrollback_tail(crate::state::snapshot::SCREEN_MAX_LINES));
-                    (id.0, text)
-                })
-                .collect();
-            crate::state::snapshot::save_screens(&dir, &screens);
+            let enabled = self.cfg.restore.screen_history;
+            let screens = if enabled { self.screen_tails() } else { Vec::new() };
+            crate::state::snapshot::persist_screens(enabled, &dir, &screens);
+        }
+    }
+
+    /// Per-pane screen tails. Alt-screen panes report None — the visible TUI
+    /// frame is garbage to replay, the earlier primary tail stays on disk.
+    fn screen_tails(&self) -> Vec<(u64, Option<String>)> {
+        self.panes
+            .iter()
+            .map(|(id, p)| {
+                let text = (!p.emu.on_alt_screen())
+                    .then(|| p.emu.scrollback_tail(crate::state::snapshot::SCREEN_MAX_LINES));
+                (id.0, text)
+            })
+            .collect()
+    }
+
+    /// Screen tails for a live handoff — written regardless of the
+    /// `screen_history` setting: the heir deletes them on adoption (one-shot
+    /// transfer, not history), and if the handoff never happens the next
+    /// autosave purges them when the feature is off.
+    pub fn save_handoff_screens(&self) {
+        if let Some(dir) = crate::state::snapshot::screens_dir() {
+            crate::state::snapshot::save_screens(&dir, &self.screen_tails());
         }
     }
 
@@ -1001,7 +1015,9 @@ pub fn build(
         if let Some(text) = meta
             .saved_pane
             .zip(crate::state::snapshot::screens_dir())
-            .and_then(|(old, dir)| crate::state::snapshot::take_screen(&dir, old))
+            .and_then(|(old, dir)| {
+                crate::state::snapshot::restore_screen(rt.cfg.restore.screen_history, &dir, old)
+            })
             && let Some(p) = rt.panes.get_mut(&pane)
         {
             p.emu.feed(&crate::state::snapshot::screen_replay(&text));

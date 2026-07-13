@@ -64,6 +64,14 @@ screen history) lives in `$XDG_STATE_HOME/comind-dock`
 - `repo` — the GitHub repo the feed reads from.
 - `channel` — `stable` (full releases) | `preview` (prereleases included).
 
+### `[restore]`
+- `screen_history` (false) — save pane screen tails (last 200 lines per
+  pane) to the state dir and replay them after a full server restart.
+  Off by default: raw terminal output may contain secrets. Turning it
+  off also purges previously stored tails on the next autosave. Live
+  handoff replays screens regardless — its tail files are one-shot and
+  deleted the moment the new server adopts the panes.
+
 ### `[advanced]`
 - `scrollback_limit_bytes` (10_000_000) — converted to emulator lines
   (~4 KB per stored line at typical widths, clamped to 1k–10k lines).
