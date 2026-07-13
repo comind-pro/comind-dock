@@ -595,7 +595,13 @@ fn run_menu_action(
             match crate::profile::load_any(&name, ws_cwd.as_deref().unwrap_or(std::path::Path::new("/")))
             {
             Ok(p) => {
-                let (command, env) = p.resolve_with(ws_cwd.as_deref());
+                let (command, mut env) = p.resolve_with(ws_cwd.as_deref());
+                // The new agent lives where its parent lives: the pane we
+                // split, else the focused one.
+                let parent = split.unwrap_or_else(|| rt.state.focused_pane());
+                let parent_dir =
+                    rt.panes.get(&parent).and_then(|p| p.agent_config_dir.clone());
+                crate::agents::inherit_claude_profile(&mut env, parent_dir.as_deref());
                 let pane = match split {
                     Some(target) => match rt.state.split_pane(target, Dir::Right) {
                         Some(p) => p,

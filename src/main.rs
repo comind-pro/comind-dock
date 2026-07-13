@@ -730,7 +730,7 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             Req::AgentExplain { pane: parse_pane(&pane)? }
         }
         Cmd::Agent { sub: AgentCmd::Start { command, profile, split, workspace } } => {
-            let (command, env) = match profile {
+            let (command, mut env) = match profile {
                 // Workspace-scoped agents (this cwd) win over global ones;
                 // "ws:"/"global:" prefixes pick explicitly.
                 Some(name) => {
@@ -739,6 +739,11 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 }
                 None => (command.expect("clap: command or profile"), Vec::new()),
             };
+            // We run inside the caller's pane: its claude profile is ours.
+            agents::inherit_claude_profile(
+                &mut env,
+                std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(),
+            );
             Req::AgentStart { command, split, workspace, env }
         }
         Cmd::Plugin { sub } => {

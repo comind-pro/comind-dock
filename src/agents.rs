@@ -50,6 +50,20 @@ impl ClaudeSession {
     }
 }
 
+/// A spawned agent lives where its parent lives: unless the cdock profile
+/// pinned its own CLAUDE_CONFIG_DIR, the new pane inherits the launching
+/// context's claude profile (the CLI's own env, or the pane the UI spawned
+/// from). Without this, an agent running as @oleh spawns subagents into the
+/// DEFAULT profile — a different set of conversations and settings.
+pub fn inherit_claude_profile(env: &mut Vec<(String, String)>, parent_dir: Option<&str>) {
+    if env.iter().any(|(k, _)| k == "CLAUDE_CONFIG_DIR") {
+        return; // the profile pinned one explicitly — it wins
+    }
+    if let Some(dir) = parent_dir.filter(|d| !d.trim().is_empty()) {
+        env.push(("CLAUDE_CONFIG_DIR".to_string(), dir.to_string()));
+    }
+}
+
 /// Short profile label from a CLAUDE_CONFIG_DIR path: ".claude-oleh" →
 /// "oleh"; the default ".claude" (or anything unnamed) → None.
 pub fn profile_label_from_dir(dir: &str) -> Option<String> {
@@ -444,6 +458,28 @@ mod tests {
             newest_agent_session("goose", std::path::Path::new("/p"), std::time::SystemTime::now()),
             None
         );
+    }
+
+    #[test]
+    fn spawned_agents_inherit_the_parents_claude_profile() {
+        // No parent profile → nothing added (default ~/.claude).
+        let mut env = Vec::new();
+        inherit_claude_profile(&mut env, None);
+        assert!(env.is_empty());
+
+        // Parent runs as @oleh → the child does too.
+        let mut env = vec![("FOO".to_string(), "1".to_string())];
+        inherit_claude_profile(&mut env, Some("/home/u/.claude-oleh"));
+        assert_eq!(
+            env.iter().find(|(k, _)| k == "CLAUDE_CONFIG_DIR").map(|(_, v)| v.as_str()),
+            Some("/home/u/.claude-oleh")
+        );
+
+        // A cdock profile that pinned its own profile wins over the parent.
+        let mut env = vec![("CLAUDE_CONFIG_DIR".to_string(), "/home/u/.claude-sci".to_string())];
+        inherit_claude_profile(&mut env, Some("/home/u/.claude-oleh"));
+        assert_eq!(env.len(), 1);
+        assert_eq!(env[0].1, "/home/u/.claude-sci");
     }
 
     fn write_jsonl(dir: &std::path::Path, name: &str, lines: &[&str]) -> std::path::PathBuf {

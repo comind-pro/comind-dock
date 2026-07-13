@@ -44,7 +44,11 @@ rename PANE [NAME]           user-given name for an agent session; wins
 list                         pane list filtered to recognized agents
 start CMD | --profile NAME [--split right|down] [--workspace ID]
                              bare profile names prefer THIS workspace's
-                             agents; ws:/global: pick a scope explicitly
+                             agents; ws:/global: pick a scope explicitly.
+                             The new agent inherits the caller's claude
+                             profile (CLAUDE_CONFIG_DIR) — an agent running
+                             as @oleh spawns subagents as @oleh — unless the
+                             cdock profile pins its own in [env].
 behavior PANE IDENT|clear    inject a behavior profile (ws:<name> or
                              global:<name>) into the RUNNING session; the
                              role also rides into resume as system prompt
