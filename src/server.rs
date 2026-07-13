@@ -62,6 +62,11 @@ struct Client {
     /// Its own last view — mouse hit testing must use the geometry THIS
     /// client saw.
     last_view: Option<crate::ui::view::View>,
+    /// Modal state is part of the VIEW: a menu one terminal opened must not
+    /// appear over the other's screen (and eat its keystrokes).
+    input_mode: crate::state::InputMode,
+    sidebar_scroll: u16,
+    drag: Option<crate::runtime::MouseDrag>,
 }
 
 impl Client {
@@ -88,6 +93,9 @@ impl Client {
 /// threading a view parameter through every call.
 fn enter(rt: &mut Runtime, c: &mut Client) {
     rt.state.scope = c.scope.take();
+    rt.state.input_mode = std::mem::take(&mut c.input_mode);
+    rt.sidebar_scroll = c.sidebar_scroll;
+    rt.drag = c.drag.take();
     // The space this client last looked at, if it still exists — otherwise
     // whatever the session considers active (its space was closed under it).
     if let Some(wi) = rt.state.workspace_index(c.active_workspace) {
@@ -98,6 +106,9 @@ fn enter(rt: &mut Runtime, c: &mut Client) {
 
 fn leave(rt: &mut Runtime, c: &mut Client) {
     c.scope = rt.state.scope.take();
+    c.input_mode = std::mem::take(&mut rt.state.input_mode);
+    c.sidebar_scroll = rt.sidebar_scroll;
+    c.drag = rt.drag.take();
     if let Some(ws) = rt.state.workspaces.get(rt.state.active_workspace) {
         c.active_workspace = ws.id;
     }
@@ -239,6 +250,9 @@ pub async fn run(
                                 .expect("test backend is infallible"),
                             prev: None,
                             last_view: None,
+                            input_mode: crate::state::InputMode::default(),
+                            sidebar_scroll: 0,
+                            drag: None,
                         },
                     );
                     spawn_client_io(id, read_half, write_half, out_rx, ctl_tx.clone());
