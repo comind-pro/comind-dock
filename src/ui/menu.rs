@@ -52,6 +52,18 @@ pub fn app_items(update: Option<&str>) -> Vec<MenuItem> {
     items
 }
 
+/// The ✕ at the right edge: leaving and stopping look nothing alike here.
+/// Esc (or a click anywhere else) closes it and nothing happens.
+pub fn exit_items() -> Vec<MenuItem> {
+    [
+        ("detach — agents keep running", MenuAction::Detach),
+        ("quit — stop the dock and its agents", MenuAction::Quit),
+    ]
+    .into_iter()
+    .map(|(label, action)| MenuItem { label: label.to_string(), action })
+    .collect()
+}
+
 /// Right-click on a tab in the tab bar.
 pub fn tab_items(tab: crate::state::ids::TabId) -> Vec<MenuItem> {
     [

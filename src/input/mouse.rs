@@ -95,13 +95,14 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                             rt.kill_pane(pane);
                         }
                     }
-                    Some(tabbar::Hit::Detach) => {
-                        // Close this terminal; the dock (and every agent in
-                        // it) keeps running.
-                        return InputOutcome::Detach;
-                    }
                     Some(tabbar::Hit::CloseApp) => {
-                        return InputOutcome::Shutdown;
+                        // Ask. One click must not be able to kill every agent.
+                        rt.state.input_mode = InputMode::Menu {
+                            x: ev.column,
+                            y: ev.row,
+                            items: menu::exit_items(),
+                        };
+                        rt.mark_dirty();
                     }
                     Some(tabbar::Hit::ShowSidebar) => {
                         rt.state.sidebar_visible = true;
@@ -1051,6 +1052,7 @@ fn run_menu_action(
             )
         }
         MenuAction::Detach => return InputOutcome::Detach,
+        MenuAction::Quit => return InputOutcome::Shutdown,
         MenuAction::ListWorktrees(ws_id) => {
             let Some(ws) = rt.state.workspace_index(ws_id).map(|wi| &rt.state.workspaces[wi])
             else {

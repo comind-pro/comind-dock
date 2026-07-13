@@ -101,6 +101,8 @@ pub enum MenuAction {
     /// Download the new release and live-handoff into it (a visible tab).
     RunUpdate,
     Detach,
+    /// Stop the dock: save the session, every agent goes with it.
+    Quit,
 }
 
 /// Input-mode state machine (Terminal ↔ Prefix ↔ Resize, plus modal overlays).

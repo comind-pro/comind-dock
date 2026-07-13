@@ -16,11 +16,10 @@ pub enum Hit {
     CloseTab(usize),
     NewTab,
     /// The ✕ at the right edge: quit cdock, saving the session.
-    /// The ⏻ at the right edge: stop the dock — agents die with it.
+    /// The ✕ at the right edge: asks whether to leave (agents keep running)
+    /// or stop the dock. Never acts on its own — the two endings are far too
+    /// different to hang on one unlabelled click.
     CloseApp,
-    /// The ✕ next to it: close THIS terminal only. The server keeps running
-    /// and every agent with it; `cdock` reattaches to exactly this state.
-    Detach,
     /// The ≡ at the left edge, shown only while the sidebar is hidden.
     ShowSidebar,
 }
@@ -99,21 +98,14 @@ pub fn render(rt: &Runtime, theme: &Theme, area: Rect, frame: &mut Frame) {
     let total = area.width as usize;
     if used + CLOSE_WIDTH <= total {
         spans.push(Span::raw(" ".repeat(total - used - CLOSE_WIDTH)));
-        // Two different endings, two different glyphs: leaving (agents keep
-        // working) must not look like stopping (they die).
         spans.push(Span::styled(" ✕ ", Style::new().fg(theme.muted)));
-        spans.push(Span::styled(" ⏻ ", Style::new().fg(Color::Red)));
     }
     let bar = Paragraph::new(Line::from(spans)).style(Style::new().bg(theme.tab_bar_bg));
     frame.render_widget(bar, area);
 }
 
-/// Display width of the " ✕ " (detach) button.
-const DETACH_WIDTH: usize = 3;
-/// Display width of the " ⏻ " (quit) button.
-const QUIT_WIDTH: usize = 3;
-/// Both buttons together — the bar only draws them when they fit.
-const CLOSE_WIDTH: usize = DETACH_WIDTH + QUIT_WIDTH;
+/// Display width of the " ✕ " button.
+const CLOSE_WIDTH: usize = 3;
 
 /// What sits under bar-relative column `x` (`width` = bar width).
 pub fn hit(rt: &Runtime, x: u16, width: u16) -> Option<Hit> {
@@ -123,11 +115,7 @@ pub fn hit(rt: &Runtime, x: u16, width: u16) -> Option<Hit> {
     use unicode_width::UnicodeWidthStr as _;
     let used: usize = segments(rt).iter().map(|s| s.text.width()).sum();
     if used + CLOSE_WIDTH <= width as usize && x >= width.saturating_sub(CLOSE_WIDTH as u16) {
-        return if x >= width.saturating_sub(QUIT_WIDTH as u16) {
-            Some(Hit::CloseApp)
-        } else {
-            Some(Hit::Detach)
-        };
+        return Some(Hit::CloseApp);
     }
     let mut cursor: u16 = 0;
     for s in segments(rt) {
