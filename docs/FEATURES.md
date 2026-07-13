@@ -1,9 +1,11 @@
 # Feature Catalog
 
-> Written as the design catalog; as of v0.4.x it is implemented, with
-> these exceptions: Windows/ConPTY, kitty graphics, IME composition
-> (deferred — see docs/ROADMAP.md), and a few spec details that shipped
-> in simplified form (marked `ponytail:` in the code).
+> Written as the design catalog. As of v0.4.x the core is implemented;
+> items marked **(planned)** describe designed-but-unshipped surface —
+> most notably remote bridges, Windows/ConPTY, kitty graphics, IME
+> composition, and several CLI verbs (see docs/ROADMAP.md). Some spec
+> details shipped in simplified form (marked `ponytail:` in the code).
+> CLI syntax shown without a "(planned)" marker exists today.
 
 Complete user-facing feature set for comind-dock. Keybindings below assume the
 default prefix `ctrl+b` (written `prefix`); every binding is configurable.
@@ -16,38 +18,37 @@ The organizational model: **workspace → tab → pane**.
 
 - **Workspaces** — top-level containers, one per repo/task/investigation. Own
   tabs and panes; agent state rolls up to the workspace in the sidebar.
-  CLI: `cdock workspace create|focus|rename|close|list|get`. Keys: new
-  `prefix+shift+n`, rename `prefix+shift+w`, close `prefix+shift+d`, picker
-  `prefix+w`. `create` supports `--cwd`, `--label`, `--env`, `--focus/--no-focus`.
+  CLI: `cdock workspace create|focus|close` (`create` supports `--cwd` and
+  `--ssh`). Keys: new `prefix+shift+n`, rename `prefix+shift+w`, close
+  `prefix+shift+d`, picker `prefix+w`. `rename|list|get` and `--label/--env`
+  are CLI verbs still to come **(planned)** — the full tree is available via
+  `cdock api snapshot`.
 - **Tabs** — layout subcontexts inside a workspace (agents / logs / server /
-  review). CLI: `cdock tab create|focus|rename|close|list|get`. Keys: new
+  review). CLI: `cdock tab create|focus|close`. Keys: new
   `prefix+c`, next/prev `prefix+n`/`prefix+p`, jump `prefix+1..9`, rename
   `prefix+shift+t`, close `prefix+shift+x`.
 - **Panes** — real terminals, each running its own process, rendered by the
   runtime and surviving client detach.
-- **Splits** — split right or down with an optional ratio. Keys `prefix+v`
-  (right), `prefix+-` (down); `cdock pane split --direction right|down
-  [--ratio F]`; right-click menu; drag borders with the mouse to resize.
+- **Splits** — split right or down. Keys `prefix+v` (right), `prefix+-`
+  (down); `cdock pane split [--direction right|down] [--command <cmd>]`;
+  right-click menu; drag borders with the mouse to resize.
 - **Focus & navigation** — directional focus `prefix+h/j/k/l`; cycle
-  `prefix+tab` / `prefix+shift+tab`; optional last-pane toggle. CLI:
-  `cdock pane focus --direction`, `pane neighbor`, `pane edges`.
-- **Resize mode** — `prefix+r`, or `cdock pane resize --direction --amount`.
+  `prefix+tab` / `prefix+shift+tab`. CLI: `cdock pane focus <pane>`.
+- **Resize mode** — `prefix+r` (keyboard/mouse only; no CLI verb yet).
 - **Zoom** — temporarily maximize the focused pane within its tab; zoomed tabs
-  are marked in the tab bar. Key `prefix+z`; `cdock pane zoom
-  [--toggle|--on|--off]`.
-- **Swap** — swap two panes directionally or by explicit ids, preserving split
-  shape and ratios. Keys `prefix+shift+h/j/k/l`; `cdock pane swap`; context menu.
-- **Move** — relocate a running pane into another tab, a new tab, or a new
-  workspace without restarting its process. `cdock pane move --tab|--new-tab|
-  --new-workspace`.
-- **Rename / labels** — manual pane labels (`cdock pane rename <id> <label>|
-  --clear`); optional detected-agent labels on split borders.
-- **Close** — `cdock pane close`; key `prefix+x`; optional confirm dialog.
-- **Inspection** — `cdock pane list|get|current|layout|process-info` return
-  JSON: layout tree, split ratios, foreground process pid/argv/cwd, scroll
-  metrics.
+  are marked in the tab bar. Key `prefix+z`.
+- **Swap** — swap two panes directionally, preserving split shape and ratios.
+  Keys `prefix+shift+h/j/k/l`; context menu.
+- **Move** — relocate a running pane into another tab or workspace without
+  restarting its process **(planned)**.
+- **Rename / labels** — manual pane labels (`cdock pane rename <id> [name]`,
+  empty name clears); optional detected-agent labels on split borders.
+- **Close** — key `prefix+x`; context menu; optional confirm dialog.
+- **Inspection** — `cdock pane list` and `cdock api snapshot` return JSON
+  (workspaces → tabs → panes, agents, statuses). Per-pane
+  `get|layout|process-info` verbs **(planned)**.
 - **Layout export/apply** — export a tab's binary split tree and re-apply it
-  declaratively (structure, labels, cwd, env, optional startup commands).
+  declaratively **(planned)**.
 - **Sidebar** — the main dashboard of workspaces/tabs/panes/agents. Toggle
   `prefix+b`; collapsed mode compact or hidden.
 - **Session navigator** — searchable workspace/tab/pane tree with agent-state
@@ -78,10 +79,9 @@ The organizational model: **workspace → tab → pane**.
 - **Agent panel** — all agents across all workspaces, sorted by location or by
   priority (blocked → done → working → idle → unknown). Cycle bindings and
   indexed focus `prefix+alt+1..9`.
-- **Detection manifests** — TOML manifests bundled with the binary,
-  auto-updated from a remote catalog (can be disabled), with local overrides
-  that always win. Refresh/reload via `cdock server update-agent-manifests` /
-  `reload-agent-manifests`.
+- **Detection manifests** — TOML manifests bundled with the binary (new
+  manifests ship with each release), with local overrides that always win.
+  Reload without a restart via `cdock server reload-manifests`.
 - **Explain (debug)** — `cdock agent explain <target>` shows why a state was
   chosen: matched rule, evidence, manifest source and version, skip reasons.
   Also works offline against a captured screen file.
@@ -93,8 +93,9 @@ The organizational model: **workspace → tab → pane**.
 - **Visual progress** — working agents surface progress and color accents on
   their pane border and sidebar entry (fed by OSC progress reports and
   detection state), so activity is visible at a glance.
-- **Agent CLI** — `cdock agent start|read|send|focus|wait|list|get|rename|
-  attach|explain`; targets accept terminal ids, agent names, detected labels.
+- **Agent CLI** — `cdock agent start|list|explain|behavior`; reading, input,
+  focus, waiting, and attach go through the pane verbs (`cdock pane
+  read|run|send-text|focus|attach|observe`, `cdock wait …`).
 
 ## 3. Sessions, Persistence, Restore
 
@@ -119,58 +120,50 @@ The organizational model: **workspace → tab → pane**.
   re-bootstrap (`cdock update --handoff`).
 - **Single-process escape hatch** — `cdock --no-session` runs without the
   server/client split (debugging, compatibility).
-- **Server control** — `cdock server` (explicit headless run), `cdock server
-  stop`.
+- **Server control** — headless server via `cdock --server`; stop a session's
+  server with `cdock session stop <name>`; `cdock server
+  reload-config|reload-manifests|handoff` control a running one.
 
 ## 4. Remote Access
 
+Shipped today:
+
 - **SSH-in** — SSH to the host and run `cdock` there; the TUI adapts to
   narrow screens (works from phones/tablets via any SSH client).
-- **Remote thin-client attach** — `cdock --remote <host>` streams a remote
-  session to the local client, bootstrapping the remote server and
-  auto-installing a matching remote binary when needed.
-- **Mixed local/remote workspaces** — remote is per-workspace, not
-  all-or-nothing. `cdock remote mount <host> [--session <name>]` bridges a
-  remote server's workspaces into the local session; `cdock workspace create
-  --host <ssh-target>` creates a workspace whose panes spawn on that host.
-  One sidebar, one agent panel, one notification stream across local and
-  remote work; remote workspaces carry a host badge. The remote server owns
-  its agents — a dropped connection marks the workspace disconnected and
-  auto-reconnects with keepalive, agents keep running. `cdock remote
-  unmount|list` manage bridges.
-- **Remote keybindings choice** — `--remote-keybindings local|server`
-  (local muscle memory by default).
-- **Remote named sessions** — `cdock --remote <host> --session <name>`.
-- **Managed SSH config** — optional generated SSH config with keepalives and a
-  per-attach control socket for connection reuse (one auth prompt).
-- **Custom remote binary** — `CDOCK_REMOTE_BINARY=<path>` for local builds.
-- **Clipboard image bridging** — paste local clipboard images into remote
-  panes (remote-attach mode only).
+  `cdock session attach ssh:<host>` wraps the `ssh -t <host> cdock` dance.
+- **SSH workspaces** — `cdock workspace create --ssh <host>` opens a
+  workspace whose panes run `ssh -t <host>` — a thin convenience, not a
+  remote bridge: the panes are local processes running ssh.
+
+Designed, not yet implemented **(planned)**:
+
+- **Remote thin-client attach** — `cdock --remote <host>` streaming a remote
+  session to the local client with automatic remote bootstrap.
+- **Mixed local/remote workspaces** — per-workspace remote bridges
+  (`cdock remote mount|unmount|list`), host badges, auto-reconnect.
+- **Remote keybindings choice**, **managed SSH config**, **custom remote
+  binary** (`CDOCK_REMOTE_BINARY`), **clipboard image bridging**.
 
 ## 5. Direct Terminal Attach & Bridges
 
 - **Direct attach** — attach the current terminal to a single server-owned
-  terminal instead of the full UI: `cdock agent attach <target>` /
-  `cdock terminal attach <id>` (`--takeover`). Detach `prefix q`; literal
-  prefix via double-prefix; scrollback via wheel/PageUp/PageDown.
-- **Read-only observer** — `cdock terminal session observe <target>` streams
-  newline-delimited JSON ANSI frames for third-party bridges; multiple
-  observers allowed.
-- **Writable controller** — `cdock terminal session control <target>` streams
-  frames and accepts JSON input/resize/scroll/release commands (single owner,
-  takeover supported).
-- **Outer window title** — `cdock terminal title set|clear`.
+  pane instead of the full UI: `cdock pane attach <pane>`. Detach `prefix q`;
+  literal prefix via double-prefix; scrollback via wheel/PageUp/PageDown.
+- **Read-only observer** — `cdock pane observe <pane>` follows a pane's
+  output without taking input ownership.
+- **Frame-stream bridges** — JSON ANSI frame streaming with input/resize
+  commands for third-party bridges **(planned)**; today the JSON socket API
+  plus `pane read`/`run`/`send-text` cover scripting needs.
 
 ## 6. Automation Primitives
 
-- **Read pane output** — `cdock pane read <id> --source visible|recent|
-  recent-unwrapped|detection [--lines N] [--format text|ansi]`. Sources:
-  visible viewport, recent scrollback (wrapped/unwrapped), detection
-  bottom-buffer snapshot.
-- **Send input** — `cdock pane send-text` (no Enter), `pane send-keys`
-  (key-combo syntax), `pane run` (text + Enter atomically).
-- **Wait on output** — `cdock wait output <id> --match <text> [--regex]
-  [--timeout MS]` (nonzero exit on timeout).
+- **Read pane output** — `cdock pane read <id> [--lines N]`: the last
+  non-empty screen lines (fullscreen apps: the visible frame). Source and
+  format selectors (`--source`, `--format ansi`) **(planned)**.
+- **Send input** — `cdock pane send-text` (no Enter), `pane run` (text +
+  Enter atomically). `pane send-keys` key-combo syntax **(planned)**.
+- **Wait on output** — `cdock wait output <id> --match <text>
+  [--timeout MS]` (nonzero exit on timeout; substring match).
 - **Wait on agent status** — `cdock wait agent-status <id> --status ...
   [--timeout MS]`.
 - **Event subscriptions** — long-lived event streams for workspace/tab/pane/
@@ -179,18 +172,18 @@ The organizational model: **workspace → tab → pane**.
 ## 7. Socket API & CLI Surface
 
 - **JSON socket API** — newline-delimited JSON over a Unix domain socket
-  (named pipe on Windows). Dot-notation methods across server/session/
-  workspace/worktree/tab/pane/layout/agent/events/integration/plugin/
-  notification/client areas.
+  (`api-<session>.sock`): one `{"cmd": …}` request line in, one reply line
+  out, covering panes, workspaces, tabs, worktrees, agents, waits, and
+  subscriptions. Request lines cap at 1 MiB.
 - **CLI = API wrapper** — the whole `cdock` CLI wraps the socket; most
   commands print JSON for scripting.
 - **Bootstrap snapshot** — one-time full-state snapshot for clients keeping
   local caches (`cdock api snapshot`).
-- **Schema introspection** — `cdock api schema` prints the bundled protocol
-  JSON Schema.
-- **Status** — `cdock status [server|client]`: protocol compatibility, socket
-  path, restart-needed.
-- **Shell completions** — bash, zsh, fish, powershell, elvish.
+- **Reference introspection** — `cdock api reference` (alias `api schema`)
+  prints the machine-readable command catalog: one runnable JSON example per
+  request. A formal JSON Schema **(planned)**.
+- **Status command** (`cdock status`) and **shell completions**
+  **(planned)**.
 - **Pane environment** — panes get `CDOCK_ENV=1`, `CDOCK_PANE_ID`,
   `CDOCK_TAB_ID`, `CDOCK_WORKSPACE_ID`, `CDOCK_SOCKET_PATH`, `CDOCK_BIN_PATH`.
 - **Protocol versioning** — the server carries a protocol version; an
@@ -212,8 +205,8 @@ The organizational model: **workspace → tab → pane**.
 
 - **Worktree groups** — create git worktree checkouts as grouped child
   workspaces under the source repo. Sidebar actions plus CLI
-  `cdock worktree list|create|open|remove` (`--branch --base --path --label
-  --force`). Key `prefix+shift+g` for new worktree.
+  `cdock worktree list|create|open|remove` (`--workspace`; remove takes
+  `--force`). Key `prefix+shift+g` for new worktree.
 - **Checkout root** — configurable directory, laid out as
   `<dir>/<repo>/<branch-slug>`.
 - **Safe deletion** — removal runs the git-native worktree removal (safe, then
@@ -226,12 +219,13 @@ The organizational model: **workspace → tab → pane**.
   commands in any language; plugins declare actions, event hooks, terminal
   panes, and link handlers. The whole CLI is the plugin API (via
   `CDOCK_BIN_PATH`).
-- **Install / manage** — `cdock plugin install <owner>/<repo>[/subdir]
-  [--ref --yes]` (GitHub shorthand, trust preview, optional build commands),
-  `uninstall|list|enable|disable`, local dev `link|unlink`, `config-dir`.
-- **Actions** — `cdock plugin action list|invoke`; bindable to keys.
-- **Managed plugin panes** — `cdock plugin pane open --plugin --entrypoint
-  [--placement overlay|split|tab|zoomed]`, `pane focus|close`.
+- **Install / manage** — `cdock plugin install <owner>/<repo>[/subdir]`
+  (GitHub shorthand), `list`, local dev `link|unlink`.
+  `uninstall|enable|disable` **(planned)** — today unlink or delete the
+  plugin directory.
+- **Actions** — `cdock plugin action <plugin> <action>`; bindable to keys.
+- **Managed plugin panes** — `cdock plugin open <id>` opens a plugin's pane
+  entrypoint; placement selectors **(planned)**.
 - **Event hooks** — run plugin commands on runtime events (e.g. worktree
   created).
 - **Link handlers** — route ctrl-click on matching terminal URLs (regex) to a
@@ -239,16 +233,17 @@ The organizational model: **workspace → tab → pane**.
 - **Injected context** — `CDOCK_PLUGIN_ID/ROOT/CONFIG_DIR/STATE_DIR/
   CONTEXT_JSON/ACTION_ID/EVENT/ENTRYPOINT_ID` plus socket/bin paths and
   current ids.
-- **Marketplace** — an auto-generated index of public GitHub repos tagged with
-  a designated topic, refreshed periodically; searchable and sortable.
-  Listing is automatic and unreviewed; trust guidance applies.
-- **Command logs** — `cdock plugin log list`.
+- **Marketplace** — an auto-generated index of public GitHub repos tagged
+  with a designated topic **(planned)**; today install by GitHub shorthand.
+- **Command logs** — plugin invocations land in the server log
+  (`cdock plugin log list` **(planned)**).
 
 ## 11. Agent Integrations
 
-- **Install / uninstall / status** — `cdock integration install|uninstall
-  <agent>`, `integration status [--outdated-only]`; also from the Settings
-  integrations tab, which recommends agents found on PATH.
+- **Install** — `cdock integration install <agent>` (claude today); also
+  from the Settings integrations tab, which recommends agents found on PATH.
+  `integration uninstall` and `integration status` **(planned)** — hooks are
+  plain files in the agent's config dir, removable by hand.
 - **Two roles** — *lifecycle authority* integrations author agent state
   directly from the agent's own hook events; *session identity* integrations
   report native session references for restore while state stays
@@ -265,19 +260,21 @@ The organizational model: **workspace → tab → pane**.
 - **Self-update** — `cdock update` for script-managed installs; package-manager
   installs (Homebrew/Nix/mise) get the right upgrade command instead.
   `--handoff` keeps live panes alive across the update.
-- **Channels** — `cdock channel show|set stable|preview`; stable is the
-  default, preview ships prerelease builds from the main branch.
-- **Background checks** — periodic version check and detection-manifest check
-  (both individually configurable); in-app update badges when outdated.
+- **Channels** — `[update] channel = "stable" | "preview"` in the config;
+  stable is the default, preview ships prerelease builds. A `cdock channel`
+  CLI verb **(planned)**.
+- **Background checks** — periodic version check (configurable); in-app
+  update badge when outdated. Detection manifests ship with each release —
+  no separate manifest feed.
 - **First-run onboarding** — guided setup that opens the integrations tab.
 
 ## 13. Installation
 
-- Shell install script (curl | sh), PowerShell script on Windows, Homebrew,
-  mise, Nix flake (run/build/profile install, dev shell), and manual
-  per-platform binaries. Release assets per target:
-  `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `macos-aarch64`
-  (+ `windows-x86_64` on preview).
+- Shell install script (curl | sh), mise, Nix flake, and manual
+  per-platform binaries. Homebrew: the formula lives in
+  `packaging/homebrew/`; a published tap **(planned)**. Release assets per
+  target: `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `macos-aarch64`.
+  Windows **(planned)** — see §20.
 
 ## 14. Keyboard & Input Model
 
@@ -331,8 +328,8 @@ The organizational model: **workspace → tab → pane**.
   transparent aliases); panel background can inherit terminal transparency.
 - **Pane chrome** — borders, gaps, accent color, sidebar width bounds.
 - **Inline images** — experimental kitty-graphics-protocol rendering.
-- **Host cursor** — auto/native/drawn rendering (drawn default on Windows to
-  avoid flicker); optional redraw on focus gain.
+- **Host cursor** — auto/native/drawn rendering; optional redraw on focus
+  gain.
 
 ## 17. Notifications & Sound
 
@@ -341,8 +338,8 @@ The organizational model: **workspace → tab → pane**.
   Configurable position and delay (notify only if the state persists);
   suppressed for the active tab.
 - **Clipboard feedback** — separate popup confirming copies.
-- **Notification API** — `cdock notification show <title> [--body --position
-  --sound]`; sanitized and rate-limited socket method.
+- **Notification API** — `cdock notification show …` for plugins/scripts
+  **(planned)**; today notifications are driven by agent status changes.
 - **Sound** — distinct done vs needs-input sounds, on by default, client-side.
   Custom audio file paths, per-agent overrides/muting, global disable via
   config or `CDOCK_DISABLE_SOUND`. Uses system audio players; no bundled
@@ -386,11 +383,8 @@ The organizational model: **workspace → tab → pane**.
 ## 20. Platform Support
 
 - **Linux / macOS** — stable, full feature set, x86_64 and aarch64.
-- **Windows (beta)** — ConPTY-based: persistent sessions, native panes,
-  cmd/PowerShell, agent process-tree detection, integrations, plugins, pane
-  screen history. Not supported: direct terminal attach, native remote
-  attach, live handoff. Paste via `ctrl+shift+v`; drawn cursor by default;
-  versioned install junction for updates.
+- **Windows** — **(planned)**, via ConPTY; deferred until there is a Windows
+  machine to validate against (see docs/ROADMAP.md, open items).
 
 ## 21. Agent Profiles, Skills, Orchestration
 
@@ -420,17 +414,14 @@ block you edit and version, not hidden per-agent wiring.
   Profile-launched panes show the profile name as their agent label.
 - **Orchestrator profiles** — a profile flagged `orchestrator` additionally
   receives the runtime skill file plus roster access: it can enumerate
-  profiles, spawn sub-agents by profile into new panes/tabs, and manage them
-  with the existing automation primitives (read output, send input, wait on
-  status). One conductor, many specialists, each with its own skill set and
-  role file — all visible as ordinary panes.
-- **Profile & skill editor (UI)** — a built-in editor dialog, opened with a
-  sidebar button (and a prefix binding / settings entry), following the same
-  modal language as Settings: create and edit profiles (role text, agent CLI,
-  model, env), assign skills from the catalog with checkboxes, manage the
-  skill catalog itself, and launch a profile straight from the editor. The
-  editor reads and writes the same plain files — UI and files are two views
-  of one config, so dotfiles workflows keep working.
+  profiles, spawn sub-agents by profile (`cdock agent start --profile`) into
+  new panes, and manage them with the existing automation primitives (read
+  output, send input, wait on status). One conductor, many specialists —
+  all visible as ordinary panes.
+- **Profile & skill editor (UI)** — a built-in editor dialog for profiles
+  and the skill catalog **(planned)**. Today profiles are plain files edited
+  with `$EDITOR` (`cdock profile new` scaffolds one), which dotfiles
+  workflows already cover.
 - **Workspaces as categories** — no separate tag system: the workspace is the
   category (as in "YouTube" → scriptwriter, analyst, motion designer).
   Profiles can be associated with workspaces (`workspaces = [..]` in

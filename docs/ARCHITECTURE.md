@@ -1,9 +1,11 @@
 # Architecture
 
-> Written as the target design; as of v0.4.x this is the implemented
-> architecture (the remote SSH bridge shipped as `cdock session attach
-> ssh:host` — a remote cdock over `ssh -t` — rather than a local bridge
-> process).
+> Written as the target design; as of v0.4.x the core is the implemented
+> architecture. Not yet built: the remote bridge layer (§4a — today remote
+> means `cdock session attach ssh:host`, a remote cdock over `ssh -t`), the
+> remote manifest feed (§4 mentions it as a precedence tier), and a formal
+> JSON Schema (the API ships a machine-readable example catalog instead;
+> requests are `{"cmd": …}` lines, not `{id, method, params}`).
 >
 > **Per-client views.** Panes and their processes belong to the session, but
 > the *view* belongs to the client: each attached terminal keeps its own
@@ -45,10 +47,11 @@ config is shared.
 Per session, the server exposes two independent sockets:
 
 - **Public JSON API socket** — newline-delimited JSON requests
-  (`{id, method, params}`) with dot-notation methods, streaming event
-  subscriptions, and a published JSON Schema. This is the stable surface: the
-  entire CLI wraps it, plugins and agents script against it, and third-party
-  integrations report agent state through it.
+  (`{"cmd": "...", …}` per line, one reply line each), streaming event
+  subscriptions, and a machine-readable command catalog (`cdock api
+  reference`). This is the stable surface: the entire CLI wraps it, plugins
+  and agents script against it, and third-party integrations report agent
+  state through it.
 - **Private binary client protocol** — a high-throughput frame/input channel
   used only by the TUI client. Length-prefixed frames (u32 prefix, hard size
   caps), compact binary serialization, explicit `PROTOCOL_VERSION` negotiated
@@ -125,16 +128,16 @@ live prompt).
 - **Output:** state + skip flag + evidence flags, plus a full explain trace
   (matched rule, evaluated rules, evidence, manifest source and versions)
   surfaced by the explain CLI.
-- **Source precedence:** bundled (compiled in, source of truth) < remote
-  (fetched, versioned) < local override. Manifest cache behind a read-write
-  lock; hot reload without restart; background remote refresh so
-  classification improves without a binary release.
+- **Source precedence:** bundled (compiled in, source of truth) < local
+  override. Hot reload without restart (`cdock server reload-manifests`).
+  New bundled manifests ship with each release; a fetched remote tier is a
+  design option, not built.
 - **Authority chain:** integration hook authority (authoritative while live)
   > screen detection (fallback/recovery) > unknown; process exit clears hook
   authority and triggers recompute. PTY output activity is the routine
   "working" signal.
 
-## 4a. Remote bridges (mixed local/remote)
+## 4a. Remote bridges (mixed local/remote) — design, not yet built
 
 Two remote modes share the same SSH transport:
 
