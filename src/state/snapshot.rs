@@ -290,12 +290,25 @@ pub fn path() -> Option<PathBuf> {
     Some(named)
 }
 
+/// Write via tmp + rename: a crash, kill, or full disk mid-write must not
+/// truncate the only good copy. fsync before the rename — renaming unsynced
+/// data over the old file can survive a power cut as an empty file.
+fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = path.with_extension("json.tmp");
+    let mut f = std::fs::File::create(&tmp)?;
+    f.write_all(bytes)?;
+    f.sync_all()?;
+    drop(f);
+    std::fs::rename(&tmp, path)
+}
+
 pub fn save(state: &AppState, panes: &std::collections::HashMap<PaneId, PaneMeta>) {
     let Some(p) = path() else { return };
     let snap = Snapshot::of(state, panes);
     match serde_json::to_string_pretty(&snap) {
         Ok(json) => {
-            if let Err(e) = std::fs::write(&p, json) {
+            if let Err(e) = write_atomic(&p, json.as_bytes()) {
                 tracing::warn!(error = %e, "failed to save session snapshot");
             }
         }
@@ -544,6 +557,19 @@ mod tests {
         // Next autosave: pane 7 is on the alt screen → None keeps the file.
         save_screens(&dir, &[(7, None)]);
         assert_eq!(take_screen(&dir, 7).as_deref(), Some("primary tail\n"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_atomic_replaces_content_and_leaves_no_tmp() {
+        let dir = std::env::temp_dir().join(format!("cdock-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("session-test.json");
+        write_atomic(&p, b"{\"v\":1}").unwrap();
+        write_atomic(&p, b"{\"v\":2}").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "{\"v\":2}");
+        let leftovers: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+        assert_eq!(leftovers.len(), 1, "no tmp file left behind");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
