@@ -728,6 +728,9 @@ fn render_clients(rt: &mut Runtime, clients: &mut HashMap<ClientId, Client>) -> 
     for (id, view) in views {
         let Some(c) = clients.get_mut(&id) else { continue };
         enter(rt, c);
+        // Whatever this client is looking at counts as seen — the "finished
+        // while you were away" marker must not survive you being there.
+        rt.mark_seen(view.focused);
         c.term.draw(|f| ui::render(&view, rt, f)).expect("test backend is infallible");
         let curr = c.term.backend().buffer().clone();
         let cursor = ui::cursor_for(&view, rt);

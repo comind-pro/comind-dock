@@ -169,9 +169,28 @@ fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
                 let Some(agent) = p.agent else { continue };
                 any_agent = true;
                 let status = p.effective_status();
-                let (dot, dot_style) = status_marker(status, theme);
-                // Reporter label ("running tests") beats the generic word.
-                let status = p.reported_label().unwrap_or(status.word());
+                // An unseen event outranks the (already decayed) status: the
+                // sound said SOMETHING finished — the sidebar says which one.
+                // A distinct glyph, not just a shade: "✓" also means a Done
+                // the user has already read, and the whole point here is to
+                // tell those two apart at a glance.
+                let (dot, dot_style) = match p.unseen {
+                    Some(crate::runtime::NoticeKind::Done) => {
+                        ("★ ", Style::new().fg(Color::LightGreen).add_modifier(Modifier::BOLD))
+                    }
+                    Some(crate::runtime::NoticeKind::Blocked) => {
+                        ("★ ", Style::new().fg(Color::LightRed).add_modifier(Modifier::BOLD))
+                    }
+                    None => status_marker(status, theme),
+                };
+                // Reporter label ("running tests") beats the generic word;
+                // an unseen event says what it was, not the decayed "idle".
+                let status = match (p.unseen, p.reported_label()) {
+                    (_, Some(label)) => label,
+                    (Some(crate::runtime::NoticeKind::Done), _) => "finished",
+                    (Some(crate::runtime::NoticeKind::Blocked), _) => "blocked",
+                    (None, None) => status.word(),
+                };
                 // User-given name wins; then the agent's OSC title; then
                 // the bare agent name.
                 let name = match state.pane_name(pane) {

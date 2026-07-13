@@ -43,6 +43,11 @@ pub struct PaneRuntime {
     /// Hook-reported state override (report-agent API): wins over screen
     /// detection until it expires or the reporter clears it.
     pub reported: Option<Reported>,
+    /// An agent event the user has not looked at yet (finished / blocked).
+    /// The status itself decays back to idle within seconds — this does not:
+    /// it survives until the pane is actually on someone's screen, so the
+    /// sidebar can say WHICH agent the sound was about.
+    pub unseen: Option<NoticeKind>,
     /// When the current agent process first appeared — the `since` cutoff
     /// for codex/opencode session-file discovery (they have no hooks).
     pub agent_since: Option<std::time::SystemTime>,
@@ -235,6 +240,7 @@ impl Runtime {
                 agent_config_dir: None,
                 agent_bin: None,
                 reported: None,
+            unseen: None,
             agent_since: None,
             behavior: None,
                 agent_gone_polls: 0,
@@ -501,6 +507,9 @@ impl Runtime {
                 None => crate::agents::truncate_clean(&title, 24),
             };
             if eff == Status::Blocked {
+                if let Some(p) = self.panes.get_mut(&id) {
+                    p.unseen = Some(NoticeKind::Blocked);
+                }
                 notices.push(Notice { pane: id, kind: NoticeKind::Blocked, name });
             } else if prev == Status::Working
                 && matches!(eff, Status::Idle | Status::Done)
@@ -512,6 +521,9 @@ impl Runtime {
                 && prev_lasted >= Duration::from_secs(5)
             {
                 // Finished a real stretch of work — not spinner flicker.
+                if let Some(p) = self.panes.get_mut(&id) {
+                    p.unseen = Some(NoticeKind::Done);
+                }
                 notices.push(Notice { pane: id, kind: NoticeKind::Done, name });
             }
         }
@@ -781,6 +793,17 @@ impl Runtime {
 
     /// Geometry phase: compute pane rects for the active tab and propagate
     /// size changes to emulators and PTYs. Mutation happens here, never in render.
+    /// The user is looking at this pane now — the sidebar's unseen marker
+    /// has done its job. Called per client, per frame, for the pane it has
+    /// focused (see server::render_clients).
+    pub fn mark_seen(&mut self, pane: PaneId) {
+        if let Some(p) = self.panes.get_mut(&pane)
+            && p.unseen.take().is_some()
+        {
+            self.dirty = true;
+        }
+    }
+
     /// Pane rectangles for the active tab — pure geometry, no resizing:
     /// each attached client lays out at ITS own size, and a pane shown in
     /// several clients must end up at ONE pty size (see `apply_pane_sizes`).
@@ -1208,6 +1231,7 @@ pub fn build_from_handoff(
                         agent_config_dir: None,
                         agent_bin: None,
                         reported: None,
+                        unseen: None,
                         agent_since: None,
                         behavior: hp.behavior.clone(),
                         agent_gone_polls: 0,

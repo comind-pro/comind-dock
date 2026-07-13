@@ -262,6 +262,10 @@ enum PaneCmd {
         /// Report lifetime; default 30000.
         #[arg(long)]
         ttl_ms: Option<u64>,
+        /// The reporting agent's pid — the server ignores reports from a
+        /// process that is not the pane's agent (nested claude).
+        #[arg(long)]
+        pid: Option<u32>,
     },
     /// Set a pane's title (like an OSC title from the app itself).
     ReportMetadata {
@@ -523,6 +527,33 @@ fn install_claude_hook() -> Result<bool, String> {
     Ok(true)
 }
 
+/// Status hooks: claude tells us what it is doing, instead of us reading it
+/// off the screen. Screen detection stays as the fallback for agents without
+/// hooks (and for a claude whose hooks were never installed) — but when the
+/// agent speaks, its word wins (`reported` outranks the manifest).
+///
+/// `$CDOCK_PANE_ID` is only set inside a cdock pane; `$PPID` is the claude
+/// that fired the hook, which the server checks against the pane's agent so
+/// a nested claude cannot report for its parent.
+/// ttl: a report outlives normal gaps between events but not a crashed
+/// agent — screen detection takes back over once it expires.
+const STATUS_HOOKS: &[(&str, &str, u64)] = &[
+    ("UserPromptSubmit", "working", 900_000),
+    ("PreToolUse", "working", 900_000),
+    ("PostToolUse", "working", 900_000),
+    // "needs your permission" / "waiting for input" — the one that matters.
+    ("Notification", "blocked", 3_600_000),
+    ("Stop", "done", 3_600_000),
+    ("SessionEnd", "clear", 1_000),
+];
+
+fn status_hook_cmd(state: &str, ttl_ms: u64) -> String {
+    format!(
+        "[ -z \"$CDOCK_PANE_ID\" ] || \"$CDOCK_BIN\" pane report-agent \"$CDOCK_PANE_ID\" \
+         {state} --ttl-ms {ttl_ms} --pid \"$PPID\" >/dev/null 2>&1 || true"
+    )
+}
+
 fn install_hook_into(profile_dir: &std::path::Path) -> Result<(), String> {
     const MARKER: &str = "hook claude-session";
     let path = profile_dir.join("settings.json");
@@ -544,15 +575,38 @@ fn install_hook_into(profile_dir: &std::path::Path) -> Result<(), String> {
         .or_insert_with(|| serde_json::json!([]));
     let arr = starts.as_array_mut().ok_or("\"SessionStart\" is not an array")?;
     if arr.iter().any(|e| e.to_string().contains(MARKER)) {
-        println!("{}: hook already installed", path.display());
-        return Ok(());
+        // Already there — but the status hooks below may still be missing
+        // (they arrived later), so do NOT return early.
+        tracing::debug!("{}: session hook already installed", path.display());
+    } else {
+        arr.push(serde_json::json!({
+            "hooks": [{
+                "type": "command",
+                "command": "[ -z \"$CDOCK_PANE_ID\" ] || \"$CDOCK_BIN\" hook claude-session"
+            }]
+        }));
     }
-    arr.push(serde_json::json!({
-        "hooks": [{
-            "type": "command",
-            "command": "[ -z \"$CDOCK_PANE_ID\" ] || \"$CDOCK_BIN\" hook claude-session"
-        }]
-    }));
+
+    // Status reporting: one hook per claude lifecycle event.
+    for (event, state, ttl) in STATUS_HOOKS {
+        let cmd = status_hook_cmd(state, *ttl);
+        let entry = root
+            .as_object_mut()
+            .ok_or("settings.json root is not an object")?
+            .entry("hooks")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .ok_or("settings.json \"hooks\" is not an object")?
+            .entry(*event)
+            .or_insert_with(|| serde_json::json!([]));
+        let arr = entry.as_array_mut().ok_or(format!("\"{event}\" is not an array"))?;
+        // Re-installs replace our own entry (the command changes between
+        // versions) and leave the user's hooks alone.
+        arr.retain(|e| !e.to_string().contains("pane report-agent"));
+        arr.push(serde_json::json!({
+            "hooks": [{ "type": "command", "command": cmd }]
+        }));
+    }
 
     if path.exists() {
         let _ = std::fs::copy(&path, path.with_extension("json.bak"));
@@ -561,7 +615,10 @@ fn install_hook_into(profile_dir: &std::path::Path) -> Result<(), String> {
     }
     let pretty = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
     std::fs::write(&path, pretty).map_err(|e| e.to_string())?;
-    println!("installed SessionStart hook into {} (backup: .json.bak)", path.display());
+    println!(
+        "installed session + status hooks into {} (backup: .json.bak)",
+        path.display()
+    );
     Ok(())
 }
 
@@ -684,8 +741,8 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             PaneCmd::Attach { pane } => {
                 return run_pane_attach(parse_pane(&pane)?).map(|()| true);
             }
-            PaneCmd::ReportAgent { pane, state, label, ttl_ms } => {
-                Req::ReportAgent { pane: parse_pane(&pane)?, state, label, ttl_ms }
+            PaneCmd::ReportAgent { pane, state, label, ttl_ms, pid } => {
+                Req::ReportAgent { pane: parse_pane(&pane)?, state, label, ttl_ms, pid }
             }
             PaneCmd::Rename { pane, name } => {
                 Req::RenamePane { pane: parse_pane(&pane)?, name }

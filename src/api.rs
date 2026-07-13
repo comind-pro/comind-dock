@@ -60,6 +60,11 @@ pub enum Req {
         state: String,
         label: Option<String>,
         ttl_ms: Option<u64>,
+        /// The reporting agent's pid. Rejected when it isn't the pane's
+        /// tracked agent — a nested claude (the agent's own Bash tool) would
+        /// otherwise report ITS state onto the parent's pane.
+        #[serde(default)]
+        pid: Option<u32>,
     },
     /// Presentation metadata from hooks: title override for the pane.
     ReportMetadata { pane: u64, title: Option<String> },
@@ -305,11 +310,19 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             rt.save_session(); // survive a crash between autosaves
             Ok(json!({"ok": true}))
         }
-        Req::ReportAgent { pane, state, label, ttl_ms } => {
+        Req::ReportAgent { pane, state, label, ttl_ms, pid } => {
             let pane = PaneId(pane);
             let Some(p) = rt.panes.get_mut(&pane) else {
                 return Ok(err(format!("no such pane {pane}")));
             };
+            // Only the pane's own agent may speak for it: a claude that the
+            // agent spawned through its Bash tool inherits CDOCK_PANE_ID and
+            // would otherwise report its own "done" onto the parent.
+            if let (Some(agent_pid), Some(reporter)) = (p.agent_pid, pid)
+                && agent_pid != reporter
+            {
+                return Ok(json!({"ok": true, "ignored": "nested agent"}));
+            }
             if state == "clear" {
                 p.reported = None;
                 rt.mark_dirty();
@@ -532,7 +545,7 @@ pub const REFERENCE: &str = r#"[
   {"cmd":"focus","pane":1},
   {"cmd":"agent-start","command":"claude","split":"right","workspace":3,"env":[["K","V"]]},
   {"cmd":"report-agent-session","pane":1,"session_id":"uuid"},
-  {"cmd":"report-agent","pane":1,"state":"blocked","label":"awaiting review","ttl_ms":60000},
+  {"cmd":"report-agent","pane":1,"state":"blocked","label":"awaiting review","ttl_ms":60000,"pid":4321},
   {"cmd":"report-metadata","pane":1,"title":"builder"},
   {"cmd":"rename-pane","pane":1,"name":"kafka refactor"},
   {"cmd":"reload-manifests"},
@@ -616,6 +629,13 @@ fn pane_list(rt: &Runtime) -> Value {
                     "title": title,
                     "agent": p.agent,
                     "status": p.effective_status().word(),
+                    // "done" | "blocked" while the user has not looked at
+                    // the pane since it finished/blocked (the sidebar marks
+                    // it); null once seen.
+                    "unseen": p.unseen.map(|k| match k {
+                        crate::runtime::NoticeKind::Done => "done",
+                        crate::runtime::NoticeKind::Blocked => "blocked",
+                    }),
                     "focused": id == focused,
                 }));
             }

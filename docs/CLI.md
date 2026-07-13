@@ -23,7 +23,9 @@ cdock --default-config     print the annotated default config
 ## `cdock pane <sub>`
 
 ```
-list                         every pane: workspace/tab, program, agent, status
+list                         every pane: workspace/tab, program, agent,
+                             status, and `unseen` ("done"/"blocked" until
+                             the user looks at the pane)
 split [PANE] [--direction right|down] [--command CMD]
 run PANE CMD                 write text + Enter
 send-text PANE TEXT          write literal text (no Enter)
