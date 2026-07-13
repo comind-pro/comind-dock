@@ -1,13 +1,14 @@
 # comind-dock
 
-A terminal-native runtime and multiplexer for AI coding agents.
+Run a dozen AI coding agents side by side, in one terminal, without losing
+track of which one needs you.
 
-comind-dock lets you run many coding agents side by side in one terminal:
-each agent lives in its own persistent pane, the runtime detects whether an
-agent is working, blocked, or done, and surfaces the ones that need your
-attention. Detach and reattach at will — agents keep running on a background
-server. Drive everything with the keyboard, the mouse, or a scriptable
-CLI/JSON API that agents themselves can use to coordinate with each other.
+`cdock` is a terminal multiplexer built for agents rather than for shells:
+each agent lives in a persistent pane, the dock knows whether it is
+**working**, **blocked** (waiting on you) or **done**, and it says so — in
+the sidebar, with a sound, with a toast you can click. Close the terminal
+and the agents keep running; reopen it and each one resumes *its own*
+conversation.
 
 ## Install
 
@@ -15,82 +16,70 @@ CLI/JSON API that agents themselves can use to coordinate with each other.
 curl -fsSL https://raw.githubusercontent.com/comind-pro/comind-dock/master/install.sh | sh
 ```
 
-Installs the latest release binary to `~/.local/bin/cdock` (override with
-`CDOCK_INSTALL_DIR`). Update later from inside the dock — the sidebar menu
-shows "update ready" when a new release ships — or with `cdock update
---handoff`, which swaps the running server in place without killing a
-single pane.
+The binary lands in `~/.local/bin/cdock`. Nix: `nix run github:comind-pro/comind-dock`.
 
-### Nix
+## First five minutes
 
 ```sh
-nix run github:comind-pro/comind-dock
+cdock integration install claude   # let claude report its own status (once)
+cdock                              # you are in a normal shell, in a pane
 ```
 
-## Status
+Type `claude` in the pane and work as usual. Now:
 
-**All roadmap phases shipped** (current release: v0.4.x). Highlights:
+- **The sidebar** (left) lists your *spaces* (one per folder/repo) and every
+  agent in them, with its status, its profile, and which space it lives in.
+- **Right-click anything** — a pane, a tab, an agent row, a space — for its
+  menu: rename, split, close, new agent, attach a role.
+- **Detach** with `ctrl+b q`. The agents keep running. `cdock` again to come
+  back. Everything you had is still there, including the screen history.
+- **Split** with `ctrl+b v` (right) or `ctrl+b -` (below); new tab `ctrl+b c`;
+  switch tabs with `ctrl+b 1..9`; `ctrl+b ?` lists every binding.
 
-- Background server owns the panes; thin clients attach/detach at will,
-  named sessions (`cdock --session`), remote attach over ssh.
-- Agent detection engine (TOML manifests + `cdock agent explain` rule
-  traces) with sounds/toasts when an agent blocks or finishes; hooks can
-  report authoritative states (`cdock pane report-agent`).
-- Exact session continuation: each claude pane resumes ITS conversation
-  (SessionStart hook, multiple `~/.claude*` profiles), codex/opencode
-  bind by session files; screen history replays above the fresh prompt.
-- Live handoff: `cdock update --handoff` swaps the running server binary
-  in place — no pane dies. Self-update from GitHub Releases with
-  stable/preview channels.
-- Agent profiles (roles): global and workspace-scoped, created from the
-  UI or CLI, attachable to a RUNNING agent (`cdock agent behavior`);
-  skill catalog; orchestrator profiles that spawn specialist subagents.
-- Full automation surface: every UI action is also a CLI command and a
-  JSON socket API (`cdock api schema`), with event subscriptions,
-  `wait` primitives, and two-way `cdock pane attach`.
-- Plugins: linked or `gh:owner/repo`-installed, with actions, managed
-  panes, and agent-status hooks. Git worktrees as child spaces.
+When an agent blocks on a permission prompt while you're in another tab,
+you get a sound and a clickable toast. That is the whole point of the thing.
 
-Deliberate deferrals: Windows/ConPTY, kitty graphics, IME composition
-(details in [docs/ROADMAP.md](docs/ROADMAP.md)).
+## What makes it different from tmux
 
-Build and run from source:
+- **It knows what agents are doing.** Status comes from claude's own hooks
+  (screen-reading is the fallback), so "blocked" means blocked, not "output
+  stopped."
+- **Sessions resume exactly.** Not "a shell in the same folder" — *that*
+  conversation, in the right claude profile, in the right directory.
+- **Agents can drive it.** Every menu action is also a CLI command and a JSON
+  socket API (`cdock api schema`). An agent in a pane can spawn helpers, read
+  their screens, wait on their status — and it ships with a skill telling it how.
+- **Roles, not just commands.** Write an agent role once (`cdock profile new
+  reviewer`), attach it to a running session, or let an agent author roles for
+  its own workspace and spawn subagents with them.
+- **Updates without losing work.** `cdock update --handoff` replaces the
+  running binary in place. Not one pane dies.
 
-```sh
-cargo build --release
-./target/release/cdock
-```
+## Cost of running it
 
-## Core ideas
-
-- **Server-owned sessions.** A background server owns every terminal and
-  process. Clients are thin and disposable: close your terminal, reattach
-  later, nothing dies.
-- **Agents are first-class.** The runtime classifies each agent pane as
-  working / blocked / done / idle and rolls that state up to tabs and
-  workspaces, so a glance at the sidebar tells you where you're needed.
-- **Automation-friendly by design.** The entire UI surface is also a CLI and
-  a JSON socket API. Agents running inside panes can spawn siblings, read
-  their output, and wait on their state.
-- **Mouse-first TUI.** Click, drag, right-click menus, scroll — everything
-  the keyboard can do, the mouse can too.
+Ten agents streaming output continuously, measured on the release build:
+**47 MB, ~5% of one core** with the UI attached; **40 MB, ~1%** detached
+(the agents keep running, nothing is rendered). Idle panes cost nothing.
 
 ## Documentation
 
 | Document | Contents |
 |---|---|
-| [docs/FEATURES.md](docs/FEATURES.md) | Complete feature catalog, grouped by category |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Target architecture: server/client split, state model, detection engine |
-| [docs/CLI.md](docs/CLI.md) | CLI command specification |
-| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Config file format, settings, environment variables |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Implementation phases |
+| [docs/CLI.md](docs/CLI.md) | Every command, and the JSON API behind it |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Config file, profiles, skills, env vars |
+| [docs/FEATURES.md](docs/FEATURES.md) | The full feature catalog |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Server/client split, state model, detection |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | What shipped, and what is deliberately not built |
+
+Not built (on purpose): Windows, inline images, IME composition. Details in
+the roadmap.
 
 ## Contributing
 
-Open source under MIT, standard PR flow. `cargo clippy --all-targets`
-clean and `cargo test` green before every PR; new behavior needs a test.
-For local development use the isolated dev namespace (`ln -sf cdock
-target/debug/cdock-dev`) so your live session stays untouched.
+MIT, standard PR flow. `cargo clippy --all-targets` clean and `cargo test`
+green before every PR; new behavior needs a test. Develop against the
+isolated dev namespace (`ln -sf cdock target/debug/cdock-dev`) so your own
+live session stays untouched.
 
 ## License
 

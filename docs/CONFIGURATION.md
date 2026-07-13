@@ -96,6 +96,20 @@ name to a directory containing `SKILL.md` (+ description). Managed from
 the UI (menu → skills…) or `cdock skill add/remove`; assign to a profile
 from the profile's menu (skills…) or `skills = [...]` in profile.toml.
 
+## Agent status: hooks first, screen second
+
+`cdock integration install claude` writes hooks into every `~/.claude*`
+profile so claude reports its own lifecycle: `UserPromptSubmit`/`PreToolUse`/
+`PostToolUse` → working, `Notification` → **blocked** (it wants you),
+`Stop` → done, `SessionEnd` → clear. A reported state outranks screen
+detection until its TTL expires, so a claude release that renames a spinner
+can no longer freeze your statuses. The hooks are guarded: they do nothing
+outside a cdock pane, and the server rejects a report whose pid is not the
+pane's agent (a nested claude cannot speak for its parent).
+
+Any wrapper can do the same: `cdock pane report-agent <pane> working
+--label "running tests" --ttl-ms 60000`.
+
 ## Detection manifests
 
 `src/detect/manifests/*.toml` bundled; user overrides in
