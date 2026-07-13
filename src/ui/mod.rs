@@ -14,7 +14,7 @@ use view::View;
 /// Phase 1 of the frame: all geometry and mutation. Splits the screen into
 /// tab bar / sidebar / content, computes pane rects, and propagates size
 /// changes to emulators and PTYs. Render never mutates.
-pub fn compute_view(rt: &mut Runtime, area: Rect) -> View {
+pub fn compute_view(rt: &Runtime, area: Rect) -> View {
     // Sidebar runs the full height; the tab bar sits over the content column only.
     let sb_width = rt.cfg.ui.sidebar_width.clamp(10, area.width / 2);
     let (sidebar, content_col) = if rt.state.sidebar_visible && area.width > sb_width * 2 {
@@ -35,10 +35,19 @@ pub fn compute_view(rt: &mut Runtime, area: Rect) -> View {
         ..content_col
     };
 
-    let (pane_rects, dividers) = rt.compute_panes(content);
-    let view = View { tab_bar, sidebar, pane_rects, dividers, focused: rt.state.focused_pane() };
-    rt.last_view = Some(view.clone());
-    view
+    let (pane_rects, dividers) = rt.layout_panes(content);
+    View { tab_bar, sidebar, pane_rects, dividers, focused: rt.state.focused_pane() }
+}
+
+/// The pty size a pane would take in this view (content rect minus chrome).
+pub fn pane_sizes(view: &View) -> Vec<(crate::state::ids::PaneId, (u16, u16))> {
+    view.pane_rects
+        .iter()
+        .map(|(id, rect)| {
+            let inner = content_rect(*rect);
+            (*id, (inner.width, inner.height))
+        })
+        .collect()
 }
 
 /// Phase 2: pure drawing from the precomputed view and immutable state.
@@ -109,5 +118,41 @@ pub fn content_rect(rect: Rect) -> Rect {
         y: rect.y + 1,
         width: rect.width.saturating_sub(2),
         height: rect.height.saturating_sub(2),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::layout::Rect;
+
+    /// A pane two clients both display must end up at ONE pty size — the
+    /// smallest, so neither viewer sees it cropped. (server::render_clients
+    /// folds pane_sizes() across clients with exactly this min.)
+    #[test]
+    fn shared_pane_takes_the_smallest_viewers_size() {
+        use crate::state::ids::PaneId;
+        use crate::ui::view::View;
+        use std::collections::HashMap;
+        let view = |w: u16, h: u16| View {
+            tab_bar: Rect::new(0, 0, w, 1),
+            sidebar: None,
+            pane_rects: vec![(PaneId(1), Rect::new(0, 1, w, h))],
+            dividers: Vec::new(),
+            focused: PaneId(1),
+        };
+        let mut wanted: HashMap<PaneId, (u16, u16)> = HashMap::new();
+        for v in [view(120, 40), view(80, 24)] {
+            for (pane, size) in pane_sizes(&v) {
+                wanted
+                    .entry(pane)
+                    .and_modify(|s| *s = (s.0.min(size.0), s.1.min(size.1)))
+                    .or_insert(size);
+            }
+        }
+        let wide = pane_sizes(&view(120, 40))[0].1;
+        let narrow = pane_sizes(&view(80, 24))[0].1;
+        assert_eq!(wanted[&PaneId(1)], narrow, "the narrow client wins");
+        assert!(narrow.0 < wide.0);
     }
 }

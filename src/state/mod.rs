@@ -151,9 +151,11 @@ pub struct AppState {
     #[serde(default = "default_true")]
     pub sidebar_visible: bool,
     /// Folder-scoped attach (`cdock -f`): only workspaces under this folder
-    /// show. Presentation state — never persisted; the client re-sends its
-    /// folder in Hello after a reconnect. ponytail: session-level (last
-    /// attach wins), per-client scope needs per-client rendering.
+    /// show. Owned by the CLIENT, not the session — the server swaps the
+    /// attached client's scope in before it renders or handles its input
+    /// (server::enter/leave), so a second plain attach no longer widens a
+    /// scoped view. Never persisted; the client re-sends its folder in Hello
+    /// after a reconnect.
     #[serde(skip)]
     pub scope: Option<std::path::PathBuf>,
     /// Modal UI state — never persisted (handoff/restore resets to Terminal).

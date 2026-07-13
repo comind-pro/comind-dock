@@ -758,24 +758,31 @@ impl Runtime {
 
     /// Geometry phase: compute pane rects for the active tab and propagate
     /// size changes to emulators and PTYs. Mutation happens here, never in render.
-    pub fn compute_panes(&mut self, area: Rect) -> (Vec<(PaneId, Rect)>, Vec<Divider>) {
+    /// Pane rectangles for the active tab — pure geometry, no resizing:
+    /// each attached client lays out at ITS own size, and a pane shown in
+    /// several clients must end up at ONE pty size (see `apply_pane_sizes`).
+    pub fn layout_panes(&self, area: Rect) -> (Vec<(PaneId, Rect)>, Vec<Divider>) {
         let tab = self.state.active_tab();
-        let (rects, dividers) = match tab.zoomed {
+        match tab.zoomed {
             Some(z) if tab.layout.contains(z) => (vec![(z, area)], Vec::new()),
             _ => tab.layout.layout(area),
-        };
-        for (id, rect) in &rects {
-            if let Some(p) = self.panes.get_mut(id) {
-                let inner = crate::ui::content_rect(*rect);
-                let size = (inner.width, inner.height);
-                if p.last_size != size {
-                    p.emu.resize(size.0, size.1);
-                    p.pty.resize(size.0, size.1);
-                    p.last_size = size;
-                }
+        }
+    }
+
+    /// Resize emulators and PTYs to the agreed per-pane sizes. A pane two
+    /// clients both display gets the SMALLEST of their sizes (tmux's rule):
+    /// then everyone can see all of it, and the pty is not resized twice per
+    /// tick by clients fighting over it.
+    pub fn apply_pane_sizes(&mut self, sizes: &HashMap<PaneId, (u16, u16)>) {
+        for (id, size) in sizes {
+            if let Some(p) = self.panes.get_mut(id)
+                && p.last_size != *size
+            {
+                p.emu.resize(size.0, size.1);
+                p.pty.resize(size.0, size.1);
+                p.last_size = *size;
             }
         }
-        (rects, dividers)
     }
 }
 

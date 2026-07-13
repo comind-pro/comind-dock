@@ -39,13 +39,69 @@ pub enum RunOutcome {
 
 type ClientId = u64;
 
+/// Everything that is per-VIEW rather than per-session. Two terminals
+/// attached to one server each keep their own folder scope, their own
+/// active workspace, and their own screen size — but when both open the
+/// SAME workspace they see the same panes, mirrored (the pty is shared;
+/// its size is the smallest of the viewers').
 struct Client {
     tx: mpsc::UnboundedSender<ServerMsg>,
-    /// Next frame must be a full repaint (fresh client / area change).
+    /// Next frame must be a full repaint (fresh client / resize).
     needs_full: bool,
-    /// Last reported terminal size — the shared area re-fits to a survivor
-    /// when another client leaves.
+    /// This client's terminal size.
     size: (u16, u16),
+    /// Folder scope (`cdock -f`) — this client's alone.
+    scope: Option<std::path::PathBuf>,
+    /// Which workspace this client is looking at. By ID, not index: another
+    /// client closing a space shifts every index after it.
+    active_workspace: crate::state::ids::WorkspaceId,
+    /// Its own render surface and last frame (sizes differ, so the diff
+    /// cannot be shared).
+    term: Terminal<TestBackend>,
+    prev: Option<Buffer>,
+    /// Its own last view — mouse hit testing must use the geometry THIS
+    /// client saw.
+    last_view: Option<crate::ui::view::View>,
+}
+
+impl Client {
+    fn area(&self) -> Rect {
+        Rect::new(0, 0, self.size.0.max(4), self.size.1.max(4))
+    }
+
+    fn resize(&mut self, cols: u16, rows: u16) {
+        if self.size == (cols, rows) {
+            return;
+        }
+        self.size = (cols, rows);
+        let a = self.area();
+        self.term = Terminal::new(TestBackend::new(a.width, a.height))
+            .expect("test backend is infallible");
+        self.prev = None;
+        self.needs_full = true;
+    }
+}
+
+/// Swap a client's view state into the runtime: all of state/input/render
+/// reads `state.scope` and `state.active_workspace`, so one context swap
+/// per client turns session-wide code into per-client code without
+/// threading a view parameter through every call.
+fn enter(rt: &mut Runtime, c: &mut Client) {
+    rt.state.scope = c.scope.take();
+    // The space this client last looked at, if it still exists — otherwise
+    // whatever the session considers active (its space was closed under it).
+    if let Some(wi) = rt.state.workspace_index(c.active_workspace) {
+        rt.state.active_workspace = wi;
+    }
+    rt.last_view = c.last_view.take();
+}
+
+fn leave(rt: &mut Runtime, c: &mut Client) {
+    c.scope = rt.state.scope.take();
+    if let Some(ws) = rt.state.workspaces.get(rt.state.active_workspace) {
+        c.active_workspace = ws.id;
+    }
+    c.last_view = rt.last_view.take();
 }
 
 enum ClientCtl {
@@ -85,8 +141,6 @@ pub async fn run(
     let (api_tx, mut api_rx) = mpsc::unbounded_channel::<api::ConnMsg>();
     let mut waiters: Vec<(api::PendingWait, api::Replier)> = Vec::new();
     let mut subs: Vec<(api::SubSpec, mpsc::UnboundedSender<serde_json::Value>)> = Vec::new();
-    let mut term = Terminal::new(TestBackend::new(area.width, area.height)).expect("test backend is infallible");
-    let mut frame_cache = FrameCache { prev: None };
 
     for stream in initial {
         let _ = ctl_tx.send(ClientCtl::New(stream));
@@ -173,7 +227,20 @@ pub async fn run(
                     next_client += 1;
                     let (read_half, write_half) = stream.into_split();
                     let (out_tx, out_rx) = mpsc::unbounded_channel::<ServerMsg>();
-                    clients.insert(id, Client { tx: out_tx, needs_full: true, size: (0, 0) });
+                    clients.insert(
+                        id,
+                        Client {
+                            tx: out_tx,
+                            needs_full: true,
+                            size: (area.width, area.height),
+                            scope: None,
+                            active_workspace: rt.state.active_workspace().id,
+                            term: Terminal::new(TestBackend::new(area.width, area.height))
+                                .expect("test backend is infallible"),
+                            prev: None,
+                            last_view: None,
+                        },
+                    );
                     spawn_client_io(id, read_half, write_half, out_rx, ctl_tx.clone());
                     tracing::info!(client = id, "client connected");
                 }
@@ -189,32 +256,58 @@ pub async fn run(
                         }
                         if let Some(c) = clients.get_mut(&id) {
                             let _ = c.tx.send(ServerMsg::Welcome { version: PROTOCOL_VERSION });
-                            c.size = (cols, rows);
-                        }
-                        // Folder-scoped attach: last Hello wins; a plain
-                        // attach widens the view back (the escape hatch
-                        // until a widen-scope toggle exists).
-                        match folder {
-                            Some(folder) => {
-                                tracing::info!(client = id, folder = %folder.display(), "scoped attach");
-                                if let Some(pane) = rt.state.attach_scope(folder)
-                                    && let Err(e) = rt.spawn_pane(pane, area.width.max(4), area.height.max(4)) {
-                                        tracing::warn!(error = %e, "scoped attach: pane spawn failed");
-                                    }
+                            c.resize(cols, rows);
+                            // The scope belongs to THIS client: a second
+                            // terminal attaching plain no longer widens the
+                            // first one's scoped view.
+                            enter(&mut rt, c);
+                            let spawn = match folder {
+                                Some(folder) => {
+                                    tracing::info!(client = id, folder = %folder.display(), "scoped attach");
+                                    rt.state.attach_scope(folder)
+                                }
+                                None => {
+                                    rt.state.scope = None;
+                                    None
+                                }
+                            };
+                            let a = c.area();
+                            leave(&mut rt, c);
+                            if let Some(pane) = spawn {
+                                if let Err(e) = rt.spawn_pane(pane, a.width, a.height) {
+                                    tracing::warn!(error = %e, "scoped attach: pane spawn failed");
+                                }
+                                // The new space is what this client attached
+                                // for — look at it.
+                                if let Some(ws) = rt
+                                    .state
+                                    .locate_pane(pane)
+                                    .and_then(|(wi, _)| rt.state.workspaces.get(wi))
+                                    && let Some(c) = clients.get_mut(&id)
+                                {
+                                    c.active_workspace = ws.id;
+                                }
                             }
-                            None => rt.state.scope = None,
+                            area = Rect::new(0, 0, cols.max(4), rows.max(4));
                         }
-                        resize_all(&mut area, &mut term, &mut clients, &mut frame_cache, cols, rows)?;
                         rt.mark_dirty();
                     }
                     ClientMsg::Event(ev) => {
-                        if let crossterm::event::Event::Resize(cols, rows) = ev {
-                            if let Some(c) = clients.get_mut(&id) {
-                                c.size = (cols, rows);
-                            }
-                            resize_all(&mut area, &mut term, &mut clients, &mut frame_cache, cols, rows)?;
+                        if let crossterm::event::Event::Resize(cols, rows) = ev
+                            && let Some(c) = clients.get_mut(&id)
+                        {
+                            c.resize(cols, rows);
+                            area = Rect::new(0, 0, cols.max(4), rows.max(4));
                         }
-                        match runtime::handle_input(&mut rt, ev, area)? {
+                        // Input runs in the sending client's view: its scope,
+                        // its workspace, its geometry.
+                        let Some(mut c) = clients.remove(&id) else { continue };
+                        let a = c.area();
+                        enter(&mut rt, &mut c);
+                        let outcome = runtime::handle_input(&mut rt, ev, a);
+                        leave(&mut rt, &mut c);
+                        clients.insert(id, c);
+                        match outcome? {
                             InputOutcome::Continue => {}
                             InputOutcome::Detach => {
                                 // Only the client that pressed prefix+q — a
@@ -227,7 +320,7 @@ pub async fn run(
                                     flush_writers().await;
                                     return Ok(RunOutcome::Exit);
                                 }
-                                refit_area(&mut area, &mut term, &mut clients, &mut frame_cache, &mut rt)?;
+                                rt.mark_dirty();
                             }
                             InputOutcome::Shutdown => {
                                 rt.save_session();
@@ -245,7 +338,7 @@ pub async fn run(
                             rt.save_session();
                             return Ok(RunOutcome::Exit);
                         }
-                        refit_area(&mut area, &mut term, &mut clients, &mut frame_cache, &mut rt)?;
+                        rt.mark_dirty();
                     }
                 },
                 ClientCtl::Gone(id) => {
@@ -255,7 +348,9 @@ pub async fn run(
                         rt.save_session();
                         return Ok(RunOutcome::Exit);
                     }
-                    refit_area(&mut area, &mut term, &mut clients, &mut frame_cache, &mut rt)?;
+                    // A departing client no longer pins anyone's geometry:
+                    // the survivors' panes grow back on the next tick.
+                    rt.mark_dirty();
                 }
             },
             Some(ev) = rx.recv() => {
@@ -426,9 +521,27 @@ pub async fn run(
                         }
                     }
                 }
-                    req => match api::handle(&mut rt, area, req) {
-                        Ok(v) => { let _ = reply.send(v); }
-                        Err(pending) => waiters.push((pending, reply)),
+                    req => {
+                        // API focus commands (`workspace focus`, `focus <pane>`
+                        // in another space) move the session's active
+                        // workspace. Clients own that now, so an automation
+                        // focus must land in the terminals too — otherwise it
+                        // is silently overwritten by their own view.
+                        let before = rt.state.workspaces.get(rt.state.active_workspace).map(|w| w.id);
+                        let out = api::handle(&mut rt, area, req);
+                        let after = rt.state.workspaces.get(rt.state.active_workspace).map(|w| w.id);
+                        if let Some(ws) = after
+                            && before != after
+                        {
+                            for c in clients.values_mut() {
+                                c.active_workspace = ws;
+                            }
+                            rt.mark_dirty();
+                        }
+                        match out {
+                            Ok(v) => { let _ = reply.send(v); }
+                            Err(pending) => waiters.push((pending, reply)),
+                        }
                     }
                 },
             },
@@ -474,11 +587,14 @@ pub async fn run(
                 }
             }
             _ = tick.tick() => {
-                if rt.take_dirty() && !clients.is_empty() {
-                    render_frame(&mut rt, &mut term, area, &mut clients, &mut frame_cache)?;
-                } else if rt.take_dirty() {
-                    // Headless: still run geometry so PTY sizes stay right.
-                    let _ = ui::compute_view(&mut rt, area);
+                if rt.take_dirty() {
+                    if clients.is_empty() {
+                        // Headless: still run geometry so PTY sizes stay right.
+                        let view = ui::compute_view(&rt, area);
+                        rt.apply_pane_sizes(&ui::pane_sizes(&view).into_iter().collect());
+                    } else {
+                        render_clients(&mut rt, &mut clients)?;
+                    }
                 }
             }
         }
@@ -570,72 +686,47 @@ fn shutdown_clients(clients: &HashMap<ClientId, Client>) {
     }
 }
 
-/// After a client leaves, re-fit the shared area to a survivor — otherwise
-/// the remaining client renders at the departed one's size forever.
-fn refit_area(
-    area: &mut Rect,
-    term: &mut Terminal<TestBackend>,
-    clients: &mut HashMap<ClientId, Client>,
-    cache: &mut FrameCache,
-    rt: &mut Runtime,
-) -> io::Result<()> {
-    if let Some((cols, rows)) = clients.values().map(|c| c.size).find(|s| s.0 > 0) {
-        resize_all(area, term, clients, cache, cols, rows)?;
-        rt.mark_dirty();
-    }
-    Ok(())
-}
-
-fn resize_all(
-    area: &mut Rect,
-    term: &mut Terminal<TestBackend>,
-    clients: &mut HashMap<ClientId, Client>,
-    cache: &mut FrameCache,
-    cols: u16,
-    rows: u16,
-) -> io::Result<()> {
-    let new = Rect::new(0, 0, cols.max(4), rows.max(4));
-    if *area != new {
-        *area = new;
-        *term = Terminal::new(TestBackend::new(new.width, new.height)).expect("test backend is infallible");
-        cache.prev = None;
-        for c in clients.values_mut() {
-            c.needs_full = true; // full repaint at the new size
+/// One frame per client: each lays out at its own size, in its own scope,
+/// on its own workspace. Panes shared by several clients get the smallest
+/// requested pty size, so nobody sees a cropped agent.
+fn render_clients(rt: &mut Runtime, clients: &mut HashMap<ClientId, Client>) -> io::Result<()> {
+    // Pass 1 — geometry only (pure): what size does each client want each
+    // pane to be?
+    let mut wanted: HashMap<crate::state::ids::PaneId, (u16, u16)> = HashMap::new();
+    let mut views: Vec<(ClientId, crate::ui::view::View)> = Vec::new();
+    for (id, c) in clients.iter_mut() {
+        enter(rt, c);
+        let view = ui::compute_view(rt, c.area());
+        for (pane, size) in ui::pane_sizes(&view) {
+            wanted
+                .entry(pane)
+                .and_modify(|s| *s = (s.0.min(size.0), s.1.min(size.1)))
+                .or_insert(size);
         }
+        views.push((*id, view));
+        leave(rt, c);
     }
-    Ok(())
-}
+    // Pass 2 — one pty resize per pane, at the agreed size.
+    rt.apply_pane_sizes(&wanted);
 
-/// Shared previous frame: all clients see the same area, so one diff and
-/// one stored buffer serve everyone (cloning per client per 16ms tick was
-/// the loop's largest constant cost).
-struct FrameCache {
-    prev: Option<Buffer>,
-}
-
-fn render_frame(
-    rt: &mut Runtime,
-    term: &mut Terminal<TestBackend>,
-    area: Rect,
-    clients: &mut HashMap<ClientId, Client>,
-    cache: &mut FrameCache,
-) -> io::Result<()> {
-    let view = ui::compute_view(rt, area);
-    term.draw(|f| ui::render(&view, rt, f)).expect("test backend is infallible");
-    let curr = term.backend().buffer().clone();
-    let cursor = ui::cursor_for(&view, rt);
-
-    let any_full = clients.values().any(|c| c.needs_full);
-    let diff = ansi_diff(cache.prev.as_ref(), &curr, cursor);
-    let full = if any_full { ansi_diff(None, &curr, cursor) } else { Vec::new() };
-    for c in clients.values_mut() {
-        let bytes = if c.needs_full { &full } else { &diff };
+    // Pass 3 — draw. Emulators now hold the agreed geometry, so what a
+    // client sees matches what the pane actually is.
+    for (id, view) in views {
+        let Some(c) = clients.get_mut(&id) else { continue };
+        enter(rt, c);
+        c.term.draw(|f| ui::render(&view, rt, f)).expect("test backend is infallible");
+        let curr = c.term.backend().buffer().clone();
+        let cursor = ui::cursor_for(&view, rt);
+        let prev = if c.needs_full { None } else { c.prev.as_ref() };
+        let bytes = ansi_diff(prev, &curr, cursor);
         c.needs_full = false;
         if !bytes.is_empty() {
-            let _ = c.tx.send(ServerMsg::Frame(bytes.clone()));
+            let _ = c.tx.send(ServerMsg::Frame(bytes));
         }
+        c.prev = Some(curr);
+        rt.last_view = Some(view); // leave() stores it back on the client
+        leave(rt, c);
     }
-    cache.prev = Some(curr);
     Ok(())
 }
 

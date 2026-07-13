@@ -4,6 +4,16 @@
 > architecture (the remote SSH bridge shipped as `cdock session attach
 > ssh:host` — a remote cdock over `ssh -t` — rather than a local bridge
 > process).
+>
+> **Per-client views.** Panes and their processes belong to the session, but
+> the *view* belongs to the client: each attached terminal keeps its own
+> folder scope (`-f`), its own active workspace, and its own size, and the
+> server renders one frame per client (`server::enter`/`leave` swap the
+> client's view state into the runtime around every render and input event).
+> Two clients that open the SAME workspace share the window — same panes,
+> mirrored — and the shared pty takes the smallest viewer's size so neither
+> sees it cropped. Automation focus (`cdock workspace focus`) is pushed to
+> every client, since no terminal owns the API.
 
 comind-dock ships as a single binary that wears different hats depending on
 argv: persistent headless server, thin TUI client, remote SSH bridge, CLI

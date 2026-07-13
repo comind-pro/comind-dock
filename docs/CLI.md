@@ -13,6 +13,8 @@ Pane ids accept `3` or `%3`.
 cdock                      attach to the running server (or start one)
 cdock --session NAME       use/create a named session (own server + snapshot)
 cdock -f [PATH]            folder-scoped attach: only workspaces under PATH
+                           (per CLIENT: a second terminal attaching plain
+                           does not widen this one's view)
 cdock --no-session         everything in one process, ephemeral (no persistence)
 cdock --config PATH        config file override (also CDOCK_CONFIG_PATH)
 cdock --default-config     print the annotated default config
