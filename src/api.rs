@@ -199,28 +199,39 @@ impl SubSpec {
     }
 }
 
+/// One request line on the NDJSON socket may not exceed this — without a
+/// cap one connection could grow a line (and RAM) without limit.
+pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+
+/// Events a subscriber may have in flight before it counts as stuck. Output
+/// events fire on every PTY chunk — a reader that stopped draining would
+/// otherwise buffer them forever.
+const SUB_QUEUE: usize = 256;
+
 /// One message from an API connection to the server loop.
 pub enum ConnMsg {
     Req(Req, Replier),
     /// `{"cmd":"subscribe",...}`: the connection becomes an event stream.
-    Sub(SubSpec, mpsc::UnboundedSender<Value>),
+    Sub(SubSpec, mpsc::Sender<Value>),
 }
 
 /// Push `event` to every live subscriber that wants it; prunes dead ones.
+/// A subscriber whose queue is full is dropped — a stalled reader must not
+/// buffer the server's memory away (it sees EOF and can resubscribe).
 pub fn emit(
-    subs: &mut Vec<(SubSpec, mpsc::UnboundedSender<Value>)>,
+    subs: &mut Vec<(SubSpec, mpsc::Sender<Value>)>,
     kind: &str,
     pane: Option<u64>,
     event: &Value,
 ) {
     subs.retain(|(spec, tx)| {
-        if spec.wants(kind, pane) { tx.send(event.clone()).is_ok() } else { !tx.is_closed() }
+        if spec.wants(kind, pane) { tx.try_send(event.clone()).is_ok() } else { !tx.is_closed() }
     });
 }
 
 /// True when at least one subscriber wants this kind (skip building events
 /// nobody reads — output events fire on every PTY chunk).
-pub fn wanted(subs: &[(SubSpec, mpsc::UnboundedSender<Value>)], kind: &str) -> bool {
+pub fn wanted(subs: &[(SubSpec, mpsc::Sender<Value>)], kind: &str) -> bool {
     subs.iter().any(|(spec, _)| spec.events.is_empty() || spec.events.iter().any(|e| e == kind))
 }
 
@@ -809,14 +820,42 @@ pub fn socket_path() -> Option<std::path::PathBuf> {
     crate::logging::state_dir().map(|d| d.join(format!("api-{name}.sock")))
 }
 
+/// `lines.next_line()` with a size cap: an over-long line (no `\n` within
+/// MAX_REQUEST_BYTES) is an error instead of unbounded buffering.
+async fn read_line_capped(
+    r: &mut (impl tokio::io::AsyncBufRead + Unpin),
+) -> std::io::Result<Option<String>> {
+    use tokio::io::AsyncBufReadExt;
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        let chunk = r.fill_buf().await?;
+        if chunk.is_empty() {
+            // EOF: a trailing unterminated line still counts.
+            return Ok((!buf.is_empty()).then(|| String::from_utf8_lossy(&buf).into_owned()));
+        }
+        let (line_end, n) = match chunk.iter().position(|&b| b == b'\n') {
+            Some(i) => (true, i),
+            None => (false, chunk.len()),
+        };
+        buf.extend_from_slice(&chunk[..n]);
+        r.consume(n + line_end as usize);
+        if buf.len() > MAX_REQUEST_BYTES {
+            return Err(std::io::Error::other("request line exceeds 1 MiB"));
+        }
+        if line_end {
+            return Ok(Some(String::from_utf8_lossy(&buf).into_owned()));
+        }
+    }
+}
+
 /// Serve one API connection: NDJSON lines in, one reply line per request.
 /// A `subscribe` request flips the connection into a one-way event stream.
 pub fn spawn_conn(stream: tokio::net::UnixStream, tx: mpsc::UnboundedSender<ConnMsg>) {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::io::AsyncWriteExt;
     tokio::spawn(async move {
         let (r, mut w) = stream.into_split();
-        let mut lines = BufReader::new(r).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
+        let mut lines = tokio::io::BufReader::new(r);
+        while let Ok(Some(line)) = read_line_capped(&mut lines).await {
             if line.trim().is_empty() {
                 continue;
             }
@@ -832,7 +871,7 @@ pub fn spawn_conn(stream: tokio::net::UnixStream, tx: mpsc::UnboundedSender<Conn
             };
             if v["cmd"] == "subscribe" {
                 let spec: SubSpec = serde_json::from_value(v).unwrap_or_default();
-                let (etx, mut erx) = mpsc::unbounded_channel::<Value>();
+                let (etx, mut erx) = mpsc::channel::<Value>(SUB_QUEUE);
                 if tx.send(ConnMsg::Sub(spec, etx)).is_err() {
                     return;
                 }
@@ -956,6 +995,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn request_line_over_cap_is_rejected() {
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        rt.block_on(async {
+            let mut small = tokio::io::BufReader::new(&b"{\"cmd\":\"pane-list\"}\nrest\n"[..]);
+            assert_eq!(
+                read_line_capped(&mut small).await.unwrap().as_deref(),
+                Some("{\"cmd\":\"pane-list\"}")
+            );
+            assert_eq!(read_line_capped(&mut small).await.unwrap().as_deref(), Some("rest"));
+            assert_eq!(read_line_capped(&mut small).await.unwrap(), None, "EOF");
+
+            let huge = vec![b'x'; MAX_REQUEST_BYTES + 1];
+            let mut r = tokio::io::BufReader::new(&huge[..]);
+            assert!(read_line_capped(&mut r).await.is_err(), "over-cap line must error");
+        });
+    }
+
+    #[test]
+    fn slow_subscriber_is_dropped_not_buffered() {
+        let (tx, mut rx) = mpsc::channel::<Value>(1);
+        let mut subs = vec![(SubSpec::default(), tx)];
+        emit(&mut subs, "output", None, &json!({"n": 1}));
+        assert_eq!(subs.len(), 1);
+        emit(&mut subs, "output", None, &json!({"n": 2})); // queue full → dropped
+        assert!(subs.is_empty(), "slow subscriber must be pruned, not buffered");
+        assert_eq!(rx.try_recv().unwrap()["n"], 1);
     }
 
     /// The wire format is public API for scripts — keep it stable.

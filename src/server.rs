@@ -151,7 +151,7 @@ pub async fn run(
     // subscribers get pushed events (agent-status, output).
     let (api_tx, mut api_rx) = mpsc::unbounded_channel::<api::ConnMsg>();
     let mut waiters: Vec<(api::PendingWait, api::Replier)> = Vec::new();
-    let mut subs: Vec<(api::SubSpec, mpsc::UnboundedSender<serde_json::Value>)> = Vec::new();
+    let mut subs: Vec<(api::SubSpec, mpsc::Sender<serde_json::Value>)> = Vec::new();
 
     for stream in initial {
         let _ = ctl_tx.send(ClientCtl::New(stream));
