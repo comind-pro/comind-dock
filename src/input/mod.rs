@@ -265,6 +265,15 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<Inp
                         rt.save_session();
                         return Ok(InputOutcome::Continue);
                     }
+                    // Empty submit clears a custom tab name back to auto
+                    // (the tab then follows the agent's/pane's own title).
+                    if let PromptKind::RenameTab(id) = kind
+                        && name.is_empty()
+                    {
+                        rt.state.reset_tab_name(id);
+                        rt.state.input_mode = InputMode::Terminal;
+                        return Ok(InputOutcome::Continue);
+                    }
                     if !name.is_empty() {
                         match kind {
                             PromptKind::RenameTab(id) => rt.state.rename_tab_by_id(id, name),

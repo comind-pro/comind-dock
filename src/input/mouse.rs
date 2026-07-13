@@ -329,6 +329,18 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
         }
 
         MouseEventKind::Down(MouseButton::Right) => {
+            // Right-click a tab: new / rename / close (the ✕ still closes).
+            if view.tab_bar.contains(pos)
+                && let Some(tabbar::Hit::Tab(ti) | tabbar::Hit::CloseTab(ti)) =
+                    tabbar::hit(rt, ev.column - view.tab_bar.x, view.tab_bar.width)
+                && let Some(tab) = rt.state.active_workspace().tabs.get(ti)
+            {
+                let id = tab.id;
+                rt.state.input_mode =
+                    InputMode::Menu { x: ev.column, y: ev.row, items: menu::tab_items(id) };
+                rt.mark_dirty();
+                return InputOutcome::Continue;
+            }
             // Right-click on a sidebar space opens its menu (same gesture as
             // the pane context menu).
             if let Some(sb) = view.sidebar
@@ -828,6 +840,39 @@ fn run_menu_action(
             ];
             rt.state.input_mode = InputMode::Menu { x, y, items };
             Ok(())
+        }
+        MenuAction::RenameTab(tab) => {
+            // Seed with the custom name; an auto-named tab ("3") starts empty.
+            let buffer = rt
+                .state
+                .active_workspace()
+                .tabs
+                .iter()
+                .find(|t| t.id == tab)
+                .map(|t| t.name.clone())
+                .filter(|n| !n.chars().all(|c| c.is_ascii_digit()))
+                .unwrap_or_default();
+            rt.state.input_mode =
+                InputMode::Prompt { kind: crate::state::PromptKind::RenameTab(tab), buffer };
+            Ok(())
+        }
+        MenuAction::CloseTab(tab) => {
+            let panes = rt
+                .state
+                .active_workspace()
+                .tabs
+                .iter()
+                .find(|t| t.id == tab)
+                .map(|t| t.layout.panes())
+                .unwrap_or_default();
+            for pane in panes {
+                rt.kill_pane(pane); // PtyExit drives the close (one path)
+            }
+            Ok(())
+        }
+        MenuAction::NewTab => {
+            let pane = rt.state.new_tab();
+            rt.spawn_pane(pane, area.width.max(4), area.height.max(4))
         }
         MenuAction::RenamePane(pane) => {
             // Seed with the current name so editing beats retyping; empty

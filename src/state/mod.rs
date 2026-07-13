@@ -84,6 +84,10 @@ pub enum MenuAction {
     FocusPane(ids::PaneId),
     /// Prompt for a custom pane/agent name.
     RenamePane(ids::PaneId),
+    /// Tab-bar context menu: new tab / rename / close (the ✕ stays too).
+    RenameTab(ids::TabId),
+    CloseTab(ids::TabId),
+    NewTab,
     /// Pick a behavior (global or space-scoped profile) for an agent pane.
     BehaviorPicker(ids::PaneId),
     /// Inject the behavior into the running session; None clears the mark.
@@ -537,6 +541,17 @@ impl AppState {
     /// The user's name for a pane, if any.
     pub fn pane_name(&self, pane: PaneId) -> Option<&str> {
         self.pane_names.get(&pane).map(String::as_str)
+    }
+
+    /// Back to the auto name (its index): the tab label then follows the
+    /// pane's own name/title again.
+    pub fn reset_tab_name(&mut self, id: ids::TabId) {
+        for ws in &mut self.workspaces {
+            if let Some(i) = ws.tabs.iter().position(|t| t.id == id) {
+                ws.tabs[i].name = (i + 1).to_string();
+                return;
+            }
+        }
     }
 
     pub fn rename_tab_by_id(&mut self, id: ids::TabId, name: String) {

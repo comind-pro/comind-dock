@@ -33,6 +33,11 @@ fn tab_label(rt: &Runtime, state: &AppState, ti: usize) -> String {
     let ws = state.active_workspace();
     let tab = &ws.tabs[ti];
     if tab.name.chars().all(|c| c.is_ascii_digit()) {
+        // Auto-named tab: the user's name for the pane wins, then the app's
+        // own OSC title, then the program — same precedence as the sidebar.
+        if let Some(name) = state.pane_name(tab.focused_pane) {
+            return crate::agents::truncate_clean(name, 16);
+        }
         if let Some(title) = rt.titles.get(&tab.focused_pane)
             && !title.trim().is_empty() {
                 let short: String = title.chars().take(16).collect();

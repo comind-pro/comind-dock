@@ -52,6 +52,18 @@ pub fn app_items(update: Option<&str>) -> Vec<MenuItem> {
     items
 }
 
+/// Right-click on a tab in the tab bar.
+pub fn tab_items(tab: crate::state::ids::TabId) -> Vec<MenuItem> {
+    [
+        ("new tab", MenuAction::NewTab),
+        ("rename…", MenuAction::RenameTab(tab)),
+        ("close", MenuAction::CloseTab(tab)),
+    ]
+    .into_iter()
+    .map(|(label, action)| MenuItem { label: label.to_string(), action })
+    .collect()
+}
+
 pub fn space_items(ws: crate::state::ids::WorkspaceId) -> Vec<MenuItem> {
     [
         ("rename", MenuAction::RenameSpace(ws)),
