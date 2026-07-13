@@ -23,6 +23,21 @@ use event::{AppEvent, PtyData};
 /// cannot starve input handling and the render tick.
 const DRAIN_BUDGET: usize = 256 * 1024;
 
+/// Whether a rename should also rename the agent's conversation. Claude is
+/// the only CLI with a `/rename` command; a busy agent would take the text
+/// as a queued message instead of a command, so we leave it alone. An empty
+/// name only clears our own override — there is nothing to un-name.
+fn should_rename_conversation(
+    agent: Option<&str>,
+    status: crate::detect::Status,
+    name: &str,
+) -> bool {
+    use crate::detect::Status;
+    agent == Some("claude")
+        && !name.is_empty()
+        && !matches!(status, Status::Working | Status::Blocked)
+}
+
 pub struct PaneRuntime {
     pub emu: Emulator,
     pub pty: Pty,
@@ -276,6 +291,21 @@ impl Runtime {
             self.state.reset_tab_name(tab);
         }
         self.dirty = true;
+        self.rename_conversation(pane, &name);
+    }
+
+    /// Carry the name into the agent's OWN conversation, so `/resume` lists
+    /// it under the same label the tab shows. Typed like a human types it —
+    /// bracketed paste would land as a "[Pasted text]" chunk, not a command.
+    fn rename_conversation(&mut self, pane: PaneId, name: &str) {
+        let Some(p) = self.panes.get_mut(&pane) else { return };
+        let agent = p.agent;
+        let status = p.effective_status();
+        if should_rename_conversation(agent, status, name) {
+            p.pty.write(format!("/rename {name}\r").as_bytes());
+        } else if agent == Some("claude") && !name.is_empty() {
+            self.add_plain_toast("agent busy — conversation not renamed".into(), 6);
+        }
     }
 
     /// $EDITOR on a path, in a fresh tab.
@@ -1390,6 +1420,20 @@ pub fn handle_input(
         Event::Key(key) => {
             return input::handle_key(rt, key, area);
         }
+        Event::Paste(text) if text.trim().is_empty() => {
+            // Cmd+V with an IMAGE on the clipboard: the terminal pastes the
+            // clipboard's text — and an image has none, so it sends an empty
+            // paste. The image never travels through the pty at all; the agent
+            // reads the system clipboard itself when it sees Ctrl+V. So: turn
+            // the empty paste into that keypress, and the standard macOS
+            // shortcut pastes pictures like it pastes text.
+            let focused = rt.state.focused_pane();
+            if crate::platform::clipboard_has_image()
+                && let Some(p) = rt.panes.get_mut(&focused)
+            {
+                p.pty.write(&[0x16]); // Ctrl+V
+            }
+        }
         Event::Paste(text) => {
             let focused = rt.state.focused_pane();
             if let Some(p) = rt.panes.get_mut(&focused) {
@@ -1411,6 +1455,23 @@ pub fn handle_input(
 
 #[cfg(test)]
 mod tests {
+    use crate::detect::Status;
+
+    #[test]
+    fn only_an_idle_claude_gets_its_conversation_renamed() {
+        let go = super::should_rename_conversation;
+        assert!(go(Some("claude"), Status::Idle, "auth work"));
+        assert!(go(Some("claude"), Status::Done, "auth work"));
+        // Typing into a busy agent queues a message, it does not run a command.
+        assert!(!go(Some("claude"), Status::Working, "auth work"));
+        assert!(!go(Some("claude"), Status::Blocked, "auth work"));
+        // Clearing our own name override has no conversation-side meaning.
+        assert!(!go(Some("claude"), Status::Idle, ""));
+        // No /rename in the other CLIs, and a plain shell would just run it.
+        assert!(!go(Some("codex"), Status::Idle, "auth work"));
+        assert!(!go(None, Status::Idle, "auth work"));
+    }
+
     #[test]
     fn base64_rfc4648_vectors() {
         let e = |s: &str| super::base64_engine::encode(s.as_bytes());

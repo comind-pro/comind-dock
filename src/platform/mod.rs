@@ -5,7 +5,9 @@
 mod unix;
 
 #[cfg(unix)]
-pub use unix::{child_process_idents, process_cwd, process_env_var, process_ident};
+pub use unix::{
+    child_process_idents, clipboard_has_image, process_cwd, process_env_var, process_ident,
+};
 
 #[cfg(not(unix))]
 pub fn process_cwd(_pid: u32) -> Option<std::path::PathBuf> {
@@ -25,4 +27,9 @@ pub fn process_env_var(_pid: u32, _key: &str) -> Option<String> {
 #[cfg(not(unix))]
 pub fn process_ident(_pid: u32) -> Option<String> {
     None
+}
+
+#[cfg(not(unix))]
+pub fn clipboard_has_image() -> bool {
+    false
 }

@@ -210,3 +210,24 @@ mod tests {
         );
     }
 }
+
+/// Does the system clipboard hold an image (rather than text)?
+/// Cheap: one `osascript` call, and only on the empty-paste path — a Cmd+V
+/// with text never reaches here.
+/// ponytail: macOS only; X11/Wayland would need xclip/wl-paste probing.
+#[cfg(target_os = "macos")]
+pub fn clipboard_has_image() -> bool {
+    let Ok(out) = std::process::Command::new("osascript")
+        .args(["-e", "clipboard info"])
+        .output()
+    else {
+        return false;
+    };
+    let info = String::from_utf8_lossy(&out.stdout);
+    info.contains("PNGf") || info.contains("TIFF") || info.contains("JPEG")
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn clipboard_has_image() -> bool {
+    false
+}

@@ -84,8 +84,29 @@ fn encode_classic(key: &KeyEvent, mode: &TermMode) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// A non-Latin layout still has to produce control codes: on a Cyrillic
+/// keyboard the V key reports 'м', and Ctrl+V must stay Ctrl+V (claude reads
+/// it to paste an image, shells read it as literal-next, …). Terminals do
+/// this translation themselves; we get the already-translated character from
+/// crossterm, so we map it back by KEY POSITION.
+/// ponytail: ЙЦУКЕН only — the layout people actually hit this with. Other
+/// non-Latin layouts need their own row here.
+fn latin_key_for(c: char) -> Option<char> {
+    const CYR: &str = "йцукенгшщзхїфівапролджєячсмитьбю.ґ";
+    const LAT: &str = "qwertyuiop[]asdfghjkl;'zxcvbnm,./\\";
+    let lower = c.to_lowercase().next()?;
+    let idx = CYR.chars().position(|k| k == lower)?;
+    LAT.chars().nth(idx)
+}
+
 /// Ctrl+letter → C0 control byte.
 fn ctrl_byte(c: char) -> Option<u8> {
+    // Non-ASCII: translate the keyboard position back to its Latin key.
+    if !c.is_ascii()
+        && let Some(latin) = latin_key_for(c)
+    {
+        return ctrl_byte(latin);
+    }
     match c {
         'a'..='z' => Some(c as u8 - b'a' + 1),
         'A'..='Z' => Some(c.to_ascii_lowercase() as u8 - b'a' + 1),
@@ -218,6 +239,13 @@ fn encode_kitty(key: &KeyEvent, mode: &TermMode) -> Option<Vec<u8>> {
                 return Some(c.to_string().into_bytes());
             }
             // Key code is the unshifted codepoint; shift lives in modifiers.
+            // With ctrl held, a non-Latin layout reports its own letter — the
+            // app wants the KEY, so translate it back (Ctrl+V on ЙЦУКЕН).
+            let c = if modifiers.contains(KeyModifiers::CONTROL) && !c.is_ascii() {
+                latin_key_for(c).unwrap_or(c)
+            } else {
+                c
+            };
             let base = c.to_lowercase().next().unwrap_or(c);
             let code_field = if mode.contains(TermMode::REPORT_ALTERNATE_KEYS) && c != base {
                 format!("{}:{}", base as u32, c as u32)
@@ -312,6 +340,23 @@ mod tests {
     }
 
     // ------------------------------------------------------- kitty mode
+
+    #[test]
+    fn ctrl_works_on_a_cyrillic_layout() {
+        // The V key on ЙЦУКЕН reports 'м'; Ctrl+V must still be 0x16 — that
+        // is the key claude reads to paste an image from the clipboard.
+        let m = key(KeyCode::Char('м'), KeyModifiers::CONTROL);
+        assert_eq!(encode_key(&m, &TermMode::empty()), Some(vec![0x16]));
+        // Ctrl+C on the same layout ('с' sits on the C key).
+        let c = key(KeyCode::Char('с'), KeyModifiers::CONTROL);
+        assert_eq!(encode_key(&c, &TermMode::empty()), Some(vec![0x03]));
+        // Uppercase (shift held) maps the same.
+        let up = key(KeyCode::Char('М'), KeyModifiers::CONTROL);
+        assert_eq!(encode_key(&up, &TermMode::empty()), Some(vec![0x16]));
+        // Without ctrl the letter is still just a letter.
+        let plain = key(KeyCode::Char('м'), KeyModifiers::NONE);
+        assert_eq!(encode_key(&plain, &TermMode::empty()), Some("м".as_bytes().to_vec()));
+    }
 
     #[test]
     fn kitty_ctrl_char_vs_classic() {
