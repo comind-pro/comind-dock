@@ -15,6 +15,20 @@ pub fn branch(dir: &Path) -> Option<String> {
     Some(head.chars().take(7).collect())
 }
 
+/// Repo root containing `dir` (walks up), None outside a repo. Files only.
+pub fn root(dir: &Path) -> Option<PathBuf> {
+    let mut dir = dir.to_path_buf();
+    for _ in 0..12 {
+        if dir.join(".git").exists() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
+}
+
 /// `.git` dir for `dir`, resolving worktree `.git` pointer files.
 fn find_gitdir(start: &Path) -> Option<PathBuf> {
     let mut dir = start.to_path_buf();

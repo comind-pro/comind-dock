@@ -564,11 +564,11 @@ impl Runtime {
     }
 
     /// Track each space's folder. The anchor is sticky: as long as at least
-    /// one pane (terminal or agent) still lives in the anchor folder or its
-    /// subtree, the space stays put — tabs exploring elsewhere never drag it.
-    /// Only when every pane has left does the space move (to the folder most
-    /// panes are in now). Also auto-rename (unless renamed manually) and
-    /// refresh the git branch.
+    /// one pane (terminal or agent) still lives in the anchor folder — same
+    /// project, see `anchor_holds` — the space stays put, so tabs exploring
+    /// the repo never drag it. Only when every pane has left does the space
+    /// move (to the folder most panes are in now). Also auto-rename (unless
+    /// renamed manually) and refresh the git branch.
     pub fn poll_workspaces(&mut self) {
         // Prune branch entries of closed workspaces (worktree churn leaks).
         let live: std::collections::HashSet<_> =
@@ -587,7 +587,7 @@ impl Runtime {
                     .and_then(|p| p.pty.child_pid)
                     .and_then(crate::platform::process_cwd)
                 {
-                    anchor_alive |= cwd.starts_with(&current);
+                    anchor_alive |= anchor_holds(&current, &cwd);
                     *votes.entry(cwd).or_default() += 1;
                 }
             }
@@ -1041,6 +1041,16 @@ fn folder_name(p: &std::path::Path) -> String {
     p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "/".to_string())
 }
 
+/// Does a pane sitting in `cwd` still hold the space at `anchor`? Only if it
+/// is in the same project: inside the anchor's subtree AND in the same repo
+/// (a folder outside any repo is its own project). Without the repo test a
+/// container folder like ~/projects is a black hole — every project under it
+/// counts as "still home", so `cd repo` never moves the space down.
+fn anchor_holds(anchor: &std::path::Path, cwd: &std::path::Path) -> bool {
+    let project = |p: &std::path::Path| crate::git::root(p).unwrap_or_else(|| p.to_path_buf());
+    cwd.starts_with(anchor) && project(cwd) == project(anchor)
+}
+
 /// A pane's process exited: drop its runtime, cascade the close. Closing the
 /// last tab of the last space does NOT quit — a fresh root space opens so the
 /// runtime always has a terminal (quit stays on the tab-bar ✕ / prefix keys).
@@ -1471,6 +1481,30 @@ mod tests {
         // No /rename in the other CLIs, and a plain shell would just run it.
         assert!(!go(Some("codex"), Status::Idle, "auth work"));
         assert!(!go(None, Status::Idle, "auth work"));
+    }
+
+    #[test]
+    fn a_container_folder_does_not_hold_the_space_against_a_project_under_it() {
+        let holds = super::anchor_holds;
+        let tmp = std::env::temp_dir().join(format!("cdk-anchor-{}", std::process::id()));
+        let container = tmp.join("projects");
+        let repo = container.join("repo");
+        let plain = container.join("notes");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(&plain).unwrap();
+
+        // Exploring inside the repo never drags the space out of the repo.
+        assert!(holds(&repo, &repo));
+        assert!(holds(&repo, &repo.join("src")));
+        assert!(!holds(&repo, &plain));
+        // A space anchored on the container yields to the folder panes moved
+        // into — repo or plain folder alike — instead of sticking forever.
+        assert!(holds(&container, &container));
+        assert!(!holds(&container, &repo));
+        assert!(!holds(&container, &plain));
+
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 
     #[test]
