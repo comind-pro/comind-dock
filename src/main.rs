@@ -1231,6 +1231,10 @@ fn run_server(cfg: config::Config, warnings: Vec<String>) -> std::io::Result<()>
         } else {
             (tokio::net::UnixListener::bind(&sock)?, tokio::net::UnixListener::bind(&api_sock)?)
         };
+        // Owner-only: whoever can write these sockets owns every PTY.
+        for s in [&sock, &api_sock] {
+            let _ = crate::logging::owner_only(s, 0o600);
+        }
         drop(_sock_lock); // cleanup + bind done — let other launches proceed
         let result = server::run(
             cfg,

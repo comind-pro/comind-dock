@@ -33,6 +33,15 @@ pub fn state_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state").join(app_dir()))
 }
 
+/// Clamp to owner-only permissions. The state dir holds session snapshots,
+/// screen tails, and the control sockets — API access means full PTY
+/// control — so nothing in it may carry group/other bits. Applied on every
+/// boot: it also repairs dirs created by older builds under a loose umask.
+pub fn owner_only(path: &std::path::Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
 /// Initialize file logging. Filter via `CDOCK_LOG` (tracing env-filter syntax), default `info`.
 /// Returns a guard that must stay alive for the non-blocking writer to flush.
 pub fn init() -> std::io::Result<WorkerGuard> {
@@ -40,6 +49,7 @@ pub fn init() -> std::io::Result<WorkerGuard> {
         std::io::Error::other("cannot determine state dir (HOME and XDG_STATE_HOME unset)")
     })?;
     std::fs::create_dir_all(&dir)?;
+    owner_only(&dir, 0o700)?;
 
     let appender = tracing_appender::rolling::daily(&dir, "cdock.log");
     let (writer, guard) = tracing_appender::non_blocking(appender);
@@ -47,4 +57,17 @@ pub fn init() -> std::io::Result<WorkerGuard> {
     let filter = EnvFilter::try_from_env("CDOCK_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt().with_env_filter(filter).with_writer(writer).with_ansi(false).init();
     Ok(guard)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn owner_only_strips_group_other_bits() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("cdock-perm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        super::owner_only(&dir, 0o700).unwrap();
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
