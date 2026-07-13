@@ -380,6 +380,7 @@ fn from_table(table: toml::Table) -> (Config, Vec<String>) {
     section!("ui", ui);
     section!("worktrees", worktrees);
     section!("update", update);
+    section!("restore", restore);
     section!("advanced", advanced);
     section!("experimental", experimental);
     (cfg, warnings)
@@ -426,7 +427,10 @@ description = "open lazygit"
             !Config::default().restore.screen_history,
             "screen history must be off by default (tails may hold secrets)"
         );
-        let cfg: Config = toml::from_str("[restore]\nscreen_history = true\n").unwrap();
+        // Through the REAL load path (from_str → from_table): serde-only
+        // parsing would miss a section absent from from_table's dispatch.
+        let (cfg, warnings) = from_str("[restore]\nscreen_history = true\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
         assert!(cfg.restore.screen_history);
     }
 
