@@ -200,10 +200,20 @@ fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
                     .and_then(crate::agents::profile_label_from_dir)
                     .map(|l| format!(" @{l}"))
                     .unwrap_or_default();
+                // Which space it belongs to — the agents list spans every
+                // space in scope, so "claude" alone doesn't say where it is.
+                let space = crate::agents::truncate_clean(&ws.name, 14);
                 out.push(Row {
                     line: Line::from(Span::styled(
                         format!("    {status} · {agent}{profile}"),
                         Style::new().fg(theme.muted),
+                    )),
+                    target: Some(Target::Pane(pane)),
+                });
+                out.push(Row {
+                    line: Line::from(Span::styled(
+                        format!("    {space}"),
+                        Style::new().fg(theme.muted).add_modifier(Modifier::DIM),
                     )),
                     target: Some(Target::Pane(pane)),
                 });
