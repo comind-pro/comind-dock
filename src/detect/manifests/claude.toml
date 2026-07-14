@@ -71,6 +71,7 @@ any_of = [
     "running stop hooks",
     "· ↓ ",                            # token counter in the spinner line
     "· ↑ ",
+    "still running",                   # "N shells still running" spinner tail
 ]
 
 # Resting input prompt with its hint line.
@@ -84,4 +85,5 @@ any_of = [
     "plan mode on",
     "manual mode on",
     "accept edits on",
+    "auto mode on",                    # 2.1.207 shells footer drops the cycle hint
 ]

@@ -299,6 +299,32 @@ mod tests {
         assert_eq!(classify(&m, "", &lines(&["waiting for your approval"])), Some(Status::Blocked));
     }
 
+    /// Background shells keep the agent working after the spinner loses its
+    /// hints ("✻ Baked for 1m 34s · 2 shells still running"), and the
+    /// 2.1.207 shells-footer ("⏵⏵ auto mode on · 2 shells · ← for agents")
+    /// has neither "shift+tab to cycle" nor "? for shortcuts" — without
+    /// these patterns nothing matches and the pane sticks on its last state.
+    #[test]
+    fn background_shells_spinner_is_working_and_auto_mode_footer_is_idle() {
+        let m = claude();
+        assert_eq!(
+            classify(
+                &m,
+                "",
+                &lines(&[
+                    "✻ Baked for 1m 34s · 2 shells still running",
+                    "❯ чекаємо фініш FRC і фільтра",
+                    "  ⏵⏵ auto mode on · 2 shells · ← for agents",
+                ])
+            ),
+            Some(Status::Working)
+        );
+        assert_eq!(
+            classify(&m, "", &lines(&["❯ ", "  ⏵⏵ auto mode on · 2 shells · ← for agents"])),
+            Some(Status::Idle)
+        );
+    }
+
     /// v2.1.206 spinner has no "esc to interrupt", and the input box with
     /// mode hints stays on screen mid-task — the token counter must win.
     #[test]
