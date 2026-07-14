@@ -219,6 +219,9 @@ enum WorktreeCmd {
 enum HookCmd {
     /// Claude Code SessionStart hook: stdin JSON → report session id.
     ClaudeSession,
+    /// Claude Code Notification hook: stdin JSON → blocked only when the
+    /// message asks for permission; idle nags clear the report instead.
+    ClaudeNotification,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -555,11 +558,20 @@ const STATUS_HOOKS: &[(&str, &str, u64)] = &[
     ("UserPromptSubmit", "working", 900_000),
     ("PreToolUse", "working", 900_000),
     ("PostToolUse", "working", 900_000),
-    // "needs your permission" / "waiting for input" — the one that matters.
-    ("Notification", "blocked", 3_600_000),
     ("Stop", "done", 3_600_000),
     ("SessionEnd", "clear", 1_000),
 ];
+
+/// Notification is NOT in STATUS_HOOKS: it fires both for real permission
+/// prompts and for idle nags ("Claude is waiting for your input"). Mapping
+/// every notification to blocked painted idle panes blocked for an hour —
+/// the message must be inspected (`hook claude-notification`). Anything
+/// unrecognized clears the report: screen detection still catches real
+/// dialogs ("Do you want to proceed", numbered options) as the fallback.
+fn notification_state(message: &str) -> &'static str {
+    let m = message.to_lowercase();
+    if m.contains("permission") || m.contains("approval") { "blocked" } else { "clear" }
+}
 
 fn status_hook_cmd(state: &str, ttl_ms: u64) -> String {
     format!(
@@ -601,9 +613,19 @@ fn install_hook_into(profile_dir: &std::path::Path) -> Result<(), String> {
         }));
     }
 
-    // Status reporting: one hook per claude lifecycle event.
-    for (event, state, ttl) in STATUS_HOOKS {
-        let cmd = status_hook_cmd(state, *ttl);
+    // Status reporting: one hook per claude lifecycle event. Notification
+    // gets its own subcommand — the state depends on the message.
+    let mut status_hooks: Vec<(&str, String)> = STATUS_HOOKS
+        .iter()
+        .map(|(event, state, ttl)| (*event, status_hook_cmd(state, *ttl)))
+        .collect();
+    status_hooks.push((
+        "Notification",
+        "[ -z \"$CDOCK_PANE_ID\" ] || \"$CDOCK_BIN\" hook claude-notification >/dev/null 2>&1 \
+         || true"
+            .to_string(),
+    ));
+    for (event, cmd) in status_hooks {
         let entry = root
             .as_object_mut()
             .ok_or("settings.json root is not an object")?
@@ -611,12 +633,15 @@ fn install_hook_into(profile_dir: &std::path::Path) -> Result<(), String> {
             .or_insert_with(|| serde_json::json!({}))
             .as_object_mut()
             .ok_or("settings.json \"hooks\" is not an object")?
-            .entry(*event)
+            .entry(event)
             .or_insert_with(|| serde_json::json!([]));
         let arr = entry.as_array_mut().ok_or(format!("\"{event}\" is not an array"))?;
-        // Re-installs replace our own entry (the command changes between
+        // Re-installs replace our own entries (the command changes between
         // versions) and leave the user's hooks alone.
-        arr.retain(|e| !e.to_string().contains("pane report-agent"));
+        arr.retain(|e| {
+            let s = e.to_string();
+            !s.contains("pane report-agent") && !s.contains("hook claude-notification")
+        });
         arr.push(serde_json::json!({
             "hooks": [{ "type": "command", "command": cmd }]
         }));
@@ -1060,6 +1085,30 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             );
             return Ok(true);
         }
+        Cmd::Hook { sub: HookCmd::ClaudeNotification } => {
+            let Some(pane) = std::env::var("CDOCK_PANE_ID").ok().and_then(|p| parse_pane(&p).ok())
+            else {
+                return Ok(true); // not inside a cdock pane
+            };
+            let mut input = String::new();
+            let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut input);
+            let msg = serde_json::from_str::<serde_json::Value>(&input)
+                .ok()
+                .and_then(|v| v["message"].as_str().map(str::to_string))
+                .unwrap_or_default();
+            // The hook must never fail a claude launch — errors are silent.
+            let _ = api::request_with_timeout(
+                &Req::ReportAgent {
+                    pane,
+                    state: notification_state(&msg).to_string(),
+                    label: None,
+                    ttl_ms: Some(3_600_000),
+                    pid: Some(std::os::unix::process::parent_id()),
+                },
+                Duration::from_secs(3),
+            );
+            return Ok(true);
+        }
     };
     let v = api::request(&req).map_err(|e| e.to_string())?;
     println!("{v}");
@@ -1415,5 +1464,21 @@ fn attach_or_spawn(folder: Option<std::path::PathBuf>) -> std::io::Result<()> {
             return Err(std::io::Error::other("server did not start within 15s"));
         }
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Claude's Notification hook fires for real permission prompts AND for
+    /// idle nags ("Claude is waiting for your input") — only the former may
+    /// mark the pane blocked.
+    #[test]
+    fn notification_blocks_only_on_permission() {
+        assert_eq!(
+            super::notification_state("Claude needs your permission to use Bash"),
+            "blocked"
+        );
+        assert_eq!(super::notification_state("Claude is waiting for your input"), "clear");
+        assert_eq!(super::notification_state(""), "clear");
     }
 }
