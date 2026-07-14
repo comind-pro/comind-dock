@@ -218,10 +218,9 @@ enum WorktreeCmd {
 #[derive(clap::Subcommand, Debug)]
 enum HookCmd {
     /// Claude Code SessionStart hook: stdin JSON → report session id.
-    ClaudeSession,
-    /// Claude Code Notification hook: stdin JSON → blocked only when the
-    /// message asks for permission; idle nags clear the report instead.
-    ClaudeNotification,
+    /// `pid` is the wrapping shell's $PPID — the claude that fired the hook
+    /// (our own parent is that sh, not claude).
+    ClaudeSession { pid: Option<u32> },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -554,26 +553,26 @@ fn install_claude_hook() -> Result<bool, String> {
 /// a nested claude cannot report for its parent.
 /// ttl: a report outlives normal gaps between events but not a crashed
 /// agent — screen detection takes back over once it expires.
-const STATUS_HOOKS: &[(&str, &str, u64)] = &[
-    ("UserPromptSubmit", "working", 900_000),
-    ("PreToolUse", "working", 900_000),
-    ("PostToolUse", "working", 900_000),
-    ("Stop", "done", 3_600_000),
-    ("SessionEnd", "clear", 1_000),
+/// (event, notification_type matcher — "" fires on all, state, ttl_ms).
+/// Notification routes by type: only real waits (permission prompt, MCP
+/// elicitation form) block; the idle nag clears the report; unlisted types
+/// (auth_success, elicitation_complete, …) fire no hook at all — fail-safe,
+/// screen detection still catches real dialogs as the fallback.
+const STATUS_HOOKS: &[(&str, &str, &str, u64)] = &[
+    ("UserPromptSubmit", "", "working", 900_000),
+    ("PreToolUse", "", "working", 900_000),
+    ("PostToolUse", "", "working", 900_000),
+    ("Notification", "permission_prompt|elicitation_dialog", "blocked", 3_600_000),
+    ("Notification", "idle_prompt", "clear", 1_000),
+    ("Stop", "", "done", 3_600_000),
+    ("SessionEnd", "", "clear", 1_000),
 ];
 
-/// Notification is NOT in STATUS_HOOKS: it fires both for real permission
-/// prompts and for idle nags ("Claude is waiting for your input"). Mapping
-/// every notification to blocked painted idle panes blocked for an hour —
-/// the message must be inspected (`hook claude-notification`). Anything
-/// unrecognized clears the report: screen detection still catches real
-/// dialogs ("Do you want to proceed", numbered options) as the fallback.
-fn notification_state(message: &str) -> &'static str {
-    let m = message.to_lowercase();
-    if m.contains("permission") || m.contains("approval") { "blocked" } else { "clear" }
-}
-
 fn status_hook_cmd(state: &str, ttl_ms: u64) -> String {
+    // `$PPID` is expanded by the sh that Claude wraps hooks in — its parent
+    // IS the reporting claude. The hook process itself must never call
+    // parent_id(): that yields the sh, and the server would reject the
+    // report as a nested agent.
     format!(
         "[ -z \"$CDOCK_PANE_ID\" ] || \"$CDOCK_BIN\" pane report-agent \"$CDOCK_PANE_ID\" \
          {state} --ttl-ms {ttl_ms} --pid \"$PPID\" >/dev/null 2>&1 || true"
@@ -590,42 +589,31 @@ fn install_hook_into(profile_dir: &std::path::Path) -> Result<(), String> {
         Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
     };
 
-    let starts = root
-        .as_object_mut()
-        .ok_or("settings.json root is not an object")?
-        .entry("hooks")
-        .or_insert_with(|| serde_json::json!({}))
-        .as_object_mut()
-        .ok_or("settings.json \"hooks\" is not an object")?
-        .entry("SessionStart")
-        .or_insert_with(|| serde_json::json!([]));
-    let arr = starts.as_array_mut().ok_or("\"SessionStart\" is not an array")?;
-    if arr.iter().any(|e| e.to_string().contains(MARKER)) {
-        // Already there — but the status hooks below may still be missing
-        // (they arrived later), so do NOT return early.
-        tracing::debug!("{}: session hook already installed", path.display());
-    } else {
-        arr.push(serde_json::json!({
+    // One list of (event, entry) to install; re-installs replace our own
+    // entries (commands change between versions) and leave the user's alone.
+    let mut entries: Vec<(&str, serde_json::Value)> = vec![(
+        "SessionStart",
+        serde_json::json!({
             "hooks": [{
                 "type": "command",
-                "command": "[ -z \"$CDOCK_PANE_ID\" ] || \"$CDOCK_BIN\" hook claude-session"
+                // $PPID: see status_hook_cmd — the hook's own parent is sh.
+                "command": "[ -z \"$CDOCK_PANE_ID\" ] || \"$CDOCK_BIN\" hook claude-session \"$PPID\""
             }]
-        }));
+        }),
+    )];
+    for (event, matcher, state, ttl) in STATUS_HOOKS {
+        let mut entry = serde_json::json!({
+            "hooks": [{ "type": "command", "command": status_hook_cmd(state, *ttl) }]
+        });
+        if !matcher.is_empty() {
+            entry["matcher"] = serde_json::json!(matcher);
+        }
+        entries.push((event, entry));
     }
-
-    // Status reporting: one hook per claude lifecycle event. Notification
-    // gets its own subcommand — the state depends on the message.
-    let mut status_hooks: Vec<(&str, String)> = STATUS_HOOKS
-        .iter()
-        .map(|(event, state, ttl)| (*event, status_hook_cmd(state, *ttl)))
-        .collect();
-    status_hooks.push((
-        "Notification",
-        "[ -z \"$CDOCK_PANE_ID\" ] || \"$CDOCK_BIN\" hook claude-notification >/dev/null 2>&1 \
-         || true"
-            .to_string(),
-    ));
-    for (event, cmd) in status_hooks {
+    // Strip BEFORE pushing, once per event — a per-entry retain would eat
+    // the sibling entry just pushed for the same event (Notification has 2).
+    let mut stripped = std::collections::HashSet::new();
+    for (event, new_entry) in entries {
         let entry = root
             .as_object_mut()
             .ok_or("settings.json root is not an object")?
@@ -636,15 +624,15 @@ fn install_hook_into(profile_dir: &std::path::Path) -> Result<(), String> {
             .entry(event)
             .or_insert_with(|| serde_json::json!([]));
         let arr = entry.as_array_mut().ok_or(format!("\"{event}\" is not an array"))?;
-        // Re-installs replace our own entries (the command changes between
-        // versions) and leave the user's hooks alone.
-        arr.retain(|e| {
-            let s = e.to_string();
-            !s.contains("pane report-agent") && !s.contains("hook claude-notification")
-        });
-        arr.push(serde_json::json!({
-            "hooks": [{ "type": "command", "command": cmd }]
-        }));
+        if stripped.insert(event) {
+            arr.retain(|e| {
+                let s = e.to_string();
+                !s.contains("pane report-agent")
+                    && !s.contains("hook claude-notification") // ≤0.4.8 leftover
+                    && !s.contains(MARKER)
+            });
+        }
+        arr.push(new_entry);
     }
 
     if path.exists() {
@@ -1056,7 +1044,7 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 }
             };
         }
-        Cmd::Hook { sub: HookCmd::ClaudeSession } => {
+        Cmd::Hook { sub: HookCmd::ClaudeSession { pid } } => {
             // Quietly a no-op outside a cdock pane — the hook is installed
             // globally but only means something here.
             let Some(pane) = std::env::var("CDOCK_PANE_ID").ok().and_then(|p| parse_pane(&p).ok())
@@ -1073,37 +1061,15 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             };
             // No server (ephemeral session, plain terminal) → silently ok;
             // the hook must never fail a claude launch.
-            // Our parent is the reporting claude itself — the server uses
-            // the pid to reject nested claudes clobbering the pane binding.
+            // pid: the installer passes "$PPID" — the claude that fired the
+            // hook. Our own parent is the sh wrapper, NOT claude, so
+            // parent_id() is only a legacy fallback (pre-0.4.9 installs) and
+            // the server may reject it as a nested agent.
             let _ = api::request_with_timeout(
                 &Req::ReportAgentSession {
                     pane,
                     session_id: session_id.to_string(),
-                    pid: Some(std::os::unix::process::parent_id()),
-                },
-                Duration::from_secs(3),
-            );
-            return Ok(true);
-        }
-        Cmd::Hook { sub: HookCmd::ClaudeNotification } => {
-            let Some(pane) = std::env::var("CDOCK_PANE_ID").ok().and_then(|p| parse_pane(&p).ok())
-            else {
-                return Ok(true); // not inside a cdock pane
-            };
-            let mut input = String::new();
-            let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut input);
-            let msg = serde_json::from_str::<serde_json::Value>(&input)
-                .ok()
-                .and_then(|v| v["message"].as_str().map(str::to_string))
-                .unwrap_or_default();
-            // The hook must never fail a claude launch — errors are silent.
-            let _ = api::request_with_timeout(
-                &Req::ReportAgent {
-                    pane,
-                    state: notification_state(&msg).to_string(),
-                    label: None,
-                    ttl_ms: Some(3_600_000),
-                    pid: Some(std::os::unix::process::parent_id()),
+                    pid: pid.or_else(|| Some(std::os::unix::process::parent_id())),
                 },
                 Duration::from_secs(3),
             );
@@ -1469,16 +1435,37 @@ fn attach_or_spawn(folder: Option<std::path::PathBuf>) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    /// Claude's Notification hook fires for real permission prompts AND for
-    /// idle nags ("Claude is waiting for your input") — only the former may
-    /// mark the pane blocked.
+    /// Hooks run as `sh -c '…'`, so inside the hook process `parent_id()`
+    /// is the sh, not the claude that fired it — every report must carry
+    /// the shell's own `$PPID`. Notification routes by notification_type
+    /// matchers: only real waits (permission, elicitation) may block; the
+    /// idle nag clears; unlisted types fire no hook at all.
     #[test]
-    fn notification_blocks_only_on_permission() {
-        assert_eq!(
-            super::notification_state("Claude needs your permission to use Bash"),
-            "blocked"
-        );
-        assert_eq!(super::notification_state("Claude is waiting for your input"), "clear");
-        assert_eq!(super::notification_state(""), "clear");
+    fn install_writes_matcher_routed_hooks_with_shell_ppid() {
+        let dir = std::env::temp_dir().join(format!("cdock-hooks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        super::install_hook_into(&dir).unwrap();
+        super::install_hook_into(&dir).unwrap(); // re-install must not duplicate
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
+                .unwrap();
+
+        let notif = v["hooks"]["Notification"].as_array().unwrap();
+        assert_eq!(notif.len(), 2, "{notif:#?}");
+        let blocked = notif
+            .iter()
+            .find(|e| e["matcher"] == "permission_prompt|elicitation_dialog")
+            .expect("blocked matcher entry");
+        let cmd = blocked["hooks"][0]["command"].as_str().unwrap();
+        assert!(cmd.contains(" blocked ") && cmd.contains("--pid \"$PPID\""), "{cmd}");
+        let idle = notif.iter().find(|e| e["matcher"] == "idle_prompt").expect("idle entry");
+        assert!(idle["hooks"][0]["command"].as_str().unwrap().contains(" clear "));
+
+        let ss = v["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(ss.len(), 1, "{ss:#?}");
+        let cmd = ss[0]["hooks"][0]["command"].as_str().unwrap();
+        assert!(cmd.contains("hook claude-session \"$PPID\""), "{cmd}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
