@@ -69,8 +69,9 @@ screen history) lives in `$XDG_STATE_HOME/comind-dock`
   pane) to the state dir and replay them after a full server restart.
   Off by default: raw terminal output may contain secrets. Turning it
   off also purges previously stored tails on the next autosave. Live
-  handoff replays screens regardless — its tail files are one-shot and
-  deleted the moment the new server adopts the panes.
+  handoff replays screens regardless — its tail files are one-shot,
+  deleted the moment the new server adopts the panes, and purged
+  immediately if the handoff exec fails.
 
 ### `[advanced]`
 - `scrollback_limit_bytes` (10_000_000) — converted to emulator lines
@@ -108,12 +109,15 @@ from the profile's menu (skills…) or `skills = [...]` in profile.toml.
 
 `cdock integration install claude` writes hooks into every `~/.claude*`
 profile so claude reports its own lifecycle: `UserPromptSubmit`/`PreToolUse`/
-`PostToolUse` → working, `Notification` → **blocked** (it wants you),
-`Stop` → done, `SessionEnd` → clear. A reported state outranks screen
-detection until its TTL expires, so a claude release that renames a spinner
-can no longer freeze your statuses. The hooks are guarded: they do nothing
-outside a cdock pane, and the server rejects a report whose pid is not the
-pane's agent (a nested claude cannot speak for its parent).
+`PostToolUse` → working, `Stop` → done, `SessionEnd` → clear. `Notification`
+routes by `notification_type` matcher: `permission_prompt` and
+`elicitation_dialog` → **blocked** (it wants you), `idle_prompt` → clear;
+other types fire no hook. A reported state outranks screen detection until
+its TTL expires, so a claude release that renames a spinner can no longer
+freeze your statuses. The hooks are guarded: they do nothing outside a cdock
+pane, and the server rejects a report whose pid is not the pane's agent (a
+nested claude cannot speak for its parent) — hence every hook passes the
+wrapping shell's `$PPID`, which IS the reporting claude.
 
 Any wrapper can do the same: `cdock pane report-agent <pane> working
 --label "running tests" --ttl-ms 60000`.

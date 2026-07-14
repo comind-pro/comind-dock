@@ -71,7 +71,11 @@ any_of = [
     "running stop hooks",
     "· ↓ ",                            # token counter in the spinner line
     "· ↑ ",
-    "still running",                   # "N shells still running" spinner tail
+    # "N shells still running" spinner tail. ponytail: substring engine, no
+    # regex — a user literally typing "are the shells still running" into the
+    # prompt false-matches for one poll; anchored line-regex is the upgrade.
+    "shells still running",
+    "1 shell still running",
 ]
 
 # Resting input prompt with its hint line.

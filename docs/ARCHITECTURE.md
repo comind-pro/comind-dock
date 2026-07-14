@@ -118,12 +118,10 @@ live prompt).
   progress).
 - **Manifests:** one TOML file per agent — id, version, minimum engine
   version, aliases, and an ordered rule list.
-- **Rules:** each targets a region (OSC title, OSC progress, bottom non-empty
-  lines, after the last horizontal rule, prompt box body, whole recent
-  buffer), carries a priority and a target state, and matches via explicit
-  AND/OR/NOT gates (contains, regex, line-regex, nested any/all/not). Rules
-  can mark visible-working/idle/blocker evidence and set a skip flag for
-  screens (transcript viewers, menus) whose prompt state must not be trusted.
+- **Rules:** each targets a region ("bottom" non-empty lines or the OSC
+  title), carries a priority and a target state, and matches via explicit
+  AND/OR/NOT gates (`all_of`/`any_of`/`none_of`, case-insensitive
+  substrings; regex/line-regex is a design option, not built).
   Highest-priority match wins.
 - **Output:** state + skip flag + evidence flags, plus a full explain trace
   (matched rule, evaluated rules, evidence, manifest source and versions)
@@ -225,12 +223,12 @@ Lean by policy. The expected core set for a Rust implementation:
 | Host terminal control & input | crossterm |
 | Async runtime | tokio |
 | PTY spawning | portable-pty |
-| Local sockets (UDS / named pipes) | interprocess |
+| Local sockets (UDS) | tokio UnixListener/UnixStream |
+| VT emulation | alacritty_terminal |
 | Serialization | serde + serde_json (API/persistence), a compact binary codec (wire), toml (config/manifests) |
-| API schema generation | schemars |
-| Manifest matching | regex |
-| CLI parsing + completions | clap + clap_complete |
-| Checksums | sha2 |
+| Manifest matching | case-insensitive substrings (no regex dependency) |
+| CLI parsing | clap (completions: planned) |
+| Checksums | system `shasum`/`sha256sum` (no crypto dependency) |
 | Width measurement | unicode-width |
 | Logging | tracing |
 

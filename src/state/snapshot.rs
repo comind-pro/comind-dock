@@ -300,7 +300,13 @@ fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     f.write_all(bytes)?;
     f.sync_all()?;
     drop(f);
-    std::fs::rename(&tmp, path)
+    std::fs::rename(&tmp, path)?;
+    // Durability of the rename itself needs the parent dir synced too.
+    // Best-effort: a filesystem that can't fsync a dir must not fail saves.
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
+    }
+    Ok(())
 }
 
 /// A snapshot staged on the event loop and persisted later — possibly on a

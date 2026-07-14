@@ -1247,8 +1247,10 @@ fn run_server(cfg: config::Config, warnings: Vec<String>) -> std::io::Result<()>
             (tokio::net::UnixListener::bind(&sock)?, tokio::net::UnixListener::bind(&api_sock)?)
         };
         // Owner-only: whoever can write these sockets owns every PTY.
+        // A failed chmod is a refused boot, not a warning — the invariant
+        // is the whole point.
         for s in [&sock, &api_sock] {
-            let _ = crate::logging::owner_only(s, 0o600);
+            crate::logging::owner_only(s, 0o600)?;
         }
         drop(_sock_lock); // cleanup + bind done — let other launches proceed
         let result = server::run(
@@ -1287,6 +1289,14 @@ fn run_server(cfg: config::Config, warnings: Vec<String>) -> std::io::Result<()>
             );
             if let Some(p) = handoff_path() {
                 let _ = std::fs::remove_file(p);
+            }
+            // The pre-handoff screen tails are one-shot transfer files; with
+            // screen_history off no autosave would ever purge them now that
+            // the exec failed and the session dies with us.
+            if !config::load(None).0.restore.screen_history
+                && let Some(dir) = state::snapshot::screens_dir()
+            {
+                let _ = std::fs::remove_dir_all(dir);
             }
             Err(err)
         }
