@@ -71,8 +71,11 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
             if view.tab_bar.contains(pos) {
                 match tabbar::hit(rt, ev.column - view.tab_bar.x, view.tab_bar.width) {
                     Some(tabbar::Hit::Tab(ti)) => {
-                        rt.state.jump_tab(ti);
-                        // A click stays a click; movement turns it into a drag.
+                        // A click stays a click; movement turns it into a
+                        // drag. The switch itself waits for Up: switching now
+                        // would make the dragged tab active, so every pane
+                        // visible during the drag would belong to it — and
+                        // drop_target_for_tab rejects a tab's own panes.
                         if let Some(t) = rt.state.active_workspace().tabs.get(ti) {
                             rt.drag = Some(MouseDrag::Tab { id: t.id, hover: None });
                         }
@@ -294,10 +297,21 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
             Some(MouseDrag::Tab { id, hover }) => {
                 // Ids re-validate inside the state op — the view is a frame
                 // old and the tab/pane may be gone.
-                if let Some(DropTarget::Zone { pane, zone }) = hover
-                    && let Some(side) = zone_side(zone)
-                {
-                    rt.state.move_tab_into_pane(id, pane, side);
+                match hover {
+                    Some(DropTarget::Zone { pane, zone }) => {
+                        if let Some(side) = zone_side(zone) {
+                            rt.state.move_tab_into_pane(id, pane, side);
+                        }
+                    }
+                    // No drop: this was a click (or an aborted drag) — switch
+                    // to the tab now. Down must NOT switch, or the drag could
+                    // only ever see the dragged tab's own panes.
+                    _ => {
+                        let ws = rt.state.active_workspace();
+                        if let Some(ti) = ws.tabs.iter().position(|t| t.id == id) {
+                            rt.state.jump_tab(ti);
+                        }
+                    }
                 }
                 rt.mark_dirty();
             }

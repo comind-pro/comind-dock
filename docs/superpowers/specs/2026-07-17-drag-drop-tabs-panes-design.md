@@ -25,9 +25,13 @@ drop-zone highlighting:
 
 ### Initiating a drag
 
-- **Tab drag**: mouse Down on a tab segment behaves as today
-  (`jump_tab`) *and* arms `MouseDrag::Tab`. The drag becomes real only
-  when a subsequent Drag event arrives; a plain click is unchanged.
+- **Tab drag**: mouse Down on a tab segment only arms `MouseDrag::Tab`;
+  it does not switch tabs. The switch (`jump_tab`) happens on Up, but
+  only when no drop occurred — i.e. a plain click (or an aborted drag)
+  still switches on release, preserving click semantics. Down must not
+  switch: if it did, the dragged tab would become active immediately
+  and every pane visible during the drag would belong to it, so
+  tab-onto-pane drops could never find a valid target.
 - **Pane drag**: mouse Down on a pane's **border ring** (its rect minus
   the 1-cell-inset content area) arms `MouseDrag::Pane`. Dividers are
   hit-tested first, so divider-resize is unaffected. Down inside the

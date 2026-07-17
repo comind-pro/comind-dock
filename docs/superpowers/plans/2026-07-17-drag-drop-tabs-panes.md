@@ -730,6 +730,8 @@ with:
                     }
 ```
 
+Amended in review: jump_tab moved from Down to the Up/no-hover arm — Down-switching made tab→pane drops unreachable.
+
 - [ ] **Step 3: Arm the pane drag** — in the Down/Left pane branch, replace:
 
 ```rust
