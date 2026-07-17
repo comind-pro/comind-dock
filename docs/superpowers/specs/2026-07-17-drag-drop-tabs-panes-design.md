@@ -140,7 +140,8 @@ pub enum DropTarget {
 
 ### 4. Mouse handling — `src/input/mouse.rs`
 
-- Down/tab-bar branch: arm `MouseDrag::Tab` after `jump_tab`.
+- Down/tab-bar branch: arm `MouseDrag::Tab` (no tab switch; that
+  happens on Up when no drop occurred).
 - Down/pane branch: border-ring hit → arm `MouseDrag::Pane`; else
   existing focus/select path.
 - Drag branch: compute hover target from `last_view` (`pane_at` +
