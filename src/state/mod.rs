@@ -7,7 +7,7 @@ pub mod snapshot;
 pub mod workspace;
 
 use ids::{IdGen, PaneId};
-use layout::{Dir, Side};
+use layout::{Dir, Node, Side};
 use workspace::{Tab, Workspace};
 
 /// What a text prompt is naming.
@@ -144,6 +144,13 @@ pub enum CloseOutcome {
     WorkspaceClosed,
     /// Nothing left; the app should exit.
     LastClosed,
+}
+
+/// Where a dragged pane lands on the tab bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabTarget {
+    Existing(ids::TabId),
+    New,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -547,6 +554,72 @@ impl AppState {
         true
     }
 
+    /// Drag-drop: move `pane` out of its tab — into an existing tab (grafted
+    /// at the root, right side) or a brand-new one. An emptied source tab
+    /// closes. Same-workspace only.
+    pub fn move_pane_to_tab(&mut self, pane: PaneId, dest: TabTarget) -> bool {
+        let Some((wi, ti)) = self.locate_pane(pane) else { return false };
+        let src_id = self.workspaces[wi].tabs[ti].id;
+        match dest {
+            TabTarget::Existing(id) if id == src_id => return false,
+            TabTarget::Existing(id)
+                if !self.workspaces[wi].tabs.iter().any(|t| t.id == id) =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+        let tab = &mut self.workspaces[wi].tabs[ti];
+        let single = matches!(tab.layout, Node::Leaf(_));
+        if single && dest == TabTarget::New {
+            return false; // already alone in its own tab
+        }
+        let emptied = !tab.layout.remove(pane);
+        if !emptied {
+            if tab.focused_pane == pane {
+                tab.focused_pane = *tab.layout.panes().first().expect("non-empty after remove");
+            }
+            if tab.zoomed == Some(pane) {
+                tab.zoomed = None;
+            }
+        }
+        match dest {
+            TabTarget::Existing(id) => {
+                let t = self.workspaces[wi]
+                    .tabs
+                    .iter_mut()
+                    .find(|t| t.id == id)
+                    .expect("checked above");
+                let old = std::mem::replace(&mut t.layout, Node::Leaf(PaneId(u64::MAX)));
+                t.layout = Node::Split {
+                    dir: Dir::Right,
+                    ratio: 0.5,
+                    a: Box::new(old),
+                    b: Box::new(Node::Leaf(pane)),
+                };
+                t.zoomed = None;
+            }
+            TabTarget::New => {
+                let id = self.ids.tab();
+                let ws = &mut self.workspaces[wi];
+                let name = (ws.tabs.len() + 1).to_string();
+                ws.tabs.push(Tab::new(id, name, pane));
+            }
+        }
+        if emptied {
+            let ws = &mut self.workspaces[wi];
+            let sti = ws.tabs.iter().position(|t| t.id == src_id).expect("still present");
+            ws.tabs.remove(sti);
+            if sti < ws.active_tab {
+                ws.active_tab -= 1;
+            }
+            ws.active_tab = ws.active_tab.min(ws.tabs.len() - 1);
+        }
+        self.focus_pane(pane);
+        debug_assert!(self.check_invariants());
+        true
+    }
+
     /// Rename by id — prompts resolve at Enter time, indexes may shift.
     /// Set (or clear, when empty) a pane's user-given name.
     pub fn rename_pane(&mut self, pane: PaneId, name: String) {
@@ -819,6 +892,53 @@ mod tests {
         assert!(s.move_tab_into_pane(src, target, Side::Right));
         assert_eq!(s.active_workspace().tabs.len(), 2);
         assert!(s.active_workspace().tabs.iter().any(|t| t.layout.contains(first)));
+        assert!(s.check_invariants());
+    }
+
+    #[test]
+    fn move_pane_to_new_tab() {
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
+        let first = s.focused_pane();
+        let second = s.split_focused(Dir::Right, false);
+        assert!(s.move_pane_to_tab(second, TabTarget::New));
+        let ws = s.active_workspace();
+        assert_eq!(ws.tabs.len(), 2);
+        assert_eq!(ws.tabs[0].layout.panes(), vec![first]);
+        assert_eq!(ws.tabs[1].layout.panes(), vec![second]);
+        assert_eq!(s.focused_pane(), second, "moved pane is focused in its new tab");
+        assert!(s.check_invariants());
+    }
+
+    #[test]
+    fn move_only_pane_to_new_tab_is_noop() {
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
+        let pane = s.focused_pane();
+        assert!(!s.move_pane_to_tab(pane, TabTarget::New));
+        assert_eq!(s.active_workspace().tabs.len(), 1);
+        assert!(s.check_invariants());
+    }
+
+    #[test]
+    fn move_pane_to_existing_tab_and_source_tab_closes() {
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
+        let first = s.focused_pane();
+        let dest = s.active_tab().id;
+        let second = s.new_tab(); // its own single-pane tab
+        assert!(s.move_pane_to_tab(second, TabTarget::Existing(dest)));
+        let ws = s.active_workspace();
+        assert_eq!(ws.tabs.len(), 1, "emptied source tab closed");
+        assert_eq!(ws.tabs[0].layout.panes(), vec![first, second]);
+        assert_eq!(s.focused_pane(), second);
+        assert!(s.check_invariants());
+    }
+
+    #[test]
+    fn move_pane_to_its_own_tab_rejected() {
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
+        let second = s.split_focused(Dir::Right, false);
+        let own = s.active_tab().id;
+        assert!(!s.move_pane_to_tab(second, TabTarget::Existing(own)));
+        assert_eq!(s.active_workspace().tabs.len(), 1);
         assert!(s.check_invariants());
     }
 }
