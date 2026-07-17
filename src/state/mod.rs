@@ -620,6 +620,72 @@ impl AppState {
         true
     }
 
+    /// Drag-drop: detach `pane` and graft it on `side` of `target`. Works
+    /// across tabs in one workspace; an emptied source tab closes.
+    pub fn move_pane_onto_pane(&mut self, pane: PaneId, target: PaneId, side: Side) -> bool {
+        if pane == target {
+            return false;
+        }
+        let Some((swi, sti)) = self.locate_pane(pane) else { return false };
+        let Some((twi, tti)) = self.locate_pane(target) else { return false };
+        if swi != twi {
+            return false;
+        }
+        let src_id = self.workspaces[swi].tabs[sti].id;
+        let tab = &mut self.workspaces[swi].tabs[sti];
+        let emptied = !tab.layout.remove(pane);
+        if !emptied {
+            if tab.focused_pane == pane {
+                tab.focused_pane = *tab.layout.panes().first().expect("non-empty after remove");
+            }
+            if tab.zoomed == Some(pane) {
+                tab.zoomed = None;
+            }
+        }
+        let ttab = &mut self.workspaces[twi].tabs[tti];
+        ttab.layout.graft(target, Node::Leaf(pane), side);
+        ttab.zoomed = None;
+        if emptied {
+            // The bare-leaf source tab still holds a stale copy — drop it
+            // BEFORE focus_pane, which scans tabs front to back.
+            let ws = &mut self.workspaces[swi];
+            let i = ws.tabs.iter().position(|t| t.id == src_id).expect("still present");
+            ws.tabs.remove(i);
+            if i < ws.active_tab {
+                ws.active_tab -= 1;
+            }
+            ws.active_tab = ws.active_tab.min(ws.tabs.len() - 1);
+        }
+        self.focus_pane(pane);
+        debug_assert!(self.check_invariants());
+        true
+    }
+
+    /// Drag-drop center zone: exchange two panes' positions. Shape of both
+    /// trees is untouched; focus/zoom references follow the ids.
+    pub fn swap_panes(&mut self, a: PaneId, b: PaneId) -> bool {
+        if a == b {
+            return false;
+        }
+        let Some((awi, ati)) = self.locate_pane(a) else { return false };
+        let Some((bwi, bti)) = self.locate_pane(b) else { return false };
+        self.workspaces[awi].tabs[ati].layout.swap(a, b);
+        if (awi, ati) != (bwi, bti) {
+            self.workspaces[bwi].tabs[bti].layout.swap(a, b);
+            for (wi, ti, from, to) in [(awi, ati, a, b), (bwi, bti, b, a)] {
+                let t = &mut self.workspaces[wi].tabs[ti];
+                if t.focused_pane == from {
+                    t.focused_pane = to;
+                }
+                if t.zoomed == Some(from) {
+                    t.zoomed = Some(to);
+                }
+            }
+        }
+        debug_assert!(self.check_invariants());
+        true
+    }
+
     /// Rename by id — prompts resolve at Enter time, indexes may shift.
     /// Set (or clear, when empty) a pane's user-given name.
     pub fn rename_pane(&mut self, pane: PaneId, name: String) {
@@ -939,6 +1005,61 @@ mod tests {
         let own = s.active_tab().id;
         assert!(!s.move_pane_to_tab(second, TabTarget::Existing(own)));
         assert_eq!(s.active_workspace().tabs.len(), 1);
+        assert!(s.check_invariants());
+    }
+
+    #[test]
+    fn move_pane_onto_pane_same_tab() {
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
+        let first = s.focused_pane();
+        let second = s.split_focused(Dir::Right, false);
+        // [1|2] → drop 2 above 1 → vertical [2/1].
+        assert!(s.move_pane_onto_pane(second, first, Side::Up));
+        assert_eq!(s.active_tab().layout.panes(), vec![second, first]);
+        let Node::Split { dir, .. } = &s.active_tab().layout else { panic!() };
+        assert_eq!(*dir, Dir::Down);
+        assert_eq!(s.focused_pane(), second);
+        assert!(s.check_invariants());
+    }
+
+    #[test]
+    fn move_pane_onto_pane_cross_tab_closes_empty_source() {
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
+        let first = s.focused_pane();
+        let second = s.new_tab();
+        assert!(s.move_pane_onto_pane(second, first, Side::Left));
+        let ws = s.active_workspace();
+        assert_eq!(ws.tabs.len(), 1);
+        assert_eq!(ws.tabs[0].layout.panes(), vec![second, first]);
+        assert!(s.check_invariants());
+    }
+
+    #[test]
+    fn move_pane_onto_itself_rejected() {
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
+        let p = s.focused_pane();
+        assert!(!s.move_pane_onto_pane(p, p, Side::Left));
+        assert!(s.check_invariants());
+    }
+
+    #[test]
+    fn swap_panes_same_and_cross_tab() {
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
+        let a = s.focused_pane();
+        let b = s.split_focused(Dir::Right, false);
+        assert!(s.swap_panes(a, b));
+        assert_eq!(s.active_tab().layout.panes(), vec![b, a]);
+
+        // Cross-tab: c in its own tab; focused/zoomed follow the ids.
+        let c = s.new_tab();
+        s.toggle_zoom(); // zoom c in tab 2
+        assert!(s.swap_panes(c, a));
+        let ws = s.active_workspace();
+        assert!(ws.tabs[0].layout.contains(c));
+        assert!(ws.tabs[1].layout.contains(a));
+        assert_eq!(ws.tabs[1].focused_pane, a);
+        assert_eq!(ws.tabs[1].zoomed, Some(a));
+        assert!(!s.swap_panes(a, a));
         assert!(s.check_invariants());
     }
 }
