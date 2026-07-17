@@ -522,6 +522,31 @@ impl AppState {
         }
     }
 
+    /// Drag-drop: dissolve tab `src` into the tab holding `target`, grafting
+    /// its whole layout on `side` of that pane. Same-workspace only.
+    pub fn move_tab_into_pane(&mut self, src: ids::TabId, target: PaneId, side: Side) -> bool {
+        let Some((wi, tti)) = self.locate_pane(target) else { return false };
+        let Some(sti) = self.workspaces[wi].tabs.iter().position(|t| t.id == src) else {
+            return false;
+        };
+        if sti == tti {
+            return false; // target lives inside the dragged tab
+        }
+        let ws = &mut self.workspaces[wi];
+        let moved = ws.tabs.remove(sti);
+        let tti = if sti < tti { tti - 1 } else { tti };
+        if sti < ws.active_tab {
+            ws.active_tab -= 1;
+        }
+        ws.active_tab = ws.active_tab.min(ws.tabs.len() - 1);
+        let focus = moved.focused_pane;
+        ws.tabs[tti].layout.graft(target, moved.layout, side);
+        ws.tabs[tti].zoomed = None;
+        self.focus_pane(focus);
+        debug_assert!(self.check_invariants());
+        true
+    }
+
     /// Rename by id — prompts resolve at Enter time, indexes may shift.
     /// Set (or clear, when empty) a pane's user-given name.
     pub fn rename_pane(&mut self, pane: PaneId, name: String) {
@@ -751,5 +776,49 @@ mod tests {
         s.toggle_zoom();
         assert_eq!(s.close_pane(second), CloseOutcome::PaneRemoved);
         assert_eq!(s.active_tab().zoomed, None);
+    }
+
+    #[test]
+    fn move_tab_into_pane_grafts_whole_tree() {
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
+        let first = s.focused_pane();
+        // Tab 2: two panes.
+        let t2a = s.new_tab();
+        let t2b = s.split_focused(Dir::Right, false);
+        let src = s.active_tab().id;
+
+        assert!(s.move_tab_into_pane(src, first, Side::Down));
+        let ws = s.active_workspace();
+        assert_eq!(ws.tabs.len(), 1, "source tab is gone");
+        let panes = ws.tabs[0].layout.panes();
+        assert_eq!(panes, vec![first, t2a, t2b], "subtree grafted below");
+        assert_eq!(s.focused_pane(), t2b, "focus follows the moved tab's focus");
+        assert!(s.check_invariants());
+    }
+
+    #[test]
+    fn move_tab_into_own_pane_rejected() {
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
+        let pane = s.focused_pane();
+        let src = s.active_tab().id;
+        assert!(!s.move_tab_into_pane(src, pane, Side::Left));
+        assert_eq!(s.active_workspace().tabs.len(), 1);
+        assert!(s.check_invariants());
+    }
+
+    #[test]
+    fn move_tab_fixes_active_tab_index() {
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
+        let first = s.focused_pane();
+        s.new_tab();
+        s.new_tab();
+        // Active = tab 3 (index 2). Move tab 1 (index 0) into tab 3's pane —
+        // wait: tab 1 holds `first`. Move tab 2 instead.
+        let src = s.active_workspace().tabs[1].id;
+        let target = s.active_workspace().tabs[2].layout.panes()[0];
+        assert!(s.move_tab_into_pane(src, target, Side::Right));
+        assert_eq!(s.active_workspace().tabs.len(), 2);
+        assert!(s.active_workspace().tabs.iter().any(|t| t.layout.contains(first)));
+        assert!(s.check_invariants());
     }
 }
