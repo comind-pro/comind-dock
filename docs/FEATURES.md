@@ -39,8 +39,15 @@ The organizational model: **workspace → tab → pane**.
   are marked in the tab bar. Key `prefix+z`.
 - **Swap** — swap two panes directionally, preserving split shape and ratios.
   Keys `prefix+shift+h/j/k/l`; context menu.
-- **Move** — relocate a running pane into another tab or workspace without
-  restarting its process **(planned)**.
+- **Move** — relocate a running pane into another tab within the same
+  workspace, without restarting its process, via mouse drag-and-drop: drag a
+  tab onto a pane to graft the tab's whole layout at that pane (the edge zone
+  hovered picks the split side); drag a pane by its border onto another pane
+  (an edge zone splits, the center zone swaps) or onto the tab bar (an
+  existing tab's segment moves the pane into it, `+`/empty bar space opens a
+  new tab). A drag only arms after ≥2 cells of movement, so a click or a
+  trackpad slip never relocates anything; `Esc` cancels mid-drag. Moving into
+  another workspace remains **(planned)**.
 - **Rename / labels** — manual pane labels (`cdock pane rename <id> [name]`,
   empty name clears); optional detected-agent labels on split borders.
 - **Close** — key `prefix+x`; context menu; optional confirm dialog.

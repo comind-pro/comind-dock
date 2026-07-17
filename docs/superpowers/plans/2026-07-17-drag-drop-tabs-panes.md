@@ -574,6 +574,10 @@ pub enum TabDrop { Tab(crate::state::ids::TabId), NewTab }
 pub enum DropTarget { Zone { pane: PaneId, zone: Zone }, TabBar(TabDrop) }
 ```
 
+Amended in review (3ee7173): `MouseDrag::Tab`/`Pane` gained an
+`origin: (u16, u16)` field (the cell of the arming Down-event) — a 1-cell
+trackpad slip during a click must not arm a drop.
+
 - Produces, in `src/ui/mod.rs`: `pub fn zone_at(rect: Rect, pos: Position) -> Zone` (middle 50%×50% = Center, else nearest edge) and `pub fn zone_rect(rect: Rect, zone: Zone) -> Rect` (the half of `rect` to highlight; Center → whole rect).
 
 - [ ] **Step 1: Write the failing tests** — append to `tests` in `src/ui/mod.rs`:
@@ -770,6 +774,10 @@ with:
                 }
             }
 ```
+
+Amended in review (3ee7173): hover is only computed once the drag has
+moved ≥2 cells from `origin` (Chebyshev distance) — below that threshold
+`hover` stays `None`, so a click-sized wiggle can't arm a graft/move.
 
 - [ ] **Step 5: Commit on Up** — in the `MouseEventKind::Up(MouseButton::Left)` match, add arms before `None` (drop the temporary arms from Task 5 if added):
 

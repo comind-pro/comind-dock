@@ -44,8 +44,7 @@ fn tab_label(rt: &Runtime, state: &AppState, ti: usize) -> String {
         if let Some(title) = rt.titles.get(&tab.focused_pane)
             && !title.trim().is_empty()
         {
-            let short: String = title.chars().take(16).collect();
-            return short;
+            return crate::agents::truncate_clean(title, 16);
         }
         if let Some(p) = rt.panes.get(&tab.focused_pane) {
             return p.program.clone();
@@ -135,17 +134,22 @@ pub fn hit(rt: &Runtime, x: u16, width: u16) -> Option<Hit> {
     None
 }
 
-/// Screen rect of the segment a pane drag would drop on — same segment walk
-/// as render() and hit(), so the highlight matches the click.
-pub fn drop_rect(rt: &Runtime, target: TabDrop, bar: Rect) -> Option<Rect> {
+/// Screen rect of the segment matching `target` — same width-walk render()
+/// and hit() use, so the highlight matches the click. Takes plain tabs
+/// (just needs each tab's id) so it's testable without a `Runtime`.
+fn segment_rect(
+    segs: &[Segment],
+    tabs: &[crate::state::workspace::Tab],
+    target: TabDrop,
+    bar: Rect,
+) -> Option<Rect> {
     use unicode_width::UnicodeWidthStr as _;
-    let ws = rt.state.active_workspace();
     let mut cursor: u16 = 0;
-    for s in segments(rt) {
+    for s in segs {
         let w = s.text.width() as u16;
         let matched = match (target, s.hit) {
             (TabDrop::Tab(id), Some(Hit::Tab(ti))) => {
-                ws.tabs.get(ti).is_some_and(|t| t.id == id)
+                tabs.get(ti).is_some_and(|t| t.id == id)
             }
             (TabDrop::NewTab, Some(Hit::NewTab)) => true,
             _ => false,
@@ -158,4 +162,52 @@ pub fn drop_rect(rt: &Runtime, target: TabDrop, bar: Rect) -> Option<Rect> {
         cursor += w;
     }
     None
+}
+
+/// Screen rect of the segment a pane drag would drop on — same segment walk
+/// as render() and hit(), so the highlight matches the click.
+pub fn drop_rect(rt: &Runtime, target: TabDrop, bar: Rect) -> Option<Rect> {
+    let ws = rt.state.active_workspace();
+    segment_rect(&segments(rt), &ws.tabs, target, bar)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::ids::{PaneId, TabId};
+    use crate::state::workspace::Tab;
+
+    #[test]
+    fn segment_rect_matches_and_clamps() {
+        let tabs = vec![
+            Tab::new(TabId(1), "1".into(), PaneId(1)),
+            Tab::new(TabId(2), "2".into(), PaneId(2)),
+        ];
+        // A couple of tab segments plus the `+` (NewTab) segment, same shape
+        // `segments()` produces: widths 2, 3, 1 at cursors 0, 2, 5.
+        let segs = vec![
+            Segment { text: "AA".into(), hit: Some(Hit::Tab(0)), active: false },
+            Segment { text: "BBB".into(), hit: Some(Hit::Tab(1)), active: false },
+            Segment { text: "+".into(), hit: Some(Hit::NewTab), active: false },
+        ];
+
+        // (a) TabDrop::Tab(id) returns the segment's exact span.
+        let bar = Rect::new(10, 0, 20, 1);
+        let r = segment_rect(&segs, &tabs, TabDrop::Tab(TabId(1)), bar).unwrap();
+        assert_eq!(r, Rect::new(10, 0, 2, 1));
+
+        // (b) TabDrop::NewTab returns the `+` segment's exact span.
+        let r = segment_rect(&segs, &tabs, TabDrop::NewTab, bar).unwrap();
+        assert_eq!(r, Rect::new(15, 0, 1, 1));
+
+        // (c) a segment starting beyond a too-narrow bar clamps to width 0
+        // at the bar's edge (cursor.min(bar.width) + saturating_sub) rather
+        // than overflowing.
+        let narrow = Rect::new(0, 0, 3, 1);
+        let r = segment_rect(&segs, &tabs, TabDrop::NewTab, narrow).unwrap();
+        assert_eq!(r, Rect::new(3, 0, 0, 1));
+
+        // No matching segment (unknown id): None, not a panic.
+        assert!(segment_rect(&segs, &tabs, TabDrop::Tab(TabId(99)), bar).is_none());
+    }
 }
