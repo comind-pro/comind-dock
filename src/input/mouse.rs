@@ -236,6 +236,8 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                     }
                 }
             }
+            // wired in the gestures task
+            Some(MouseDrag::Tab { .. }) | Some(MouseDrag::Pane { .. }) => {}
             None => {
                 // Drag inside a mouse-reporting app — only when it asked
                 // for drag (1002) or any-motion (1003) reporting.
@@ -269,6 +271,8 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 }
             }
             Some(MouseDrag::Divider { .. }) => {}
+            // wired in the gestures task
+            Some(MouseDrag::Tab { .. }) | Some(MouseDrag::Pane { .. }) => {}
             None => {
                 if let Some((id, rect)) = pane_at(&view.pane_rects, pos) {
                     let inner = crate::ui::content_rect(rect);

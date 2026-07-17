@@ -119,6 +119,34 @@ impl PaneRuntime {
 pub enum MouseDrag {
     Divider { before: PaneId, after: PaneId, dir: Dir, extent: u16, last_pos: u16 },
     Select { pane: PaneId },
+    /// A tab being dragged off the bar toward a pane.
+    Tab { id: crate::state::ids::TabId, hover: Option<DropTarget> },
+    /// A pane grabbed by its border.
+    Pane { pane: PaneId, hover: Option<DropTarget> },
+}
+
+/// Region of a hovered pane during a drag: four edges plus the center box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Zone {
+    Left,
+    Right,
+    Up,
+    Down,
+    Center,
+}
+
+/// Tab-bar landing spot for a dragged pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabDrop {
+    Tab(crate::state::ids::TabId),
+    NewTab,
+}
+
+/// Where a drag would drop right now — drives the highlight and the commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropTarget {
+    Zone { pane: PaneId, zone: Zone },
+    TabBar(TabDrop),
 }
 
 pub struct Runtime {

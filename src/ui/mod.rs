@@ -121,6 +121,33 @@ pub fn content_rect(rect: Rect) -> Rect {
     }
 }
 
+/// Drop zone under `pos` inside `rect`: the middle 50%×50% box is Center,
+/// otherwise the nearest edge (normalized distance, ties prefer horizontal).
+pub fn zone_at(rect: Rect, pos: ratatui::layout::Position) -> crate::runtime::Zone {
+    use crate::runtime::Zone;
+    let rx = (pos.x.saturating_sub(rect.x)) as f32 / rect.width.max(1) as f32;
+    let ry = (pos.y.saturating_sub(rect.y)) as f32 / rect.height.max(1) as f32;
+    if (0.25..0.75).contains(&rx) && (0.25..0.75).contains(&ry) {
+        return Zone::Center;
+    }
+    let (dx, hz) = if rx < 0.5 { (rx, Zone::Left) } else { (1.0 - rx, Zone::Right) };
+    let (dy, vz) = if ry < 0.5 { (ry, Zone::Up) } else { (1.0 - ry, Zone::Down) };
+    if dx <= dy { hz } else { vz }
+}
+
+/// The half of `rect` a zone highlights (Center → the whole rect).
+pub fn zone_rect(rect: Rect, zone: crate::runtime::Zone) -> Rect {
+    use crate::runtime::Zone;
+    let (hw, hh) = (rect.width / 2, rect.height / 2);
+    match zone {
+        Zone::Left => Rect { width: hw, ..rect },
+        Zone::Right => Rect { x: rect.x + hw, width: rect.width - hw, ..rect },
+        Zone::Up => Rect { height: hh, ..rect },
+        Zone::Down => Rect { y: rect.y + hh, height: rect.height - hh, ..rect },
+        Zone::Center => rect,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +181,28 @@ mod tests {
         let narrow = pane_sizes(&view(80, 24))[0].1;
         assert_eq!(wanted[&PaneId(1)], narrow, "the narrow client wins");
         assert!(narrow.0 < wide.0);
+    }
+
+    #[test]
+    fn zone_at_center_and_edges() {
+        use crate::runtime::Zone;
+        use ratatui::layout::Position;
+        let r = Rect::new(10, 10, 40, 20);
+        assert_eq!(zone_at(r, Position::new(30, 20)), Zone::Center);
+        assert_eq!(zone_at(r, Position::new(11, 20)), Zone::Left);
+        assert_eq!(zone_at(r, Position::new(48, 20)), Zone::Right);
+        assert_eq!(zone_at(r, Position::new(30, 10)), Zone::Up);
+        assert_eq!(zone_at(r, Position::new(30, 29)), Zone::Down);
+    }
+
+    #[test]
+    fn zone_rect_halves() {
+        use crate::runtime::Zone;
+        let r = Rect::new(0, 0, 41, 20);
+        assert_eq!(zone_rect(r, Zone::Left), Rect::new(0, 0, 20, 20));
+        assert_eq!(zone_rect(r, Zone::Right), Rect::new(20, 0, 21, 20));
+        assert_eq!(zone_rect(r, Zone::Up), Rect::new(0, 0, 41, 10));
+        assert_eq!(zone_rect(r, Zone::Down), Rect::new(0, 10, 41, 10));
+        assert_eq!(zone_rect(r, Zone::Center), r);
     }
 }
