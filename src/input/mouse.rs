@@ -23,6 +23,16 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
     let pos = Position::new(ev.column, ev.row);
     let scroll_lines = rt.cfg.ui.mouse_scroll_lines.max(1) as i32;
 
+    // A held Tab/Pane drag belongs to the gesture that armed it. Any new
+    // press (menu click, sidebar click, click after a lost Up) starts a new
+    // gesture — a stale drop must never fire from a later, unrelated Up.
+    if matches!(ev.kind, MouseEventKind::Down(_))
+        && matches!(rt.drag, Some(MouseDrag::Tab { .. } | MouseDrag::Pane { .. }))
+    {
+        rt.drag = None;
+        rt.mark_dirty();
+    }
+
     // The help overlay closes on any click (keys already close it).
     if rt.state.input_mode == InputMode::Help {
         if matches!(ev.kind, MouseEventKind::Down(_)) {
