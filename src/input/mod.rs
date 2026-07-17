@@ -130,6 +130,17 @@ fn jump_tab_index(key: &KeyEvent) -> Option<usize> {
 /// Handle one key event according to the input-mode machine.
 /// Returns Ok(true) to quit the app.
 pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<InputOutcome> {
+    // Esc aborts an in-flight tab/pane drag before any modal handling.
+    if key.code == KeyCode::Esc
+        && matches!(
+            rt.drag,
+            Some(crate::runtime::MouseDrag::Tab { .. } | crate::runtime::MouseDrag::Pane { .. })
+        )
+    {
+        rt.drag = None;
+        rt.mark_dirty();
+        return Ok(InputOutcome::Continue);
+    }
     match rt.state.input_mode.clone() {
         InputMode::Terminal => {
             if let Some(entry) = rt.keymap.lookup_direct(key.code, key.modifiers).cloned() {

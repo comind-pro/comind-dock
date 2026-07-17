@@ -9,10 +9,10 @@ use alacritty_terminal::term::TermMode;
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
-use crate::runtime::{InputOutcome, MouseDrag, Runtime, osc52_bytes};
+use crate::runtime::{DropTarget, InputOutcome, MouseDrag, Runtime, TabDrop, Zone, osc52_bytes};
 use crate::state::ids::PaneId;
-use crate::state::layout::Dir;
-use crate::state::{InputMode, MenuAction, MenuItem, PromptKind};
+use crate::state::layout::{Dir, Side};
+use crate::state::{InputMode, MenuAction, MenuItem, PromptKind, TabTarget};
 use crate::ui::{menu, sidebar, tabbar};
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
@@ -70,7 +70,13 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
 
             if view.tab_bar.contains(pos) {
                 match tabbar::hit(rt, ev.column - view.tab_bar.x, view.tab_bar.width) {
-                    Some(tabbar::Hit::Tab(ti)) => rt.state.jump_tab(ti),
+                    Some(tabbar::Hit::Tab(ti)) => {
+                        rt.state.jump_tab(ti);
+                        // A click stays a click; movement turns it into a drag.
+                        if let Some(t) = rt.state.active_workspace().tabs.get(ti) {
+                            rt.drag = Some(MouseDrag::Tab { id: t.id, hover: None });
+                        }
+                    }
                     Some(tabbar::Hit::NewTab) => {
                         let pane = rt.state.new_tab();
                         let size = view
@@ -191,7 +197,9 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 }
                 let inner = crate::ui::content_rect(rect);
                 if !inner.contains(pos) {
-                    return InputOutcome::Continue; // border click: focus only
+                    // Border grab: focus now, and arm a pane drag.
+                    rt.drag = Some(MouseDrag::Pane { pane: id, hover: None });
+                    return InputOutcome::Continue;
                 }
                 let (col, row) = (ev.column - inner.x, ev.row - inner.y);
                 let semantic = rt.last_click.is_some_and(|(t, x, y)| {
@@ -236,8 +244,20 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                     }
                 }
             }
-            // wired in the gestures task
-            Some(MouseDrag::Tab { .. }) | Some(MouseDrag::Pane { .. }) => {}
+            Some(MouseDrag::Tab { id, hover }) => {
+                let new = drop_target_for_tab(rt, &view, pos, id);
+                if new != hover {
+                    rt.drag = Some(MouseDrag::Tab { id, hover: new });
+                    rt.mark_dirty();
+                }
+            }
+            Some(MouseDrag::Pane { pane, hover }) => {
+                let new = drop_target_for_pane(rt, &view, pos, pane);
+                if new != hover {
+                    rt.drag = Some(MouseDrag::Pane { pane, hover: new });
+                    rt.mark_dirty();
+                }
+            }
             None => {
                 // Drag inside a mouse-reporting app — only when it asked
                 // for drag (1002) or any-motion (1003) reporting.
@@ -271,8 +291,36 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 }
             }
             Some(MouseDrag::Divider { .. }) => {}
-            // wired in the gestures task
-            Some(MouseDrag::Tab { .. }) | Some(MouseDrag::Pane { .. }) => {}
+            Some(MouseDrag::Tab { id, hover }) => {
+                // Ids re-validate inside the state op — the view is a frame
+                // old and the tab/pane may be gone.
+                if let Some(DropTarget::Zone { pane, zone }) = hover
+                    && let Some(side) = zone_side(zone)
+                {
+                    rt.state.move_tab_into_pane(id, pane, side);
+                }
+                rt.mark_dirty();
+            }
+            Some(MouseDrag::Pane { pane, hover }) => {
+                match hover {
+                    Some(DropTarget::Zone { pane: target, zone: Zone::Center }) => {
+                        rt.state.swap_panes(pane, target);
+                    }
+                    Some(DropTarget::Zone { pane: target, zone }) => {
+                        if let Some(side) = zone_side(zone) {
+                            rt.state.move_pane_onto_pane(pane, target, side);
+                        }
+                    }
+                    Some(DropTarget::TabBar(TabDrop::Tab(id))) => {
+                        rt.state.move_pane_to_tab(pane, TabTarget::Existing(id));
+                    }
+                    Some(DropTarget::TabBar(TabDrop::NewTab)) => {
+                        rt.state.move_pane_to_tab(pane, TabTarget::New);
+                    }
+                    None => {}
+                }
+                rt.mark_dirty();
+            }
             None => {
                 if let Some((id, rect)) = pane_at(&view.pane_rects, pos) {
                     let inner = crate::ui::content_rect(rect);
@@ -1085,6 +1133,78 @@ fn run_menu_action(
 
 fn pane_at(rects: &[(PaneId, Rect)], pos: Position) -> Option<(PaneId, Rect)> {
     rects.iter().find(|(_, r)| r.contains(pos)).copied()
+}
+
+/// Side a zone splits toward; Center has none.
+fn zone_side(zone: Zone) -> Option<Side> {
+    match zone {
+        Zone::Left => Some(Side::Left),
+        Zone::Right => Some(Side::Right),
+        Zone::Up => Some(Side::Up),
+        Zone::Down => Some(Side::Down),
+        Zone::Center => None,
+    }
+}
+
+/// Tab id of the tab holding `pane`.
+fn tab_of(rt: &Runtime, pane: PaneId) -> Option<crate::state::ids::TabId> {
+    rt.state.locate_pane(pane).map(|(wi, ti)| rt.state.workspaces[wi].tabs[ti].id)
+}
+
+/// Valid landing spot for a dragged TAB at `pos`, if any. Center and the
+/// tab's own panes are inert.
+fn drop_target_for_tab(
+    rt: &Runtime,
+    view: &crate::ui::view::View,
+    pos: Position,
+    src: crate::state::ids::TabId,
+) -> Option<DropTarget> {
+    let (id, rect) = pane_at(&view.pane_rects, pos)?;
+    if tab_of(rt, id) == Some(src) {
+        return None;
+    }
+    let zone = crate::ui::zone_at(rect, pos);
+    if zone == Zone::Center {
+        return None;
+    }
+    Some(DropTarget::Zone { pane: id, zone })
+}
+
+/// Valid landing spot for a dragged PANE at `pos`: another pane's zone, an
+/// existing tab, or the new-tab button / empty bar space.
+fn drop_target_for_pane(
+    rt: &Runtime,
+    view: &crate::ui::view::View,
+    pos: Position,
+    src: PaneId,
+) -> Option<DropTarget> {
+    if view.tab_bar.contains(pos) {
+        let single = rt
+            .state
+            .locate_pane(src)
+            .map(|(wi, ti)| &rt.state.workspaces[wi].tabs[ti].layout)
+            .is_some_and(|l| matches!(l, crate::state::layout::Node::Leaf(_)));
+        return match tabbar::hit(rt, pos.x - view.tab_bar.x, view.tab_bar.width) {
+            Some(tabbar::Hit::Tab(ti) | tabbar::Hit::CloseTab(ti)) => {
+                let t = rt.state.active_workspace().tabs.get(ti)?;
+                // Dropping a pane onto its own tab's segment is a no-op.
+                if t.layout.contains(src) {
+                    return None;
+                }
+                Some(DropTarget::TabBar(TabDrop::Tab(t.id)))
+            }
+            // A lone pane moving to "a new tab" would recreate its own tab.
+            Some(tabbar::Hit::NewTab) | None if !single => {
+                Some(DropTarget::TabBar(TabDrop::NewTab))
+            }
+            _ => None, // CloseApp / ShowSidebar / lone-pane new-tab
+        };
+    }
+    let (id, rect) = pane_at(&view.pane_rects, pos)?;
+    if id == src {
+        return None;
+    }
+    Some(DropTarget::Zone { pane: id, zone: crate::ui::zone_at(rect, pos) })
 }
 
 /// The pane's TermMode, if the app in it requested mouse reporting.
