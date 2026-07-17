@@ -36,6 +36,9 @@ drop-zone highlighting:
   the 1-cell-inset content area) arms `MouseDrag::Pane`. Dividers are
   hit-tested first, so divider-resize is unaffected. Down inside the
   content area keeps today's behavior (focus + text selection).
+- **Movement threshold**: both drag variants record the Down position;
+  drops require the pointer to move at least 2 cells from the press
+  point — a click with a 1-cell slip stays a click.
 
 ### Drop zones
 

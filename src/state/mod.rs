@@ -547,7 +547,8 @@ impl AppState {
         }
         ws.active_tab = ws.active_tab.min(ws.tabs.len() - 1);
         let focus = moved.focused_pane;
-        ws.tabs[tti].layout.graft(target, moved.layout, side);
+        let grafted = ws.tabs[tti].layout.graft(target, moved.layout, side);
+        debug_assert!(grafted, "graft target vanished mid-op");
         ws.tabs[tti].zoomed = None;
         self.focus_pane(focus);
         debug_assert!(self.check_invariants());
@@ -643,7 +644,9 @@ impl AppState {
             }
         }
         let ttab = &mut self.workspaces[twi].tabs[tti];
-        ttab.layout.graft(target, Node::Leaf(pane), side);
+        let grafted = ttab.layout.graft(target, Node::Leaf(pane), side);
+        debug_assert!(grafted, "graft target vanished mid-op");
+        // A drop must never land hidden behind another pane's zoom.
         ttab.zoomed = None;
         if emptied {
             // The bare-leaf source tab still holds a stale copy — drop it
@@ -1060,6 +1063,39 @@ mod tests {
         assert_eq!(ws.tabs[1].focused_pane, a);
         assert_eq!(ws.tabs[1].zoomed, Some(a));
         assert!(!s.swap_panes(a, a));
+        assert!(s.check_invariants());
+    }
+
+    #[test]
+    fn move_pane_to_existing_tab_source_survives() {
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
+        let first = s.focused_pane();
+        let dest = s.active_tab().id;
+        let a = s.new_tab();
+        let b = s.split_focused(Dir::Right, false);
+        s.toggle_zoom(); // zoom b in the source tab
+        assert!(s.move_pane_to_tab(b, TabTarget::Existing(dest)));
+        let ws = s.active_workspace();
+        assert_eq!(ws.tabs.len(), 2, "source tab survives");
+        assert_eq!(ws.tabs[1].layout.panes(), vec![a], "source keeps the other pane");
+        assert_eq!(ws.tabs[1].focused_pane, a, "source focus fell back");
+        assert_eq!(ws.tabs[1].zoomed, None, "source zoom cleared");
+        assert_eq!(ws.tabs[0].layout.panes(), vec![first, b]);
+        assert_eq!(s.focused_pane(), b);
+        assert!(s.check_invariants());
+    }
+
+    #[test]
+    fn move_ops_reject_missing_and_cross_workspace() {
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
+        let a = s.focused_pane();
+        let ghost = PaneId(9999);
+        assert!(!s.move_pane_onto_pane(a, ghost, Side::Left));
+        assert!(!s.move_pane_onto_pane(ghost, a, Side::Left));
+        assert!(!s.swap_panes(a, ghost));
+        // Cross-workspace move rejected.
+        let b = s.new_workspace("w2".into(), std::path::PathBuf::from("/tmp"), None);
+        assert!(!s.move_pane_onto_pane(b, a, Side::Left));
         assert!(s.check_invariants());
     }
 }

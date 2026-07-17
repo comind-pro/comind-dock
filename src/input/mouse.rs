@@ -77,7 +77,11 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                         // visible during the drag would belong to it — and
                         // drop_target_for_tab rejects a tab's own panes.
                         if let Some(t) = rt.state.active_workspace().tabs.get(ti) {
-                            rt.drag = Some(MouseDrag::Tab { id: t.id, hover: None });
+                            rt.drag = Some(MouseDrag::Tab {
+                                id: t.id,
+                                origin: (ev.column, ev.row),
+                                hover: None,
+                            });
                         }
                     }
                     Some(tabbar::Hit::NewTab) => {
@@ -201,7 +205,11 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 let inner = crate::ui::content_rect(rect);
                 if !inner.contains(pos) {
                     // Border grab: focus now, and arm a pane drag.
-                    rt.drag = Some(MouseDrag::Pane { pane: id, hover: None });
+                    rt.drag = Some(MouseDrag::Pane {
+                        pane: id,
+                        origin: (ev.column, ev.row),
+                        hover: None,
+                    });
                     return InputOutcome::Continue;
                 }
                 let (col, row) = (ev.column - inner.x, ev.row - inner.y);
@@ -247,17 +255,21 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                     }
                 }
             }
-            Some(MouseDrag::Tab { id, hover }) => {
-                let new = drop_target_for_tab(rt, &view, pos, id);
+            Some(MouseDrag::Tab { id, origin, hover }) => {
+                // A 1-cell trackpad slip during a click must not arm a drop —
+                // only real movement (≥2 cells, Chebyshev) computes a hover.
+                let armed = ev.column.abs_diff(origin.0).max(ev.row.abs_diff(origin.1)) >= 2;
+                let new = if armed { drop_target_for_tab(rt, &view, pos, id) } else { None };
                 if new != hover {
-                    rt.drag = Some(MouseDrag::Tab { id, hover: new });
+                    rt.drag = Some(MouseDrag::Tab { id, origin, hover: new });
                     rt.mark_dirty();
                 }
             }
-            Some(MouseDrag::Pane { pane, hover }) => {
-                let new = drop_target_for_pane(rt, &view, pos, pane);
+            Some(MouseDrag::Pane { pane, origin, hover }) => {
+                let armed = ev.column.abs_diff(origin.0).max(ev.row.abs_diff(origin.1)) >= 2;
+                let new = if armed { drop_target_for_pane(rt, &view, pos, pane) } else { None };
                 if new != hover {
-                    rt.drag = Some(MouseDrag::Pane { pane, hover: new });
+                    rt.drag = Some(MouseDrag::Pane { pane, origin, hover: new });
                     rt.mark_dirty();
                 }
             }
@@ -294,7 +306,7 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 }
             }
             Some(MouseDrag::Divider { .. }) => {}
-            Some(MouseDrag::Tab { id, hover }) => {
+            Some(MouseDrag::Tab { id, hover, .. }) => {
                 // Ids re-validate inside the state op — the view is a frame
                 // old and the tab/pane may be gone.
                 match hover {
@@ -303,10 +315,14 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                             rt.state.move_tab_into_pane(id, pane, side);
                         }
                     }
-                    // No drop: this was a click (or an aborted drag) — switch
-                    // to the tab now. Down must NOT switch, or the drag could
-                    // only ever see the dragged tab's own panes.
-                    _ => {
+                    // No drop: this was a click (or an aborted/under-threshold
+                    // drag) — switch to the tab now. Down must NOT switch, or
+                    // the drag could only ever see the dragged tab's own
+                    // panes. TabBar hovers are unreachable here today —
+                    // drop_target_for_tab never returns them (only pane
+                    // drags land on the tab bar) — revisit if tab reordering
+                    // is added.
+                    Some(DropTarget::TabBar(_)) | None => {
                         let ws = rt.state.active_workspace();
                         if let Some(ti) = ws.tabs.iter().position(|t| t.id == id) {
                             rt.state.jump_tab(ti);
@@ -315,7 +331,7 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 }
                 rt.mark_dirty();
             }
-            Some(MouseDrag::Pane { pane, hover }) => {
+            Some(MouseDrag::Pane { pane, hover, .. }) => {
                 match hover {
                     Some(DropTarget::Zone { pane: target, zone: Zone::Center }) => {
                         rt.state.swap_panes(pane, target);

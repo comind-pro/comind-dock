@@ -485,6 +485,15 @@ mod tests {
     }
 
     #[test]
+    fn graft_right_puts_subtree_second() {
+        let mut n = Node::Leaf(p(1));
+        assert!(n.graft(p(1), Node::Leaf(p(2)), Side::Right));
+        assert_eq!(n.panes(), vec![p(1), p(2)]);
+        let Node::Split { dir, .. } = &n else { panic!() };
+        assert_eq!(*dir, Dir::Right);
+    }
+
+    #[test]
     fn graft_missing_target_leaves_tree_untouched() {
         let mut n = Node::Leaf(p(1));
         n.split(p(1), p(2), Dir::Right, false);

@@ -120,9 +120,9 @@ pub enum MouseDrag {
     Divider { before: PaneId, after: PaneId, dir: Dir, extent: u16, last_pos: u16 },
     Select { pane: PaneId },
     /// A tab being dragged off the bar toward a pane.
-    Tab { id: crate::state::ids::TabId, hover: Option<DropTarget> },
+    Tab { id: crate::state::ids::TabId, origin: (u16, u16), hover: Option<DropTarget> },
     /// A pane grabbed by its border.
-    Pane { pane: PaneId, hover: Option<DropTarget> },
+    Pane { pane: PaneId, origin: (u16, u16), hover: Option<DropTarget> },
 }
 
 /// Region of a hovered pane during a drag: four edges plus the center box.
