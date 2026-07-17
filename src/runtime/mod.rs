@@ -1118,9 +1118,12 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
     rt.titles.remove(&id);
     rt.agent_sessions.remove(&id);
     rt.dirty = true;
+    // Read before close_pane: closing the last pane of the last workspace
+    // empties `state.workspaces`, and new_space_cwd() → focused_pane() →
+    // active_workspace() indexes into it — querying after would underflow.
+    let name = rt.workspace_name();
+    let cwd = rt.new_space_cwd();
     if matches!(rt.state.close_pane(id), CloseOutcome::LastClosed) {
-        let name = rt.workspace_name();
-        let cwd = rt.new_space_cwd();
         let pane = rt.state.new_workspace(name, cwd, None);
         if let Err(e) = rt.spawn_pane(pane, area.width.max(4), area.height.max(4)) {
             tracing::warn!(error = %e, "root space spawn failed");

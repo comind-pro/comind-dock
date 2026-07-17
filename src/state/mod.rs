@@ -836,6 +836,24 @@ mod tests {
         assert_eq!(s.close_pane(first), CloseOutcome::LastClosed);
     }
 
+    /// `LastClosed` leaves `workspaces` empty — `active_workspace()` /
+    /// `focused_pane()` must NOT be called until a new workspace is pushed.
+    /// Regression test for the underflow at active_workspace(): calling
+    /// `new_workspace` right after `LastClosed` (the only documented-safe
+    /// recovery) must restore a normally queryable state.
+    #[test]
+    fn last_closed_recovers_via_new_workspace() {
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
+        let only = s.focused_pane();
+        assert_eq!(s.close_pane(only), CloseOutcome::LastClosed);
+        assert!(s.workspaces.is_empty(), "LastClosed empties workspaces");
+
+        let pane = s.new_workspace("main".into(), std::path::PathBuf::from("/tmp"), None);
+        assert!(s.check_invariants());
+        assert_eq!(s.focused_pane(), pane);
+        assert_eq!(s.active_workspace().tabs.len(), 1);
+    }
+
     #[test]
     fn zoom_toggles_and_clears_on_split() {
         let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
