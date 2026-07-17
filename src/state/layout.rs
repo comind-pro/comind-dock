@@ -91,6 +91,39 @@ impl Node {
         }
     }
 
+    /// Replace `Leaf(at)` with a 0.5 split of (at, subtree); `side` says
+    /// where the subtree lands. Returns false (tree untouched) if absent.
+    pub fn graft(&mut self, at: PaneId, subtree: Node, side: Side) -> bool {
+        if !self.contains(at) {
+            return false;
+        }
+        self.graft_inner(at, subtree, side);
+        true
+    }
+
+    fn graft_inner(&mut self, at: PaneId, subtree: Node, side: Side) {
+        match self {
+            Node::Leaf(_) => {
+                let old = std::mem::replace(self, Node::Leaf(PaneId(u64::MAX)));
+                let (dir, before) = match side {
+                    Side::Left => (Dir::Right, true),
+                    Side::Right => (Dir::Right, false),
+                    Side::Up => (Dir::Down, true),
+                    Side::Down => (Dir::Down, false),
+                };
+                let (a, b) = if before { (subtree, old) } else { (old, subtree) };
+                *self = Node::Split { dir, ratio: 0.5, a: Box::new(a), b: Box::new(b) };
+            }
+            Node::Split { a, b, .. } => {
+                if a.contains(at) {
+                    a.graft_inner(at, subtree, side);
+                } else {
+                    b.graft_inner(at, subtree, side);
+                }
+            }
+        }
+    }
+
     /// Remove `Leaf(target)`, promoting its sibling. Returns false if absent
     /// or if the tree is a bare root leaf (caller closes the tab instead).
     pub fn remove(&mut self, target: PaneId) -> bool {
@@ -424,5 +457,39 @@ mod tests {
         let (rects, dividers) = n.layout(Rect::new(0, 0, 2, 2));
         assert_eq!(rects.len(), 1);
         assert!(dividers.is_empty());
+    }
+
+    #[test]
+    fn graft_inserts_subtree_on_each_side() {
+        // Subtree [3|4] grafted left of leaf 1 in [1|2]:
+        // expected pane order (in-order) becomes [3,4], 1, 2.
+        let mut n = Node::Leaf(p(1));
+        n.split(p(1), p(2), Dir::Right, false);
+        let mut sub = Node::Leaf(p(3));
+        sub.split(p(3), p(4), Dir::Right, false);
+        assert!(n.graft(p(1), sub, Side::Left));
+        assert_eq!(n.panes(), vec![p(3), p(4), p(1), p(2)]);
+
+        // Down puts the subtree second.
+        let mut n = Node::Leaf(p(1));
+        assert!(n.graft(p(1), Node::Leaf(p(2)), Side::Down));
+        assert_eq!(n.panes(), vec![p(1), p(2)]);
+        let Node::Split { dir, ratio, .. } = &n else { panic!() };
+        assert_eq!(*dir, Dir::Down);
+        assert!((ratio - 0.5).abs() < 1e-6);
+
+        // Up puts it first.
+        let mut n = Node::Leaf(p(1));
+        assert!(n.graft(p(1), Node::Leaf(p(2)), Side::Up));
+        assert_eq!(n.panes(), vec![p(2), p(1)]);
+    }
+
+    #[test]
+    fn graft_missing_target_leaves_tree_untouched() {
+        let mut n = Node::Leaf(p(1));
+        n.split(p(1), p(2), Dir::Right, false);
+        let before = n.clone();
+        assert!(!n.graft(p(99), Node::Leaf(p(3)), Side::Right));
+        assert_eq!(n, before);
     }
 }
