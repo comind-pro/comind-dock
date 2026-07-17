@@ -83,6 +83,15 @@ pub fn render(view: &View, rt: &Runtime, frame: &mut Frame) {
     let full = frame.area();
     toast::render(rt, full, frame);
 
+    // Drag-drop hover highlight: above panes, below modals.
+    if let Some(
+        crate::runtime::MouseDrag::Tab { hover: Some(target), .. }
+        | crate::runtime::MouseDrag::Pane { hover: Some(target), .. },
+    ) = rt.drag
+    {
+        render_drop_highlight(view, rt, target, frame);
+    }
+
     // Mode overlays on top of everything.
     let mode = rt.state.input_mode.clone();
     help::render_hint(&mode, &rt.theme, full, frame);
@@ -145,6 +154,43 @@ pub fn zone_rect(rect: Rect, zone: crate::runtime::Zone) -> Rect {
         Zone::Up => Rect { height: hh, ..rect },
         Zone::Down => Rect { y: rect.y + hh, height: rect.height - hh, ..rect },
         Zone::Center => rect,
+    }
+}
+
+/// Paint the current drop target: an accent-tinted half-pane for edge zones,
+/// an accent border for a center swap, reverse-video for a tab-bar segment.
+/// set_style keeps the glyphs underneath readable.
+fn render_drop_highlight(
+    view: &View,
+    rt: &Runtime,
+    target: crate::runtime::DropTarget,
+    frame: &mut Frame,
+) {
+    use crate::runtime::{DropTarget, Zone};
+    use ratatui::style::{Modifier, Style};
+    match target {
+        DropTarget::Zone { pane, zone } => {
+            let Some((_, r)) = view.pane_rects.iter().find(|(id, _)| *id == pane) else {
+                return;
+            };
+            match zone {
+                Zone::Center => {
+                    let block = ratatui::widgets::Block::bordered()
+                        .border_type(ratatui::widgets::BorderType::Rounded)
+                        .border_style(Style::new().fg(rt.theme.accent));
+                    frame.render_widget(block, *r);
+                }
+                z => {
+                    let zr = zone_rect(*r, z);
+                    frame.buffer_mut().set_style(zr, Style::new().bg(rt.theme.accent));
+                }
+            }
+        }
+        DropTarget::TabBar(td) => {
+            if let Some(zr) = tabbar::drop_rect(rt, td, view.tab_bar) {
+                frame.buffer_mut().set_style(zr, Style::new().add_modifier(Modifier::REVERSED));
+            }
+        }
     }
 }
 

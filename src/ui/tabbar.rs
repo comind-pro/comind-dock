@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::config::theme::Theme;
-use crate::runtime::Runtime;
+use crate::runtime::{Runtime, TabDrop};
 use crate::state::AppState;
 
 /// What a tab-bar click hits.
@@ -129,6 +129,31 @@ pub fn hit(rt: &Runtime, x: u16, width: u16) -> Option<Hit> {
                 return Some(Hit::CloseTab(ti));
             }
             return s.hit;
+        }
+        cursor += w;
+    }
+    None
+}
+
+/// Screen rect of the segment a pane drag would drop on — same segment walk
+/// as render() and hit(), so the highlight matches the click.
+pub fn drop_rect(rt: &Runtime, target: TabDrop, bar: Rect) -> Option<Rect> {
+    use unicode_width::UnicodeWidthStr as _;
+    let ws = rt.state.active_workspace();
+    let mut cursor: u16 = 0;
+    for s in segments(rt) {
+        let w = s.text.width() as u16;
+        let matched = match (target, s.hit) {
+            (TabDrop::Tab(id), Some(Hit::Tab(ti))) => {
+                ws.tabs.get(ti).is_some_and(|t| t.id == id)
+            }
+            (TabDrop::NewTab, Some(Hit::NewTab)) => true,
+            _ => false,
+        };
+        if matched {
+            let x = bar.x + cursor.min(bar.width);
+            let width = w.min(bar.width.saturating_sub(cursor));
+            return Some(Rect { x, width, ..bar });
         }
         cursor += w;
     }
