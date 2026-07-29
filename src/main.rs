@@ -519,11 +519,11 @@ fn run_session_cmd(sub: SessionCmd) -> Result<bool, String> {
 /// never reports its session id, and its panes silently lose their
 /// conversation on restore. Idempotent; backs each file up first. The
 /// command guards on CDOCK_PANE_ID, so the hook is inert outside panes.
-fn install_claude_hook() -> Result<bool, String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME unset".to_string())?;
-    let home = std::path::PathBuf::from(home);
-    let mut profiles: Vec<std::path::PathBuf> = std::fs::read_dir(&home)
-        .map_err(|e| e.to_string())?
+/// `~/.claude` and every `~/.claude-<variant>` profile directory.
+fn claude_profile_dirs(home: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut dirs: Vec<std::path::PathBuf> = std::fs::read_dir(home)
+        .into_iter()
+        .flatten()
         .flatten()
         .filter(|e| {
             let n = e.file_name().to_string_lossy().into_owned();
@@ -531,16 +531,53 @@ fn install_claude_hook() -> Result<bool, String> {
         })
         .map(|e| e.path())
         .collect();
+    dirs.sort();
+    dirs
+}
+
+fn install_claude_hook() -> Result<bool, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME unset".to_string())?;
+    let home = std::path::PathBuf::from(home);
+    let mut profiles = claude_profile_dirs(&home);
     if profiles.is_empty() {
         profiles.push(home.join(".claude"));
     }
-    profiles.sort();
     for dir in profiles {
-        install_hook_into(&dir)?;
-        install_skill_into(&dir)?;
+        install_hook_into(&dir, false)?;
+        install_skill_into(&dir, false)?;
     }
     println!("restart running claude panes to activate the hook");
     Ok(true)
+}
+
+/// On server start, re-apply cdock hooks to every profile that ALREADY has
+/// them (an earlier `integration install`), so a locally-updated binary's new
+/// hook set lands without a manual re-install. Opt-out-respecting: a profile
+/// with no cdock marker is never touched. Idempotent — writes only when the
+/// hook set actually changed — and best-effort: a failure only logs.
+/// Running claude sessions still need a restart to load the refreshed hooks;
+/// new agents pick them up immediately.
+pub(crate) fn refresh_claude_hooks() {
+    let Ok(home) = std::env::var("HOME") else { return };
+    refresh_claude_hooks_in(&std::path::PathBuf::from(home));
+}
+
+fn refresh_claude_hooks_in(home: &std::path::Path) {
+    for dir in claude_profile_dirs(home) {
+        let Ok(text) = std::fs::read_to_string(dir.join("settings.json")) else { continue };
+        if !(text.contains("report-agent")
+            || text.contains("claude-session")
+            || text.contains("claude-notification"))
+        {
+            continue; // never installed here — leave it alone
+        }
+        if let Err(e) = install_hook_into(&dir, true) {
+            tracing::warn!(profile = %dir.display(), error = %e, "hook refresh failed");
+        }
+        if let Err(e) = install_skill_into(&dir, true) {
+            tracing::warn!(profile = %dir.display(), error = %e, "skill refresh failed");
+        }
+    }
 }
 
 /// Status hooks: claude tells us what it is doing, instead of us reading it
@@ -579,7 +616,7 @@ fn status_hook_cmd(state: &str, ttl_ms: u64) -> String {
     )
 }
 
-fn install_hook_into(profile_dir: &std::path::Path) -> Result<(), String> {
+fn install_hook_into(profile_dir: &std::path::Path, quiet: bool) -> Result<bool, String> {
     const MARKER: &str = "hook claude-session";
     let path = profile_dir.join("settings.json");
     let mut root: serde_json::Value = match std::fs::read_to_string(&path) {
@@ -588,6 +625,10 @@ fn install_hook_into(profile_dir: &std::path::Path) -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
         Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
     };
+    // Snapshot to diff against after mutation: an unchanged hook set writes
+    // nothing (no backup churn), so refresh-on-start is a no-op until a binary
+    // upgrade actually changes STATUS_HOOKS.
+    let original = root.clone();
 
     // One list of (event, entry) to install; re-installs replace our own
     // entries (commands change between versions) and leave the user's alone.
@@ -635,6 +676,9 @@ fn install_hook_into(profile_dir: &std::path::Path) -> Result<(), String> {
         arr.push(new_entry);
     }
 
+    if root == original && path.exists() {
+        return Ok(false); // hooks already current
+    }
     if path.exists() {
         let _ = std::fs::copy(&path, path.with_extension("json.bak"));
     } else if let Some(dir) = path.parent() {
@@ -642,19 +686,31 @@ fn install_hook_into(profile_dir: &std::path::Path) -> Result<(), String> {
     }
     let pretty = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
     std::fs::write(&path, pretty).map_err(|e| e.to_string())?;
-    println!("installed session + status hooks into {} (backup: .json.bak)", path.display());
-    Ok(())
+    if quiet {
+        tracing::info!(path = %path.display(), "refreshed cdock hooks");
+    } else {
+        println!("installed session + status hooks into {} (backup: .json.bak)", path.display());
+    }
+    Ok(true)
 }
 
 /// Materialize the cdock skill in a profile so claude agents inside panes
 /// know how to drive the runtime. Overwrites — cdock's copy is canonical.
-fn install_skill_into(profile_dir: &std::path::Path) -> Result<(), String> {
+fn install_skill_into(profile_dir: &std::path::Path, quiet: bool) -> Result<bool, String> {
+    const SKILL: &str = include_str!("integration/cdock_skill.md");
     let dir = profile_dir.join("skills/cdock");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join("SKILL.md");
-    std::fs::write(&path, include_str!("integration/cdock_skill.md")).map_err(|e| e.to_string())?;
-    println!("installed agent skill at {}", path.display());
-    Ok(())
+    if std::fs::read_to_string(&path).is_ok_and(|cur| cur == SKILL) {
+        return Ok(false); // already current
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(&path, SKILL).map_err(|e| e.to_string())?;
+    if quiet {
+        tracing::info!(path = %path.display(), "refreshed cdock skill");
+    } else {
+        println!("installed agent skill at {}", path.display());
+    }
+    Ok(true)
 }
 
 /// "%3" or "3" → 3.
@@ -1455,8 +1511,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cdock-hooks-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        super::install_hook_into(&dir).unwrap();
-        super::install_hook_into(&dir).unwrap(); // re-install must not duplicate
+        assert!(super::install_hook_into(&dir, false).unwrap(), "first install writes");
+        assert!(
+            !super::install_hook_into(&dir, false).unwrap(),
+            "re-install of an unchanged hook set writes nothing"
+        );
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
                 .unwrap();
@@ -1477,5 +1536,35 @@ mod tests {
         let cmd = ss[0]["hooks"][0]["command"].as_str().unwrap();
         assert!(cmd.contains("hook claude-session \"$PPID\""), "{cmd}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Startup refresh upgrades a stale install (old `claude-notification`
+    /// no-op → current `blocked` hook) but never seeds hooks into a profile
+    /// that never opted in.
+    #[test]
+    fn refresh_upgrades_stale_installs_only() {
+        let home = std::env::temp_dir().join(format!("cdock-refresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let stale = home.join(".claude");
+        let untouched = home.join(".claude-none");
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::create_dir_all(&untouched).unwrap();
+        // Pre-fbc0f17 install: Notification is the dead no-op, no blocked reporter.
+        std::fs::write(
+            stale.join("settings.json"),
+            r#"{"hooks":{"Notification":[{"hooks":[{"type":"command","command":"$CDOCK_BIN hook claude-notification"}]}]}}"#,
+        )
+        .unwrap();
+        // No cdock marker — a user who never ran `integration install`.
+        std::fs::write(untouched.join("settings.json"), r#"{"hooks":{}}"#).unwrap();
+
+        super::refresh_claude_hooks_in(&home);
+
+        let upgraded = std::fs::read_to_string(stale.join("settings.json")).unwrap();
+        assert!(upgraded.contains("permission_prompt|elicitation_dialog"), "blocked hook installed");
+        assert!(!upgraded.contains("claude-notification"), "dead no-op stripped");
+        let left = std::fs::read_to_string(untouched.join("settings.json")).unwrap();
+        assert!(!left.contains("report-agent"), "opt-out profile left untouched");
+        std::fs::remove_dir_all(&home).unwrap();
     }
 }

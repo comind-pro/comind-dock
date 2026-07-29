@@ -145,6 +145,14 @@ pub async fn run(
         None => runtime::build(cfg, tx, data_tx, raw_tx, area)?,
     };
 
+    // A locally-updated binary refreshes its own hook set on startup, so a
+    // stale `integration install` can't silently keep reporting the wrong
+    // status. Skipped in the dev namespace — it must never touch the real
+    // ~/.claude profiles.
+    if !crate::logging::dev_mode() {
+        crate::refresh_claude_hooks();
+    }
+
     let mut clients: HashMap<ClientId, Client> = HashMap::new();
     let mut next_client: ClientId = 1;
     // Automation API: parked wait-* requests resolve on the agent poll;
