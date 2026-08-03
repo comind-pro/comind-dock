@@ -1125,6 +1125,7 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 &Req::ReportAgentSession {
                     pane,
                     session_id: session_id.to_string(),
+                    agent: "claude".to_string(),
                     pid: pid.or_else(|| Some(std::os::unix::process::parent_id())),
                 },
                 Duration::from_secs(3),
