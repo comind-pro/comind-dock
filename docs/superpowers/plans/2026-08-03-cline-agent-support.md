@@ -302,6 +302,99 @@ git commit -m "feat(integration): cdock integration install cline (session-id ho
 
 ---
 
+### Task 4b: Identity fix — see the agent through an interpreter wrapper
+
+**Discovered during Task 5 evidence capture:** cline installs via npm and runs as
+`node <path>/cli`, so the real cline exe (`…/node_modules/cline/bin/.cline`, whose
+path carries the `cline` segment `detect_process` matches) is a GRANDCHILD of the
+pane shell, behind a `node` wrapper. `child_process_idents` only sees direct
+children, and cline sets no OSC title with its name — so identity failed (sidebar
+showed "agents: none yet", `agent: null`). Real tree observed:
+`zsh → node (exe …/bin/node) → .cline (exe …/node_modules/cline/bin/.cline)`.
+
+**Files:**
+- Modify: `src/agents.rs` (new `pub fn is_interpreter`; tests)
+- Modify: `src/runtime/mod.rs` (the identity `.or_else` branch ~line 481-490)
+
+**Interfaces:**
+- Produces: `agents::is_interpreter(&str) -> bool` — true when the path's basename
+  is a known CLI-hosting runtime.
+
+- [ ] **Step 1: Write the failing test** — in `src/agents.rs` tests:
+
+```rust
+#[test]
+fn interpreters_recognized_by_basename() {
+    assert!(is_interpreter("/Users/x/.nvm/versions/node/v22/bin/node"));
+    assert!(is_interpreter("/usr/bin/python3"));
+    assert!(is_interpreter("bun"));
+    assert!(!is_interpreter("/x/node_modules/cline/bin/.cline"));
+    assert!(!is_interpreter("/bin/zsh"));
+}
+```
+
+- [ ] **Step 2: Run it, verify it fails** — `cargo test interpreters_recognized_by_basename` (undefined).
+
+- [ ] **Step 3: Implement `is_interpreter`** — in `src/agents.rs`, near `detect_process`:
+
+```rust
+/// Runtimes that host a CLI as a child process (npm's `node <path>/cli`):
+/// the agent's real exe is our grandchild, not our child. Basename match.
+pub fn is_interpreter(ident: &str) -> bool {
+    matches!(
+        std::path::Path::new(ident).file_name().and_then(|s| s.to_str()),
+        Some("node" | "bun" | "deno" | "python" | "python3")
+    )
+}
+```
+
+- [ ] **Step 4: Descend one level in the identity branch** — in `src/runtime/mod.rs`,
+  replace the current `.or_else(|| { crate::platform::child_process_idents(child).iter().find_map(…) })`
+  branch (the one that scans direct children, ~line 481-490) with:
+
+```rust
+                .or_else(|| {
+                    // Direct children first, then one level deeper through
+                    // interpreter wrappers: npm/pnpm CLIs run as
+                    // `node <path>/cli`, so the real agent exe
+                    // (…/node_modules/cline/bin/.cline) is a GRANDCHILD of the
+                    // shell, behind a `node` wrapper. detect_process matches
+                    // the "cline" path segment once we reach it.
+                    let kids = crate::platform::child_process_idents(child);
+                    kids.iter()
+                        .find_map(|(pid, ident)| {
+                            crate::agents::detect_process(ident).inspect(|_| {
+                                agent_pid = Some(*pid);
+                                agent_bin = Some(ident.clone());
+                            })
+                        })
+                        .or_else(|| {
+                            kids.iter()
+                                .filter(|(_, ident)| crate::agents::is_interpreter(ident))
+                                .flat_map(|(pid, _)| {
+                                    crate::platform::child_process_idents(*pid)
+                                })
+                                .find_map(|(gpid, gident)| {
+                                    crate::agents::detect_process(&gident).inspect(|_| {
+                                        agent_pid = Some(gpid);
+                                        agent_bin = Some(gident.clone());
+                                    })
+                                })
+                        })
+                })
+```
+
+- [ ] **Step 5: Build + tests** — `cargo build && cargo test && cargo clippy --all-targets`. Expected: green, clean. (The grandchild descent itself is verified E2E in Task 5 — a real cline pane must now show `agent: "cline"`.)
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/agents.rs src/runtime/mod.rs
+git commit -m "fix(detect): see npm-hosted agents (cline) through the node wrapper"
+```
+
+---
+
 ### Task 5: Evidence capture — real Cline screens (BLOCKS Task 6)
 
 **Files:** none (discovery task). Records concrete substrings for Task 6.
