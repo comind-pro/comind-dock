@@ -64,6 +64,7 @@ pub enum Req {
         /// Which CLI this is ("claude", "cline", ...) — the caller knows,
         /// since the pane's detected agent can be None when the hook races
         /// the first detection poll.
+        #[serde(default)]
         agent: String,
         /// The reporting agent's pid (the hook's parent). Rejected when it
         /// isn't the pane's tracked agent — a nested claude (agent's Bash
