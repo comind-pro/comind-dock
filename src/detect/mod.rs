@@ -198,6 +198,7 @@ pub fn bundled() -> Vec<Manifest> {
         include_str!("manifests/claude.toml"),
         include_str!("manifests/codex.toml"),
         include_str!("manifests/opencode.toml"),
+        include_str!("manifests/cline.toml"),
     ]
     .iter()
     .filter_map(|text| match toml::from_str::<Manifest>(text) {
@@ -260,7 +261,7 @@ mod tests {
     #[test]
     fn bundled_manifests_parse() {
         let m = bundled();
-        assert!(m.len() >= 3);
+        assert!(m.len() >= 4);
         assert!(m.iter().all(|m| !m.rules.is_empty()));
     }
 
@@ -276,6 +277,29 @@ mod tests {
             Some(Status::Blocked)
         );
         assert_eq!(classify(&m, "", &lines(&["❯ ", "? for shortcuts"])), Some(Status::Idle));
+        assert_eq!(classify(&m, "", &lines(&["random text"])), None);
+    }
+
+    #[test]
+    fn cline_states() {
+        let m: Manifest =
+            toml::from_str(include_str!("manifests/cline.toml")).expect("cline manifest parses");
+        // Approval prompt — the spinner still ticks above it, so blocked must win.
+        assert_eq!(
+            classify(
+                &m,
+                "",
+                &lines(&["⠦ run_commands(ls -la)", "Cline needs permission", "Approve tool call?", "  [y] Approve   [n] Deny"])
+            ),
+            Some(Status::Blocked)
+        );
+        // Thinking spinner.
+        assert_eq!(classify(&m, "", &lines(&["⠋ Thinking... (esc to cancel)"])), Some(Status::Working));
+        // Resting input box + footer.
+        assert_eq!(
+            classify(&m, "", &lines(&["❯ Ask anything...", " ⏵⏵ Auto-approve all enabled (Shift+Tab)"])),
+            Some(Status::Idle)
+        );
         assert_eq!(classify(&m, "", &lines(&["random text"])), None);
     }
 
