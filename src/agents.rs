@@ -389,6 +389,15 @@ pub fn detect_process(ident: &str) -> Option<&'static str> {
         .find_map(|comp| KNOWN.iter().find(|a| **a == comp).copied())
 }
 
+/// Runtimes that host a CLI as a child process (npm's `node <path>/cli`):
+/// the agent's real exe is our grandchild, not our child. Basename match.
+pub fn is_interpreter(ident: &str) -> bool {
+    matches!(
+        std::path::Path::new(ident).file_name().and_then(|s| s.to_str()),
+        Some("node" | "bun" | "deno" | "python" | "python3")
+    )
+}
+
 /// Agent id if the pane looks like a known agent CLI.
 pub fn detect(title: &str, program: &str) -> Option<&'static str> {
     let prog = program.to_ascii_lowercase();
@@ -416,6 +425,15 @@ mod tests {
         // "pi" must not match inside other words
         assert_eq!(detect("copying files", "bash"), None);
         assert_eq!(detect("pi", "zsh"), Some("pi"));
+    }
+
+    #[test]
+    fn interpreters_recognized_by_basename() {
+        assert!(is_interpreter("/Users/x/.nvm/versions/node/v22/bin/node"));
+        assert!(is_interpreter("/usr/bin/python3"));
+        assert!(is_interpreter("bun"));
+        assert!(!is_interpreter("/x/node_modules/cline/bin/.cline"));
+        assert!(!is_interpreter("/bin/zsh"));
     }
 
     #[test]
