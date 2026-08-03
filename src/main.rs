@@ -221,6 +221,9 @@ enum HookCmd {
     /// `pid` is the wrapping shell's $PPID — the claude that fired the hook
     /// (our own parent is that sh, not claude).
     ClaudeSession { pid: Option<u32> },
+    /// Cline TaskStart/TaskResume hook: stdin JSON → report session id.
+    /// `pid` is the wrapping shell's $PPID (the cline that fired the hook).
+    ClineSession { #[arg(long)] pid: Option<u32> },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -1132,6 +1135,30 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             );
             return Ok(true);
         }
+        Cmd::Hook { sub: HookCmd::ClineSession { pid } } => {
+            let Some(pane) = std::env::var("CDOCK_PANE_ID").ok().and_then(|p| parse_pane(&p).ok())
+            else {
+                return Ok(true);
+            };
+            let mut input = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)
+                .map_err(|e| e.to_string())?;
+            let v: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| format!("bad hook input: {e}"))?;
+            let Some(session_id) = cline_session_id(&v) else {
+                return Ok(true);
+            };
+            let _ = api::request_with_timeout(
+                &Req::ReportAgentSession {
+                    pane,
+                    session_id,
+                    agent: "cline".to_string(),
+                    pid: pid.or_else(|| Some(std::os::unix::process::parent_id())),
+                },
+                Duration::from_secs(3),
+            );
+            return Ok(true);
+        }
     };
     let v = api::request(&req).map_err(|e| e.to_string())?;
     println!("{v}");
@@ -1139,6 +1166,15 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
 }
 
 use config::DEFAULT_CONFIG;
+
+/// Cline file-hook payload → resumable session id. Prefer the stable
+/// rootSessionId; fall back to the per-task id.
+fn cline_session_id(v: &serde_json::Value) -> Option<String> {
+    v["sessionContext"]["rootSessionId"]
+        .as_str()
+        .or_else(|| v["taskId"].as_str())
+        .map(str::to_string)
+}
 
 fn main() -> ExitCode {
     let _ = startup_exe(); // capture before any self-update can rename us
@@ -1567,5 +1603,18 @@ mod tests {
         let left = std::fs::read_to_string(untouched.join("settings.json")).unwrap();
         assert!(!left.contains("report-agent"), "opt-out profile left untouched");
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn cline_session_id_reads_root_then_task() {
+        use serde_json::json;
+        let a = json!({"hookName":"agent_start","taskId":"conv-1",
+                       "sessionContext":{"rootSessionId":"ses_9"}});
+        assert_eq!(super::cline_session_id(&a).as_deref(), Some("ses_9"));
+        // no sessionContext → fall back to taskId
+        let b = json!({"hookName":"agent_start","taskId":"conv-2"});
+        assert_eq!(super::cline_session_id(&b).as_deref(), Some("conv-2"));
+        // neither → None, no panic
+        assert_eq!(super::cline_session_id(&json!({})), None);
     }
 }
