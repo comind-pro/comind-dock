@@ -427,26 +427,35 @@ git commit -m "fix(detect): see npm-hosted agents (cline) through the node wrapp
 
 - [ ] **Step 1: Create the manifest** — `src/detect/manifests/cline.toml`. The blocked rule is known; replace `<WORKING>` / `<IDLE>` with the exact Task 5 captures:
 
+Markers are from REAL captured cline screens (`.superpowers/sdd/2026-08-03-cline-agent-support/cline-{idle,working,blocked}.txt`). cline is a fullscreen OpenTUI: the input box + mode footer (`Ask anything`, `Act (Tab)`) are on screen even mid-task, so idle is LOWEST priority and only wins when no spinner/approval is present. The braille spinner keeps ticking while an approval waits, so blocked must outrank working.
+
 ```toml
 # Cline CLI detection rules. Bottom-of-buffer text, case-insensitive.
+# Captured from a real cline 2.x TUI (OpenTUI). The input box and mode footer
+# ("Ask anything", "Plan ● Act (Tab)") are always on screen, so idle is lowest
+# priority; the braille spinner ticks even while an approval waits, so blocked
+# must beat working.
 id = "cline"
 
-# Tool-approval prompt: `Approve tool "…" with input …? [y/N]`.
+# Tool-approval prompt. Real text: "Cline needs permission" / "Approve tool
+# call?" / "[y] Approve   [n] Deny". Must win over the still-ticking spinner.
 [[rule]]
 priority = 100
 state = "blocked"
-any_of = ["approve tool"]
-none_of = ["esc to interrupt", "esc interrupt"]
+any_of = ["cline needs permission", "approve tool call?", "[y] approve"]
 
+# Braille spinner = actively thinking or running a tool. The frames cycle, so
+# match any single frame; "esc to cancel" rides along on the thinking spinner.
 [[rule]]
 priority = 90
 state = "working"
-any_of = ["<WORKING>"]
+any_of = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "esc to cancel"]
 
+# Resting input box + mode footer — present even mid-task, hence lowest.
 [[rule]]
 priority = 50
 state = "idle"
-any_of = ["<IDLE>"]
+any_of = ["ask anything", "act (tab)", "plan ● act"]
 ```
 
 - [ ] **Step 2: Register it** — in `src/detect/mod.rs` `bundled()`, add to the `include_str!` array:
@@ -457,19 +466,29 @@ any_of = ["<IDLE>"]
 
 If `bundled_manifests_parse` asserts `m.len() >= 3`, bump to `>= 4`.
 
-- [ ] **Step 3: Write the test** — add to `src/detect/mod.rs` tests (fill `<WORKING>`/`<IDLE>` with the captures):
+- [ ] **Step 3: Write the test** — add to `src/detect/mod.rs` tests. These lines are the real captured spinner/approval/idle text:
 
 ```rust
 #[test]
 fn cline_states() {
     let m: Manifest =
         toml::from_str(include_str!("manifests/cline.toml")).expect("cline manifest parses");
+    // Approval prompt — the spinner still ticks above it, so blocked must win.
     assert_eq!(
-        classify(&m, "", &lines(&["Approve tool \"execute_command\" with input …? [y/N]"])),
+        classify(
+            &m,
+            "",
+            &lines(&["⠦ run_commands(ls -la)", "Cline needs permission", "Approve tool call?", "  [y] Approve   [n] Deny"])
+        ),
         Some(Status::Blocked)
     );
-    assert_eq!(classify(&m, "", &lines(&["<WORKING>"])), Some(Status::Working));
-    assert_eq!(classify(&m, "", &lines(&["<IDLE>"])), Some(Status::Idle));
+    // Thinking spinner.
+    assert_eq!(classify(&m, "", &lines(&["⠋ Thinking... (esc to cancel)"])), Some(Status::Working));
+    // Resting input box + footer.
+    assert_eq!(
+        classify(&m, "", &lines(&["❯ Ask anything...", " ⏵⏵ Auto-approve all enabled (Shift+Tab)"])),
+        Some(Status::Idle)
+    );
     assert_eq!(classify(&m, "", &lines(&["random text"])), None);
 }
 ```
