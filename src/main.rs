@@ -221,6 +221,9 @@ enum HookCmd {
     /// `pid` is the wrapping shell's $PPID — the claude that fired the hook
     /// (our own parent is that sh, not claude).
     ClaudeSession { pid: Option<u32> },
+    /// Cline TaskStart/TaskResume hook: stdin JSON → report session id.
+    /// `pid` is the wrapping shell's $PPID (the cline that fired the hook).
+    ClineSession { #[arg(long)] pid: Option<u32> },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -548,6 +551,39 @@ fn install_claude_hook() -> Result<bool, String> {
     }
     println!("restart running claude panes to activate the hook");
     Ok(true)
+}
+
+/// Install cline file hooks that report the session id to cdock. Cline
+/// discovers hooks by exact base name in ~/.cline/hooks and runs them with
+/// the event JSON on stdin. Idempotent (write only when changed). Note:
+/// cline disables hooks under --yolo — run with --act/--plan/interactive.
+fn install_cline_hook_into(home: &std::path::Path) -> Result<bool, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = home.join(".cline/hooks");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // $PPID is the cline that fired the hook; our own parent is the sh wrapper.
+    const SCRIPT: &str = "#!/bin/sh\n[ -z \"$CDOCK_PANE_ID\" ] || \"$CDOCK_BIN\" hook cline-session --pid \"$PPID\" || true\n";
+    let mut wrote = false;
+    for name in ["TaskStart", "TaskResume"] {
+        let path = dir.join(name);
+        if std::fs::read_to_string(&path).is_ok_and(|c| c == SCRIPT) {
+            continue;
+        }
+        std::fs::write(&path, SCRIPT).map_err(|e| e.to_string())?;
+        let mut perms = std::fs::metadata(&path).map_err(|e| e.to_string())?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms).map_err(|e| e.to_string())?;
+        wrote = true;
+    }
+    if wrote {
+        println!("installed cline hooks into {} (run cline with --act/--plan, not --yolo)", dir.display());
+    }
+    Ok(wrote)
+}
+
+fn install_cline_hook() -> Result<bool, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME unset".to_string())?;
+    install_cline_hook_into(std::path::Path::new(&home))
 }
 
 /// On server start, re-apply cdock hooks to every profile that ALREADY has
@@ -1071,7 +1107,8 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
         Cmd::Integration { sub: IntegrationCmd::Install { agent } } => {
             return match agent.as_str() {
                 "claude" => install_claude_hook(),
-                other => Err(format!("no integration for {other:?} yet (only claude)")),
+                "cline" => install_cline_hook(),
+                other => Err(format!("no integration for {other:?} yet (claude, cline)")),
             };
         }
         Cmd::Update { handoff } => {
@@ -1125,6 +1162,31 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 &Req::ReportAgentSession {
                     pane,
                     session_id: session_id.to_string(),
+                    agent: "claude".to_string(),
+                    pid: pid.or_else(|| Some(std::os::unix::process::parent_id())),
+                },
+                Duration::from_secs(3),
+            );
+            return Ok(true);
+        }
+        Cmd::Hook { sub: HookCmd::ClineSession { pid } } => {
+            let Some(pane) = std::env::var("CDOCK_PANE_ID").ok().and_then(|p| parse_pane(&p).ok())
+            else {
+                return Ok(true);
+            };
+            let mut input = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)
+                .map_err(|e| e.to_string())?;
+            let v: serde_json::Value =
+                serde_json::from_str(&input).map_err(|e| format!("bad hook input: {e}"))?;
+            let Some(session_id) = cline_session_id(&v) else {
+                return Ok(true);
+            };
+            let _ = api::request_with_timeout(
+                &Req::ReportAgentSession {
+                    pane,
+                    session_id,
+                    agent: "cline".to_string(),
                     pid: pid.or_else(|| Some(std::os::unix::process::parent_id())),
                 },
                 Duration::from_secs(3),
@@ -1138,6 +1200,15 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
 }
 
 use config::DEFAULT_CONFIG;
+
+/// Cline file-hook payload → resumable session id. Prefer the stable
+/// rootSessionId; fall back to the per-task id.
+fn cline_session_id(v: &serde_json::Value) -> Option<String> {
+    v["sessionContext"]["rootSessionId"]
+        .as_str()
+        .or_else(|| v["taskId"].as_str())
+        .map(str::to_string)
+}
 
 fn main() -> ExitCode {
     let _ = startup_exe(); // capture before any self-update can rename us
@@ -1538,6 +1609,24 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[test]
+    fn install_cline_writes_executable_hooks() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = std::env::temp_dir().join(format!("cdock-cline-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        assert!(super::install_cline_hook_into(&home).unwrap(), "first install writes");
+        assert!(!super::install_cline_hook_into(&home).unwrap(), "re-install is a no-op");
+        for name in ["TaskStart", "TaskResume"] {
+            let p = home.join(".cline/hooks").join(name);
+            let body = std::fs::read_to_string(&p).unwrap();
+            assert!(body.contains("hook cline-session"), "{name}: {body}");
+            let mode = std::fs::metadata(&p).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0o111, "{name} is executable");
+        }
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
     /// Startup refresh upgrades a stale install (old `claude-notification`
     /// no-op → current `blocked` hook) but never seeds hooks into a profile
     /// that never opted in.
@@ -1566,5 +1655,18 @@ mod tests {
         let left = std::fs::read_to_string(untouched.join("settings.json")).unwrap();
         assert!(!left.contains("report-agent"), "opt-out profile left untouched");
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn cline_session_id_reads_root_then_task() {
+        use serde_json::json;
+        let a = json!({"hookName":"agent_start","taskId":"conv-1",
+                       "sessionContext":{"rootSessionId":"ses_9"}});
+        assert_eq!(super::cline_session_id(&a).as_deref(), Some("ses_9"));
+        // no sessionContext → fall back to taskId
+        let b = json!({"hookName":"agent_start","taskId":"conv-2"});
+        assert_eq!(super::cline_session_id(&b).as_deref(), Some("conv-2"));
+        // neither → None, no panic
+        assert_eq!(super::cline_session_id(&json!({})), None);
     }
 }

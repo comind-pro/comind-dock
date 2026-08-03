@@ -479,14 +479,33 @@ impl Runtime {
                             })
                         })
                         .or_else(|| {
-                            crate::platform::child_process_idents(child).iter().find_map(
-                                |(pid, ident)| {
+                            // Direct children first, then one level deeper through
+                            // interpreter wrappers: npm/pnpm CLIs run as
+                            // `node <path>/cli`, so the real agent exe
+                            // (…/node_modules/cline/bin/.cline) is a GRANDCHILD of the
+                            // shell, behind a `node` wrapper. detect_process matches
+                            // the "cline" path segment once we reach it.
+                            let kids = crate::platform::child_process_idents(child);
+                            kids.iter()
+                                .find_map(|(pid, ident)| {
                                     crate::agents::detect_process(ident).inspect(|_| {
                                         agent_pid = Some(*pid);
                                         agent_bin = Some(ident.clone());
                                     })
-                                },
-                            )
+                                })
+                                .or_else(|| {
+                                    kids.iter()
+                                        .filter(|(_, ident)| crate::agents::is_interpreter(ident))
+                                        .flat_map(|(pid, _)| {
+                                            crate::platform::child_process_idents(*pid)
+                                        })
+                                        .find_map(|(gpid, gident)| {
+                                            crate::agents::detect_process(&gident).inspect(|_| {
+                                                agent_pid = Some(gpid);
+                                                agent_bin = Some(gident.clone());
+                                            })
+                                        })
+                                })
                         })
                 })
                 // Interpreter-hosted installs (npm/bun claude runs as

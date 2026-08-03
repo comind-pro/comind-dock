@@ -61,6 +61,11 @@ pub enum Req {
     ReportAgentSession {
         pane: u64,
         session_id: String,
+        /// Which CLI this is ("claude", "cline", ...) — the caller knows,
+        /// since the pane's detected agent can be None when the hook races
+        /// the first detection poll.
+        #[serde(default)]
+        agent: String,
         /// The reporting agent's pid (the hook's parent). Rejected when it
         /// isn't the pane's tracked agent — a nested claude (agent's Bash
         /// tool, subshell) must not clobber the pane's own conversation.
@@ -349,7 +354,7 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             Ok(()) => Ok(json!({"ok": true})),
             Err(e) => Ok(err(e)),
         },
-        Req::ReportAgentSession { pane, session_id, pid } => {
+        Req::ReportAgentSession { pane, session_id, agent, pid } => {
             let pane = PaneId(pane);
             let Some(p) = rt.panes.get(&pane) else {
                 return Ok(err(format!("no such pane {pane}")));
@@ -362,7 +367,7 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             {
                 return Ok(json!({"ok": true, "ignored": "nested agent"}));
             }
-            rt.agent_sessions.insert(pane, format!("claude:{session_id}"));
+            rt.agent_sessions.insert(pane, format!("{agent}:{session_id}"));
             rt.save_session(); // survive a crash between autosaves
             Ok(json!({"ok": true}))
         }
@@ -600,7 +605,7 @@ pub const REFERENCE: &str = r#"[
   {"cmd":"read","pane":1,"lines":30},
   {"cmd":"focus","pane":1},
   {"cmd":"agent-start","command":"claude","split":"right","workspace":3,"env":[["K","V"]]},
-  {"cmd":"report-agent-session","pane":1,"session_id":"uuid"},
+  {"cmd":"report-agent-session","pane":1,"session_id":"uuid","agent":"claude"},
   {"cmd":"report-agent","pane":1,"state":"blocked","label":"awaiting review","ttl_ms":60000,"pid":4321},
   {"cmd":"report-metadata","pane":1,"title":"builder"},
   {"cmd":"rename-pane","pane":1,"name":"kafka refactor"},

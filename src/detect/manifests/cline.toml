@@ -1,0 +1,26 @@
+# Cline CLI detection rules. Bottom-of-buffer text, case-insensitive.
+# Captured from a real cline 2.x TUI (OpenTUI). The input box and mode footer
+# ("Ask anything", "Plan ● Act (Tab)") are always on screen, so idle is lowest
+# priority; the braille spinner ticks even while an approval waits, so blocked
+# must beat working.
+id = "cline"
+
+# Tool-approval prompt. Real text: "Cline needs permission" / "Approve tool
+# call?" / "[y] Approve   [n] Deny". Must win over the still-ticking spinner.
+[[rule]]
+priority = 100
+state = "blocked"
+any_of = ["cline needs permission", "approve tool call?", "[y] approve"]
+
+# Braille spinner = actively thinking or running a tool. The frames cycle, so
+# match any single frame; "esc to cancel" rides along on the thinking spinner.
+[[rule]]
+priority = 90
+state = "working"
+any_of = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "esc to cancel"]
+
+# Resting input box + mode footer -- present even mid-task, hence lowest.
+[[rule]]
+priority = 50
+state = "idle"
+any_of = ["ask anything", "act (tab)", "plan ● act"]
