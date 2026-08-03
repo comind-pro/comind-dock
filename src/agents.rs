@@ -6,7 +6,7 @@
 
 const KNOWN: &[&str] = &[
     "claude", "codex", "opencode", "aider", "gemini", "goose", "amp", "pi", "cursor", "copilot",
-    "droid", "qwen", "crush",
+    "droid", "qwen", "crush", "cline",
 ];
 
 /// Command that relaunches an agent after a restart. `ident` is either a
@@ -21,6 +21,7 @@ pub fn resume_command(ident: &str) -> String {
             "claude" => format!("claude --resume {session}"),
             "codex" => format!("codex resume {session}"),
             "opencode" => format!("opencode --session {session}"),
+            "cline" => format!("cline --id {session}"),
             other => other.to_string(),
         };
     }
@@ -415,6 +416,13 @@ mod tests {
         // "pi" must not match inside other words
         assert_eq!(detect("copying files", "bash"), None);
         assert_eq!(detect("pi", "zsh"), Some("pi"));
+    }
+
+    #[test]
+    fn cline_is_known_and_resumes_by_id() {
+        assert_eq!(detect("Cline", "node"), Some("cline"));
+        assert_eq!(resume_command("cline:ses_42"), "cline --id ses_42");
+        assert_eq!(resume_command("cline"), "cline");
     }
 
     #[test]
