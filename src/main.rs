@@ -555,8 +555,16 @@ fn install_claude_hook() -> Result<bool, String> {
 
 /// Install cline file hooks that report the session id to cdock. Cline
 /// discovers hooks by exact base name in ~/.cline/hooks and runs them with
-/// the event JSON on stdin. Idempotent (write only when changed). Note:
-/// cline disables hooks under --yolo — run with --act/--plan/interactive.
+/// the event JSON on stdin. Idempotent (write only when changed).
+///
+/// VERSION FLOOR: file-hook discovery is a `cline` main-branch feature not yet
+/// in the released CLI — verified absent on cline 3.0.49 (an instrumented hook
+/// with an unconditional log line never ran). Until cline ships it, these
+/// scripts are inert: identity and screen-based status still work, but a
+/// restarted pane resumes as bare `cline` (no session id) instead of
+/// `cline --id <id>`. The install is harmless and forward-compatible — it
+/// starts working the moment cline runs ~/.cline/hooks. Also: cline disables
+/// hooks under --yolo, so run with --act/--plan/interactive when it does land.
 fn install_cline_hook_into(home: &std::path::Path) -> Result<bool, String> {
     use std::os::unix::fs::PermissionsExt;
     let dir = home.join(".cline/hooks");
@@ -577,6 +585,10 @@ fn install_cline_hook_into(home: &std::path::Path) -> Result<bool, String> {
     }
     if wrote {
         println!("installed cline hooks into {} (run cline with --act/--plan, not --yolo)", dir.display());
+        println!(
+            "note: file-hook discovery is not in the released cline CLI yet (absent on 3.0.49); \
+             until it ships, resume falls back to bare `cline`. identity + status work regardless."
+        );
     }
     Ok(wrote)
 }

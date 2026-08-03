@@ -133,12 +133,33 @@ All done against `cdock-dev` / a throwaway `~/.cline` — never the live session
 ## Risks
 
 1. **OSC-title identity.** node-hosted identity depends on Cline setting a title
-   containing `cline`. Verified in capture. If absent, fall back to matching the
-   node process argv for `cline` (larger change) — decide then, not now.
+   containing `cline`. **Materialized (Risk 1 fired):** cline sets no such title
+   and runs as a `node` grandchild, so identity fell to the interpreter-wrapper
+   descent (`is_interpreter` + one-level `child_process_idents`), added as
+   Task 4b. Confirmed live: a real cline pane resolves to `agent: cline`.
 2. **`--yolo` disables hooks.** Session-id resume degrades to bare `cline`.
    Documented; status still works.
 3. **agent_pid None → report guard off.** Matches existing npm-Claude behaviour;
    acceptable.
+4. **Cline CLI version floor for the session hook (MATERIALIZED).** File-hook
+   discovery (`~/.cline/hooks/<EventName>`) is a cline main-branch feature not
+   yet in the released CLI — verified ABSENT on **cline 3.0.49**: an installed
+   hook instrumented with an unconditional log line never ran, and
+   `agent_session` stayed `null` across restarts and fresh tasks. Consequence:
+   the session hook is inert on current releases, so resume falls back to bare
+   `cline` (same outcome as Risk 2). Identity (Risk 1) and screen-based status
+   are unaffected — both verified live. The install is forward-compatible: it
+   starts populating the session id the moment a cline release runs file hooks.
+   No code change needed; this is a version gap, not a defect.
+
+## Live validation summary (cline 3.0.49, cdock-dev)
+
+- **Identity:** ✅ real cline pane → `agent: cline` (grandchild descent).
+- **Status:** ✅ full cycle idle → working (spinner) → blocked (approval) → idle,
+  driven by the bundled manifest; blocked correctly beats the still-ticking
+  spinner.
+- **Session hook / resume:** ⚠️ not exercised — cline 3.0.49 does not run file
+  hooks (Risk 4). Unit-covered; will activate on a cline release that does.
 
 ## Out of scope (YAGNI)
 
