@@ -1,6 +1,7 @@
 //! alacritty grid → ratatui buffer conversion. With term/emulator.rs, the
 //! only place alacritty types are allowed.
 
+use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::{Term, TermMode};
@@ -58,10 +59,14 @@ pub fn render(
 
     let content = term.renderable_content();
     let offset = content.display_offset as i32;
+    // Shared pane sized to the ACTIVE client: a smaller mirror gets a taller
+    // grid than its rect. Anchor to the bottom so the mirror shows the prompt
+    // / latest output (the useful end), not the top. Zero when rect >= grid.
+    let y_shift = (term.screen_lines() as i32 - area.height as i32).max(0);
     let buf = frame.buffer_mut();
 
     for indexed in content.display_iter {
-        let row = indexed.point.line.0 + offset;
+        let row = indexed.point.line.0 + offset - y_shift;
         let col = indexed.point.column.0;
         if row < 0 || row >= area.height as i32 || col >= area.width as usize {
             continue;
@@ -94,8 +99,9 @@ pub fn render(
     // Host cursor only when the viewport is at the live bottom.
     if focused && content.mode.contains(TermMode::SHOW_CURSOR) && offset == 0 {
         let p = content.cursor.point;
-        if p.line.0 >= 0 && (p.line.0 as u16) < area.height && (p.column.0 as u16) < area.width {
-            frame.set_cursor_position((area.x + p.column.0 as u16, area.y + p.line.0 as u16));
+        let crow = p.line.0 - y_shift;
+        if crow >= 0 && (crow as u16) < area.height && (p.column.0 as u16) < area.width {
+            frame.set_cursor_position((area.x + p.column.0 as u16, area.y + crow as u16));
         }
     }
 }
