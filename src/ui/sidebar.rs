@@ -17,7 +17,7 @@ pub enum Target {
     NewWorkspace,
     /// The "≡ menu" row above spaces: app settings / session actions.
     AppMenu,
-    /// "+ continue" under agents: resume any Claude session on the system.
+    /// "+ continue" at the bottom: resume any Claude session on the system.
     ContinueAgent,
     /// The « at the menu row's right edge: hide the sidebar.
     CollapseSidebar,
@@ -29,37 +29,6 @@ const COLLAPSE_ZONE: u16 = 3;
 struct Row {
     line: Line<'static>,
     target: Option<Target>,
-}
-
-/// Space status dot: dim empty — no agents; green empty — agents, all
-/// calm; green filled — an agent is working; red filled — an agent is
-/// blocked and needs the user.
-fn space_dot(rt: &Runtime, wi: usize, theme: &Theme) -> (&'static str, Style) {
-    use crate::detect::Status;
-    let ws = &rt.state.workspaces[wi];
-    let mut has_agent = false;
-    let mut working = false;
-    let mut blocked = false;
-    for pane in ws.tabs.iter().flat_map(|t| t.layout.panes()) {
-        let Some(p) = rt.panes.get(&pane) else { continue };
-        if p.agent.is_some() {
-            has_agent = true;
-            match p.effective_status() {
-                Status::Blocked => blocked = true,
-                Status::Working => working = true,
-                _ => {}
-            }
-        }
-    }
-    if blocked {
-        ("● ", Style::new().fg(Color::Red))
-    } else if working {
-        ("● ", Style::new().fg(Color::Green))
-    } else if has_agent {
-        ("○ ", Style::new().fg(Color::Green))
-    } else {
-        ("○ ", Style::new().fg(theme.muted))
-    }
 }
 
 /// Agent-row marker and colors per detection state.
@@ -74,9 +43,77 @@ fn status_marker(status: crate::detect::Status, theme: &Theme) -> (&'static str,
     }
 }
 
-/// Sidebar (mockup): "spaces" — workspaces with status dot, git branch
-/// subtitle, worktree children indented under their parent; "agents" — one
-/// row per recognized agent pane.
+/// One row for an agent pane: `indent + marker + name` on the left, the
+/// muted `status · agent @profile` detail right-aligned to `width`. The name
+/// truncates first when the line would overflow. Non-agent panes (plain
+/// shells) emit nothing.
+fn agent_rows(rt: &Runtime, theme: &Theme, pane: PaneId, indent: &str, width: u16, out: &mut Vec<Row>) {
+    let Some(p) = rt.panes.get(&pane) else { return };
+    let Some(agent) = p.agent else { return };
+    let state = &rt.state;
+    let title = rt.titles.get(&pane).map(String::as_str).unwrap_or("");
+    let status = p.effective_status();
+    // An unseen event outranks the (already decayed) status: the sound said
+    // SOMETHING finished — the sidebar says which one. A distinct glyph, not
+    // just a shade: "✓" also means a Done the user has already read.
+    let (dot, dot_style) = match p.unseen {
+        Some(crate::runtime::NoticeKind::Done) => {
+            ("★ ", Style::new().fg(Color::LightGreen).add_modifier(Modifier::BOLD))
+        }
+        Some(crate::runtime::NoticeKind::Blocked) => {
+            ("★ ", Style::new().fg(Color::LightRed).add_modifier(Modifier::BOLD))
+        }
+        None => status_marker(status, theme),
+    };
+    // Reporter label ("running tests") beats the generic word; an unseen event
+    // says what it was, not the decayed "idle".
+    let status = match (p.unseen, p.reported_label()) {
+        (_, Some(label)) => label,
+        (Some(crate::runtime::NoticeKind::Done), _) => "finished",
+        (Some(crate::runtime::NoticeKind::Blocked), _) => "blocked",
+        (None, None) => status.word(),
+    };
+    // Which profile the agent runs as, when not the default.
+    let profile = p
+        .agent_config_dir
+        .as_deref()
+        .and_then(crate::agents::profile_label_from_dir)
+        .map(|l| format!(" @{l}"))
+        .unwrap_or_default();
+    let detail = format!("{status} · {agent}{profile}");
+    // User-given name wins; then the agent's OSC title; then the bare agent name.
+    let name = match state.pane_name(pane) {
+        Some(n) => n.to_string(),
+        None if title.trim().is_empty() => agent.to_string(),
+        None => title.to_string(),
+    };
+    // Right-align the detail; the name gives ground first when space is tight.
+    let fixed = indent.width() + dot.width() + detail.width();
+    let name_budget = (width as usize).saturating_sub(fixed + 1).max(3);
+    let name = crate::agents::truncate_clean(&name, name_budget.min(16));
+    let pad = (width as usize).saturating_sub(indent.width() + dot.width() + name.width() + detail.width());
+    let focused = pane == state.focused_pane();
+    let name_style = if focused {
+        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().add_modifier(Modifier::BOLD)
+    };
+    out.push(Row {
+        line: Line::from(vec![
+            Span::raw(indent.to_string()),
+            Span::styled(dot, dot_style),
+            Span::styled(name, name_style),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(detail, Style::new().fg(theme.muted)),
+        ]),
+        target: Some(Target::Pane(pane)),
+    });
+}
+
+/// Sidebar (mockup): one "spaces" section — each workspace shows a status dot,
+/// a git-branch/counts subtitle, and its agent panes nested one indent deeper
+/// (marker + name, then a `status · agent @profile` line). Worktree children
+/// indent under their parent; their agents indent deeper still.
 fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
     let state = &rt.state;
     // "« " pinned to the right edge; hit() maps clicks there to CollapseSidebar.
@@ -105,25 +142,19 @@ fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
         if !state.in_scope(wi) {
             continue;
         }
+        // A blank line before each space separates the groups so a long list
+        // doesn't read as one wall of text.
+        out.push(Row { line: Line::from(""), target: None });
         let active = wi == state.active_workspace;
         let child = ws.parent.is_some();
-        let indent = if child { "    " } else { "  " };
-        let (dot, dot_style) = space_dot(rt, wi, theme);
+        let indent = if child { "  " } else { "" };
         let name_style = if active {
             Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
         } else {
             Style::new().add_modifier(Modifier::BOLD)
         };
-        out.push(Row {
-            line: Line::from(vec![
-                Span::raw(indent),
-                Span::styled(dot, dot_style),
-                Span::styled(ws.name.clone(), name_style),
-            ]),
-            target: Some(Target::Workspace(wi)),
-        });
-        // Subtitle: git branch and tab/pane counts side by side — counts
-        // only when non-trivial, so single-pane spaces stay quiet.
+        // Space header: bold name (no status dot — the group heading), with the
+        // git branch / tab·pane counts right-aligned on the same line.
         let mut parts: Vec<String> = Vec::new();
         if let Some(b) = rt.branches.get(&ws.id) {
             parts.push(b.clone());
@@ -134,117 +165,29 @@ fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
             parts.push(format!("{tabs}·{panes}"));
         }
         let subtitle = parts.join(" · ");
-        out.push(Row {
-            line: Line::from(Span::styled(
-                format!("{indent}  {subtitle}"),
-                Style::new().fg(theme.muted),
-            )),
-            target: Some(Target::Workspace(wi)),
-        });
+        let name = crate::agents::truncate_clean(&ws.name, 20);
+        let pad = (width as usize)
+            .saturating_sub(indent.width() + name.width() + subtitle.width() + 1);
+        let mut spans = vec![Span::raw(indent.to_string()), Span::styled(name, name_style)];
+        if !subtitle.is_empty() {
+            spans.push(Span::raw(" ".repeat(pad.max(1))));
+            spans.push(Span::styled(subtitle, Style::new().fg(theme.muted)));
+        }
+        out.push(Row { line: Line::from(spans), target: Some(Target::Workspace(wi)) });
+        // This space's agents, nested one indent deeper. Non-agent panes emit
+        // nothing, so an empty space shows just its header line.
+        let agent_indent = format!("{indent}   ");
+        for tab in &ws.tabs {
+            for pane in tab.layout.panes() {
+                agent_rows(rt, theme, pane, &agent_indent, width, &mut out);
+            }
+        }
     }
+    out.push(Row { line: Line::from(""), target: None });
     out.push(Row {
         line: Line::from(Span::styled("  + new space", Style::new().fg(theme.accent))),
         target: Some(Target::NewWorkspace),
     });
-
-    out.push(Row { line: Line::from(""), target: None });
-    out.push(Row {
-        line: Line::from(Span::styled(
-            " agents",
-            Style::new().fg(theme.muted).add_modifier(Modifier::BOLD),
-        )),
-        target: None,
-    });
-
-    let mut any_agent = false;
-    for (wi, ws) in state.workspaces.iter().enumerate() {
-        if !state.in_scope(wi) {
-            continue;
-        }
-        for tab in &ws.tabs {
-            for pane in tab.layout.panes() {
-                let Some(p) = rt.panes.get(&pane) else { continue };
-                let title = rt.titles.get(&pane).map(String::as_str).unwrap_or("");
-                // Only recognized agent CLIs live here; plain shells are not agents.
-                let Some(agent) = p.agent else { continue };
-                any_agent = true;
-                let status = p.effective_status();
-                // An unseen event outranks the (already decayed) status: the
-                // sound said SOMETHING finished — the sidebar says which one.
-                // A distinct glyph, not just a shade: "✓" also means a Done
-                // the user has already read, and the whole point here is to
-                // tell those two apart at a glance.
-                let (dot, dot_style) = match p.unseen {
-                    Some(crate::runtime::NoticeKind::Done) => {
-                        ("★ ", Style::new().fg(Color::LightGreen).add_modifier(Modifier::BOLD))
-                    }
-                    Some(crate::runtime::NoticeKind::Blocked) => {
-                        ("★ ", Style::new().fg(Color::LightRed).add_modifier(Modifier::BOLD))
-                    }
-                    None => status_marker(status, theme),
-                };
-                // Reporter label ("running tests") beats the generic word;
-                // an unseen event says what it was, not the decayed "idle".
-                let status = match (p.unseen, p.reported_label()) {
-                    (_, Some(label)) => label,
-                    (Some(crate::runtime::NoticeKind::Done), _) => "finished",
-                    (Some(crate::runtime::NoticeKind::Blocked), _) => "blocked",
-                    (None, None) => status.word(),
-                };
-                // User-given name wins; then the agent's OSC title; then
-                // the bare agent name.
-                let name = match state.pane_name(pane) {
-                    Some(n) => crate::agents::truncate_clean(n, 16),
-                    None if title.trim().is_empty() => agent.to_string(),
-                    None => crate::agents::truncate_clean(title, 16),
-                };
-                let focused = pane == state.focused_pane();
-                let name_style = if focused {
-                    Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::new().add_modifier(Modifier::BOLD)
-                };
-                out.push(Row {
-                    line: Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(dot, dot_style),
-                        Span::styled(name, name_style),
-                    ]),
-                    target: Some(Target::Pane(pane)),
-                });
-                // Which profile the agent runs as, when not the default.
-                let profile = p
-                    .agent_config_dir
-                    .as_deref()
-                    .and_then(crate::agents::profile_label_from_dir)
-                    .map(|l| format!(" @{l}"))
-                    .unwrap_or_default();
-                // Which space it belongs to — the agents list spans every
-                // space in scope, so "claude" alone doesn't say where it is.
-                let space = crate::agents::truncate_clean(&ws.name, 14);
-                out.push(Row {
-                    line: Line::from(Span::styled(
-                        format!("    {status} · {agent}{profile}"),
-                        Style::new().fg(theme.muted),
-                    )),
-                    target: Some(Target::Pane(pane)),
-                });
-                out.push(Row {
-                    line: Line::from(Span::styled(
-                        format!("    {space}"),
-                        Style::new().fg(theme.muted).add_modifier(Modifier::DIM),
-                    )),
-                    target: Some(Target::Pane(pane)),
-                });
-            }
-        }
-    }
-    if !any_agent {
-        out.push(Row {
-            line: Line::from(Span::styled("  none yet", Style::new().fg(theme.muted))),
-            target: None,
-        });
-    }
     out.push(Row {
         line: Line::from(Span::styled("  + continue", Style::new().fg(theme.accent))),
         target: Some(Target::ContinueAgent),

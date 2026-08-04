@@ -14,6 +14,21 @@ name / status·agent·profile / space). With ~11 agents the flat list is long an
 the space label repeats on every agent, making it hard to see which agents
 belong to which space.
 
+## Iteration (post-first-render, shipped)
+
+The first cut (space row + subtitle row + 2-row agents with a dot on the space)
+read as "наляписто" — one dense wall. Shipped layout instead:
+- **Blank line before each space** — groups breathe.
+- **Space = a heading**: bold name, NO status dot, with the git-branch/counts
+  right-aligned on the same line (subtitle folded up, one row not two).
+- **Agent = ONE row**: `indent + marker + name` left, muted
+  `status · agent @profile` right-aligned; the name truncates first when tight.
+- `space_dot` removed (space-level state now reads off the nested agent markers).
+
+The nesting, ordering, empty-spaces-always-shown, scope, and footer decisions
+below still hold. The sections that follow describe the original two-row shape;
+the shipped code is the one-row heading form above.
+
 ## Design (option A — unified hierarchy)
 
 One `spaces` section. Each space renders as today (dot + name row, then a
