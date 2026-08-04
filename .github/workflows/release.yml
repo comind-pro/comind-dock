@@ -13,8 +13,8 @@ jobs:
         include:
           - runner: macos-14
             target: aarch64-macos
-          - runner: macos-13
-            target: x86_64-macos
+          # x86_64-macos dropped: everyone's on Apple Silicon, and GitHub's
+          # Intel-mac runners are scarce enough to stall every release.
           - runner: ubuntu-latest
             target: x86_64-linux
           - runner: ubuntu-24.04-arm
