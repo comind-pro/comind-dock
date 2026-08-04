@@ -43,10 +43,9 @@ fn status_marker(status: crate::detect::Status, theme: &Theme) -> (&'static str,
     }
 }
 
-/// One row for an agent pane: `indent + marker + name` on the left, the
-/// muted `status · agent @profile` detail right-aligned to `width`. The name
-/// truncates first when the line would overflow. Non-agent panes (plain
-/// shells) emit nothing.
+/// Two rows for an agent pane: `marker + name` (name gets the full width so it
+/// isn't cramped), then the muted `status · agent @profile` detail indented
+/// under it. Non-agent panes (plain shells) emit nothing.
 fn agent_rows(rt: &Runtime, theme: &Theme, pane: PaneId, indent: &str, width: u16, out: &mut Vec<Row>) {
     let Some(p) = rt.panes.get(&pane) else { return };
     let Some(agent) = p.agent else { return };
@@ -80,18 +79,14 @@ fn agent_rows(rt: &Runtime, theme: &Theme, pane: PaneId, indent: &str, width: u1
         .and_then(crate::agents::profile_label_from_dir)
         .map(|l| format!(" @{l}"))
         .unwrap_or_default();
-    let detail = format!("{status} · {agent}{profile}");
     // User-given name wins; then the agent's OSC title; then the bare agent name.
+    // The name gets nearly the full sidebar width — its own row, not shared.
+    let name_budget = (width as usize).saturating_sub(indent.width() + dot.width() + 1).max(6);
     let name = match state.pane_name(pane) {
-        Some(n) => n.to_string(),
+        Some(n) => crate::agents::truncate_clean(n, name_budget),
         None if title.trim().is_empty() => agent.to_string(),
-        None => title.to_string(),
+        None => crate::agents::truncate_clean(title, name_budget),
     };
-    // Right-align the detail; the name gives ground first when space is tight.
-    let fixed = indent.width() + dot.width() + detail.width();
-    let name_budget = (width as usize).saturating_sub(fixed + 1).max(3);
-    let name = crate::agents::truncate_clean(&name, name_budget.min(16));
-    let pad = (width as usize).saturating_sub(indent.width() + dot.width() + name.width() + detail.width());
     let focused = pane == state.focused_pane();
     let name_style = if focused {
         Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
@@ -103,9 +98,14 @@ fn agent_rows(rt: &Runtime, theme: &Theme, pane: PaneId, indent: &str, width: u1
             Span::raw(indent.to_string()),
             Span::styled(dot, dot_style),
             Span::styled(name, name_style),
-            Span::raw(" ".repeat(pad)),
-            Span::styled(detail, Style::new().fg(theme.muted)),
         ]),
+        target: Some(Target::Pane(pane)),
+    });
+    out.push(Row {
+        line: Line::from(Span::styled(
+            format!("{indent}  {status} · {agent}{profile}"),
+            Style::new().fg(theme.muted),
+        )),
         target: Some(Target::Pane(pane)),
     });
 }

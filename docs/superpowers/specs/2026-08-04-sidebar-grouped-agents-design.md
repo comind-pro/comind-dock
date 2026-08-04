@@ -21,8 +21,11 @@ read as "наляписто" — one dense wall. Shipped layout instead:
 - **Blank line before each space** — groups breathe.
 - **Space = a heading**: bold name, NO status dot, with the git-branch/counts
   right-aligned on the same line (subtitle folded up, one row not two).
-- **Agent = ONE row**: `indent + marker + name` left, muted
-  `status · agent @profile` right-aligned; the name truncates first when tight.
+- **Agent = TWO rows**: `marker + name` (the name gets nearly the full sidebar
+  width — its own row, so it isn't cramped), then the muted
+  `status · agent @profile` detail indented under it. (A first attempt put both
+  on one right-aligned row, but the detail crushed the name to 2-3 chars —
+  reverted to two rows.)
 - `space_dot` removed (space-level state now reads off the nested agent markers).
 
 The nesting, ordering, empty-spaces-always-shown, scope, and footer decisions
