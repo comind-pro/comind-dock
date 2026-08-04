@@ -67,6 +67,9 @@ struct Client {
     input_mode: crate::state::InputMode,
     sidebar_scroll: u16,
     drag: Option<crate::runtime::MouseDrag>,
+    /// When this client last had real input — a shared pane's size follows the
+    /// most-recently-active viewer.
+    last_active: std::time::Instant,
 }
 
 impl Client {
@@ -261,6 +264,7 @@ pub async fn run(
                             input_mode: crate::state::InputMode::default(),
                             sidebar_scroll: 0,
                             drag: None,
+                            last_active: std::time::Instant::now(),
                         },
                     );
                     spawn_client_io(id, read_half, write_half, out_rx, ctl_tx.clone());
@@ -320,6 +324,17 @@ pub async fn run(
                         {
                             c.resize(cols, rows);
                             area = Rect::new(0, 0, cols.max(4), rows.max(4));
+                        }
+                        // Real input makes this the active client — its size
+                        // wins for any pane it shares. Resize doesn't count.
+                        if matches!(
+                            ev,
+                            crossterm::event::Event::Key(_)
+                                | crossterm::event::Event::Mouse(_)
+                                | crossterm::event::Event::Paste(_)
+                        ) && let Some(c) = clients.get_mut(&id)
+                        {
+                            c.last_active = std::time::Instant::now();
                         }
                         // Input runs in the sending client's view: its scope,
                         // its workspace, its geometry.
@@ -709,27 +724,43 @@ fn shutdown_clients(clients: &HashMap<ClientId, Client>) {
     }
 }
 
+/// One client's activity timestamp paired with the pane sizes it wants.
+type ClientSizes = (std::time::Instant, Vec<(crate::state::ids::PaneId, (u16, u16))>);
+
+/// Per-pane pty size when several clients view it: the most-recently-active
+/// client wins (typing in a big terminal sizes the pane big; switching to a
+/// small one sizes it small). One client → its own size, trivially.
+fn fold_pane_sizes(clients: &[ClientSizes]) -> HashMap<crate::state::ids::PaneId, (u16, u16)> {
+    // Ascending activity: the newest client is applied last and overwrites.
+    let mut order: Vec<usize> = (0..clients.len()).collect();
+    order.sort_by_key(|&i| clients[i].0);
+    let mut wanted = HashMap::new();
+    for &i in &order {
+        for (pane, size) in &clients[i].1 {
+            wanted.insert(*pane, *size);
+        }
+    }
+    wanted
+}
+
 /// One frame per client: each lays out at its own size, in its own scope,
-/// on its own workspace. Panes shared by several clients get the smallest
-/// requested pty size, so nobody sees a cropped agent.
+/// on its own workspace. A pane shared by several clients takes the
+/// most-recently-active client's pty size (see `fold_pane_sizes`); background
+/// clients render the larger emulator clipped to their smaller rect.
 fn render_clients(rt: &mut Runtime, clients: &mut HashMap<ClientId, Client>) -> io::Result<()> {
-    // Pass 1 — geometry only (pure): what size does each client want each
-    // pane to be?
-    let mut wanted: HashMap<crate::state::ids::PaneId, (u16, u16)> = HashMap::new();
+    // Pass 1 — geometry only (pure): each client's wanted pane sizes, tagged
+    // with when that client was last active.
+    let mut per_client: Vec<ClientSizes> = Vec::new();
     let mut views: Vec<(ClientId, crate::ui::view::View)> = Vec::new();
     for (id, c) in clients.iter_mut() {
         enter(rt, c);
         let view = ui::compute_view(rt, c.area());
-        for (pane, size) in ui::pane_sizes(&view) {
-            wanted
-                .entry(pane)
-                .and_modify(|s| *s = (s.0.min(size.0), s.1.min(size.1)))
-                .or_insert(size);
-        }
+        per_client.push((c.last_active, ui::pane_sizes(&view)));
         views.push((*id, view));
         leave(rt, c);
     }
-    // Pass 2 — one pty resize per pane, at the agreed size.
+    let wanted = fold_pane_sizes(&per_client);
+    // Pass 2 — one pty resize per pane, at the active client's size.
     rt.apply_pane_sizes(&wanted);
 
     // Pass 3 — draw. Emulators now hold the agreed geometry, so what a
@@ -896,4 +927,27 @@ fn spawn_client_io(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::ids::PaneId;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn fold_takes_the_most_recently_active_client() {
+        let t0 = Instant::now();
+        let older = t0;
+        let newer = t0 + Duration::from_millis(10);
+        let pane = PaneId(1);
+        // older client wants it big, newer client wants it small → newer wins.
+        let folded =
+            fold_pane_sizes(&[(older, vec![(pane, (120, 40))]), (newer, vec![(pane, (80, 24))])]);
+        assert_eq!(folded[&pane], (80, 24), "the active (newer) client sizes the pane");
+        // Order of the input slice must not matter — newer still wins.
+        let folded =
+            fold_pane_sizes(&[(newer, vec![(pane, (80, 24))]), (older, vec![(pane, (120, 40))])]);
+        assert_eq!(folded[&pane], (80, 24), "newer wins regardless of slice order");
+    }
 }

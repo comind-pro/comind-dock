@@ -199,14 +199,13 @@ mod tests {
     use super::*;
     use ratatui::layout::Rect;
 
-    /// A pane two clients both display must end up at ONE pty size — the
-    /// smallest, so neither viewer sees it cropped. (server::render_clients
-    /// folds pane_sizes() across clients with exactly this min.)
+    /// pane_sizes reports each client's own view size (content rect minus
+    /// chrome). The cross-client fold that used to live here now lives in
+    /// server::fold_pane_sizes (most-recently-active viewer wins).
     #[test]
-    fn shared_pane_takes_the_smallest_viewers_size() {
+    fn pane_sizes_are_per_view() {
         use crate::state::ids::PaneId;
         use crate::ui::view::View;
-        use std::collections::HashMap;
         let view = |w: u16, h: u16| View {
             tab_bar: Rect::new(0, 0, w, 1),
             sidebar: None,
@@ -214,19 +213,9 @@ mod tests {
             dividers: Vec::new(),
             focused: PaneId(1),
         };
-        let mut wanted: HashMap<PaneId, (u16, u16)> = HashMap::new();
-        for v in [view(120, 40), view(80, 24)] {
-            for (pane, size) in pane_sizes(&v) {
-                wanted
-                    .entry(pane)
-                    .and_modify(|s| *s = (s.0.min(size.0), s.1.min(size.1)))
-                    .or_insert(size);
-            }
-        }
         let wide = pane_sizes(&view(120, 40))[0].1;
         let narrow = pane_sizes(&view(80, 24))[0].1;
-        assert_eq!(wanted[&PaneId(1)], narrow, "the narrow client wins");
-        assert!(narrow.0 < wide.0);
+        assert!(narrow.0 < wide.0, "each view sizes from its own area");
     }
 
     #[test]
