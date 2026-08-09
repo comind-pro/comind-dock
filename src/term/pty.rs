@@ -16,9 +16,29 @@ enum Master {
 
 pub struct Pty {
     master: Master,
-    writer: Box<dyn Write + Send>,
+    writer_tx: std::sync::mpsc::Sender<Vec<u8>>,
     /// Shell pid — its cwd drives space cwd tracking.
     pub child_pid: Option<u32>,
+}
+
+/// Pty input goes through a dedicated thread: a write to the master blocks
+/// when the pane's process stops draining its (raw-mode) tty input queue, and
+/// a blocking write on the main loop deadlocks the whole server against the
+/// reader-side backpressure (2026-08-09 production freeze).
+// ponytail: unbounded queue — input is human-scale (keystrokes, paste,
+// notification lines); a stuck pane accumulates it in our RAM instead of
+// freezing the server. Bytes still queued at handoff exec are dropped.
+fn spawn_writer(mut writer: Box<dyn Write + Send>) -> std::sync::mpsc::Sender<Vec<u8>> {
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        for buf in rx {
+            if let Err(e) = writer.write_all(&buf).and_then(|_| writer.flush()) {
+                tracing::warn!(error = %e, "pty write failed");
+                break;
+            }
+        }
+    });
+    tx
 }
 
 fn err(e: impl std::fmt::Display) -> io::Error {
@@ -114,7 +134,11 @@ pub fn spawn_shell(
         }
     });
 
-    Ok(Pty { master: Master::Spawned { master: pair.master, killer }, writer, child_pid })
+    Ok(Pty {
+        master: Master::Spawned { master: pair.master, killer },
+        writer_tx: spawn_writer(writer),
+        child_pid,
+    })
 }
 
 /// Rebuild a Pty around a master fd inherited across a live-handoff exec.
@@ -174,14 +198,17 @@ pub fn adopt(
         }
     });
 
-    Ok(Pty { master: Master::Inherited { fd }, writer: Box::new(writer), child_pid })
+    Ok(Pty {
+        master: Master::Inherited { fd },
+        writer_tx: spawn_writer(Box::new(writer)),
+        child_pid,
+    })
 }
 
 impl Pty {
     pub fn write(&mut self, bytes: &[u8]) {
-        if let Err(e) = self.writer.write_all(bytes).and_then(|_| self.writer.flush()) {
-            tracing::warn!(error = %e, "pty write failed");
-        }
+        // Err = writer thread gone (pane dying) — nothing useful to do.
+        let _ = self.writer_tx.send(bytes.to_vec());
     }
 
     pub fn resize(&self, cols: u16, rows: u16) {
@@ -232,5 +259,69 @@ impl Drop for Pty {
         if let Master::Inherited { fd } = self.master {
             unsafe { libc::close(fd) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn spawn(command: &str) -> (Pty, tokio::sync::mpsc::Receiver<crate::runtime::event::PtyData>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (data_tx, data_rx) = tokio::sync::mpsc::channel(64);
+        std::mem::forget(rx);
+        let opts = SpawnOpts {
+            shell: "/bin/sh".into(),
+            login: false,
+            cwd: std::env::temp_dir(),
+            command: Some(command.into()),
+            env: vec![],
+            tab_id: String::new(),
+            workspace_id: String::new(),
+        };
+        (spawn_shell(PaneId(1), 80, 24, tx, data_tx, &opts).unwrap(), data_rx)
+    }
+
+    /// Regression for the 2026-08-09 production freeze: a pane whose child
+    /// stops reading stdin fills the kernel pty input queue, and a blocking
+    /// write on the main loop deadlocks the whole server.
+    #[test]
+    fn write_does_not_block_when_child_not_reading() {
+        // raw mode: a canonical-mode tty silently discards overflow instead of
+        // blocking the writer — raw is what real TUI panes (the deadlock case) use.
+        let (mut pty, _data_rx) = spawn("stty raw -echo; sleep 30");
+        std::thread::sleep(Duration::from_millis(500)); // let stty flip the tty to raw
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            pty.write(&[b'x'; 1 << 20]); // far past any kernel pty buffer
+            let _ = done_tx.send(pty); // keep pty alive until asserted
+        });
+        let pty = done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Pty::write blocked on a full pty input queue");
+        drop(pty);
+    }
+
+    /// Writes traverse the writer thread — they must still reach the child.
+    #[test]
+    fn write_reaches_child() {
+        let (mut pty, mut data_rx) = spawn("stty -echo; cat");
+        std::thread::sleep(Duration::from_millis(500)); // let stty/cat start
+        pty.write(b"hello\r");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut out = Vec::new();
+        while std::time::Instant::now() < deadline {
+            match data_rx.try_recv() {
+                Ok((_, bytes)) => {
+                    out.extend_from_slice(&bytes);
+                    if out.windows(5).any(|w| w == b"hello") {
+                        return;
+                    }
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+        panic!("wrote 'hello' but child never echoed it; got {:?}", String::from_utf8_lossy(&out));
     }
 }
