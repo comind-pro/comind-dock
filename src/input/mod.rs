@@ -203,11 +203,40 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<Inp
             rt.mark_dirty();
             Ok(InputOutcome::Continue)
         }
-        // ponytail: key handling (select/kill) is the next SDD task — closing
-        // on any key keeps this arm compiling and non-broken meanwhile.
-        InputMode::ProcessMonitor { .. } => {
-            rt.state.input_mode = InputMode::Terminal;
+        InputMode::ProcessMonitor { mut selected } => {
             rt.mark_dirty();
+            match key.code {
+                KeyCode::Up => {
+                    selected = selected.saturating_sub(1);
+                    rt.state.input_mode = InputMode::ProcessMonitor { selected };
+                }
+                KeyCode::Down => {
+                    let n = rt
+                        .monitor()
+                        .map(|s| crate::ui::procmon::killable_rows(s).len())
+                        .unwrap_or(0);
+                    if n > 0 {
+                        selected = (selected + 1).min(n - 1);
+                    }
+                    rt.state.input_mode = InputMode::ProcessMonitor { selected };
+                }
+                KeyCode::Enter => {
+                    let pid = rt.monitor().and_then(|snap| {
+                        crate::ui::procmon::killable_rows(snap)
+                            .get(selected)
+                            .map(|&idx| snap.rows[idx].info.pid)
+                    });
+                    if let Some(pid) = pid {
+                        rt.kill_process(pid);
+                    }
+                    rt.refresh_monitor();
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    rt.state.input_mode = InputMode::Terminal;
+                    rt.clear_monitor();
+                }
+                _ => {}
+            }
             Ok(InputOutcome::Continue)
         }
         InputMode::Search { mut buffer } => {
