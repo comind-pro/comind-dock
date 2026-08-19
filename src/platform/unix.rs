@@ -283,9 +283,11 @@ pub fn cdock_processes() -> Vec<crate::platform::ProcInfo> {
 }
 
 /// System-wide CPU% and memory snapshot alongside `cdock_processes`. Memory
-/// is one `host_statistics64` call; CPU% needs two `host_processor_info`
-/// samples ~50ms apart because a single snapshot only gives cumulative
-/// ticks since boot, not a live rate.
+/// is one `host_statistics64` call; CPU% is a delta against the previous
+/// sample cached across calls (a single snapshot only gives cumulative ticks
+/// since boot, not a live rate) — `None` on the first call, before there is a
+/// prior sample to diff against. No sleeping: the ~2 s poll cadence IS the
+/// interval.
 // ponytail: caller (runtime::refresh_monitor) is SDD process-monitor Task 3.
 #[cfg(target_os = "macos")]
 #[allow(deprecated)] // mach_host_self: libc's only handle, no mach2 dep here

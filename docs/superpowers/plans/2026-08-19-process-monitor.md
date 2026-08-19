@@ -339,7 +339,7 @@ git commit -m "feat(input): process-monitor open/navigate/kill/close"
 
 - [ ] **Step 2: Build + full gate** — `cargo build && cargo clippy --all-targets && cargo test`.
 
-- [ ] **Step 3: Sandbox E2E (cdock-dev).** Controller-run (chrome/2-client not needed, but a live server is): in a cdock-dev pane, start a background script (`sleep 300 &`); open menu → "process monitor…"; confirm the sleep is listed under that pane with uptime/mem; select it, Enter → confirm it dies and drops off; confirm the pane's shell/agent row is dimmed and not selectable.
+- [ ] **Step 3: Sandbox E2E (cdock-dev).** Controller-run (chrome/2-client not needed, but a live server is): in a cdock-dev pane, start a background script (`python3 -c 'import time; time.sleep(300)' &` — NOT `sleep`, an Apple platform-binary whose env macOS redacts); open menu → "process monitor…"; confirm the sleep is listed under that pane with uptime/mem; select it, Enter → confirm it dies and drops off; confirm the pane's shell/agent row is dimmed and not selectable.
 
 - [ ] **Step 4: Commit**
 
