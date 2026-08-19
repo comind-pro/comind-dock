@@ -399,6 +399,19 @@ fn cpu_load_pct() -> Option<f32> {
     Some((d_busy as f32 / d_total as f32) * 100.0)
 }
 
+// Linux/other-unix stubs so the #[cfg(unix)] re-export in mod.rs resolves on
+// every target. Real /proc bodies land in SDD process-monitor Task 2.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[allow(dead_code)]
+pub fn cdock_processes() -> Vec<crate::platform::ProcInfo> {
+    Vec::new()
+}
+#[cfg(all(unix, not(target_os = "macos")))]
+#[allow(dead_code)]
+pub fn system_load() -> crate::platform::SystemLoad {
+    crate::platform::SystemLoad::default()
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     #[test]
