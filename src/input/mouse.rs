@@ -42,6 +42,13 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
         return InputOutcome::Continue;
     }
 
+    // The process-monitor overlay owns input while open (keys select/kill/
+    // close it) — swallow mouse so clicks/drags/wheel don't leak through to
+    // the sidebar or panes underneath.
+    if matches!(rt.state.input_mode, InputMode::ProcessMonitor { .. }) {
+        return InputOutcome::Continue;
+    }
+
     // An open context menu captures clicks. Releases and moves (including
     // the release of the click that opened it) keep it open.
     if let InputMode::Menu { x, y, items } = rt.state.input_mode.clone() {

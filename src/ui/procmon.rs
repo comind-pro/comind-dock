@@ -92,11 +92,11 @@ pub fn render(rt: &Runtime, selected: usize, area: Rect, frame: &mut Frame) {
     let Some(snap) = rt.monitor() else { return };
     let selected_row = killable_rows(snap).get(selected).copied();
 
+    let cpu = snap.load.cpu_pct.map(|p| format!("{p:.0}%")).unwrap_or_else(|| "—".to_string());
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
             format!(
-                "SYSTEM  cpu {:.0}%  mem {}/{}",
-                snap.load.cpu_pct,
+                "SYSTEM  cpu {cpu}  mem {}/{}",
                 human_bytes(snap.load.mem_used),
                 human_bytes(snap.load.mem_total),
             ),

@@ -333,7 +333,7 @@ pub fn system_load() -> crate::platform::SystemLoad {
         }
     };
 
-    SystemLoad { cpu_pct: cpu_load_pct().unwrap_or(0.0), mem_used, mem_total }
+    SystemLoad { cpu_pct: cpu_load_pct(), mem_used, mem_total }
 }
 
 /// Busy/total tick counters from every CPU, summed. Two calls in
@@ -386,13 +386,22 @@ fn cpu_ticks_sample() -> Option<(u64, u64)> {
     }
 }
 
+/// CPU percent since the *previous* call, not a fresh two-sample read: the
+/// old version slept 50ms between samples, which — called from
+/// `refresh_monitor` on the server's `tokio::select!` poll tick — froze all
+/// pane I/O for that 50ms every ~2s the monitor overlay was open (the same
+/// main-loop-blocking bug class as the pre-v0.6.5 PTY-write deadlock). The
+/// caller already polls ~2s apart, a real delta, so cache the last sample
+/// here instead of sleeping for one. First call (no prior sample, e.g. right
+/// after the overlay opens) returns `None`, rendered as "—".
 #[cfg(target_os = "macos")]
 fn cpu_load_pct() -> Option<f32> {
-    let a = cpu_ticks_sample()?;
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    let b = cpu_ticks_sample()?;
-    let d_busy = b.0.saturating_sub(a.0);
-    let d_total = b.1.saturating_sub(a.1);
+    static PREV: std::sync::Mutex<Option<(u64, u64)>> = std::sync::Mutex::new(None);
+    let sample = cpu_ticks_sample()?;
+    let mut prev = PREV.lock().unwrap();
+    let (prev_busy, prev_total) = prev.replace(sample)?;
+    let d_busy = sample.0.saturating_sub(prev_busy);
+    let d_total = sample.1.saturating_sub(prev_total);
     if d_total == 0 {
         return Some(0.0);
     }

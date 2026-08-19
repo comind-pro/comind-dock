@@ -36,7 +36,9 @@ pub struct ProcInfo {
 #[allow(dead_code)] // ponytail: read by SDD process-monitor Task 3
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemLoad {
-    pub cpu_pct: f32,
+    /// `None` until a second CPU-tick sample lands (see `cpu_load_pct` in
+    /// platform::unix) — first read after startup/reopen has no delta yet.
+    pub cpu_pct: Option<f32>,
     pub mem_used: u64,
     pub mem_total: u64,
 }

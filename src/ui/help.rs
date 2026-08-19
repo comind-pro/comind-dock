@@ -22,7 +22,7 @@ pub fn render_hint(mode: &InputMode, theme: &Theme, area: Rect, frame: &mut Fram
         InputMode::SearchNav => " MATCH  n older  N newer  / new search  Esc done ",
         InputMode::ConfirmClose(_) => " close pane? y = yes, any other key = cancel ",
         InputMode::Menu { .. } => " click an option · click elsewhere / any key to dismiss ",
-        InputMode::ProcessMonitor { .. } => " any key to close ",
+        InputMode::ProcessMonitor { .. } => " ↑↓ select · Enter kill · q close ",
     };
     let y = area.y + area.height.saturating_sub(1);
     let strip = Rect { x: area.x, y, width: area.width, height: 1 };
