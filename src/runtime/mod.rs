@@ -270,9 +270,6 @@ impl Runtime {
     /// orphan/protected flags. Call on poll while the monitor overlay is
     /// open; `clear_monitor` on close so a closed overlay doesn't keep
     /// scanning `/proc`-equivalents for nothing.
-    // ponytail: called from the poll loop by SDD process-monitor Task 4 —
-    // allow until then.
-    #[allow(dead_code)]
     pub fn refresh_monitor(&mut self) {
         let protected: std::collections::HashSet<u32> =
             self.panes.values().filter_map(|p| p.pty.child_pid).collect();
@@ -301,12 +298,10 @@ impl Runtime {
         self.monitor = Some(MonitorSnapshot { load, rows });
     }
 
-    #[allow(dead_code)] // ponytail: read by SDD process-monitor Task 4
     pub fn monitor(&self) -> Option<&MonitorSnapshot> {
         self.monitor.as_ref()
     }
 
-    #[allow(dead_code)] // ponytail: called on overlay close, SDD Task 4
     pub fn clear_monitor(&mut self) {
         self.monitor = None;
         self.mon_prev.clear();
@@ -316,7 +311,6 @@ impl Runtime {
     /// live pane's PTY child — killing a pane's own process belongs to
     /// `kill_pane` (which also drives the state-close path); this is only
     /// for stray/orphaned processes the overlay surfaces.
-    #[allow(dead_code)] // ponytail: called from the overlay, SDD Task 4
     pub fn kill_process(&self, pid: u32) -> bool {
         let protected = self.panes.values().any(|p| p.pty.child_pid == Some(pid));
         if protected {

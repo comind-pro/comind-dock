@@ -1164,6 +1164,11 @@ fn run_menu_action(
             }
             Ok(())
         }
+        MenuAction::OpenProcessMonitor => {
+            rt.state.input_mode = crate::state::InputMode::ProcessMonitor { selected: 0 };
+            rt.refresh_monitor();
+            Ok(())
+        }
     };
     if let Err(e) = result {
         tracing::warn!(error = %e, "menu action failed");

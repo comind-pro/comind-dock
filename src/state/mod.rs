@@ -100,6 +100,8 @@ pub enum MenuAction {
     ReloadConfig,
     /// Download the new release and live-handoff into it (a visible tab).
     RunUpdate,
+    /// Open the process-monitor overlay.
+    OpenProcessMonitor,
     Detach,
     /// Stop the dock: save the session, every agent goes with it.
     Quit,
@@ -133,9 +135,6 @@ pub enum InputMode {
     },
     /// Process-monitor overlay: `selected` indexes into the killable rows
     /// (protected/cdock-owned processes are skipped — see ui::procmon).
-    // ponytail: constructed by the SDD process-monitor key-handling task —
-    // allow until then.
-    #[allow(dead_code)]
     ProcessMonitor {
         selected: usize,
     },

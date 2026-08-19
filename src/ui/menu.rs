@@ -38,6 +38,7 @@ pub fn app_items(update: Option<&str>) -> Vec<MenuItem> {
         ("editor...", MenuAction::EditorPicker),
         ("keybinds", MenuAction::ShowKeybinds),
         ("reload config", MenuAction::ReloadConfig),
+        ("process monitor…", MenuAction::OpenProcessMonitor),
     ]
     .into_iter()
     .map(|(label, action)| MenuItem { label: label.to_string(), action })
