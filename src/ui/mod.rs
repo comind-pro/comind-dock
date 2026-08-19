@@ -1,6 +1,7 @@
 pub mod help;
 pub mod menu;
 pub mod pane_widget;
+pub mod procmon;
 pub mod sidebar;
 pub mod tabbar;
 pub mod toast;
@@ -105,6 +106,9 @@ pub fn render(view: &View, rt: &Runtime, frame: &mut Frame) {
         }
         crate::state::InputMode::Menu { x, y, items } => {
             menu::render(*x, *y, items, &rt.theme, full, frame);
+        }
+        crate::state::InputMode::ProcessMonitor { selected } => {
+            procmon::render(rt, *selected, full, frame);
         }
         _ => {}
     }

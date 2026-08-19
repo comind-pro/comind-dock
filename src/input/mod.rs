@@ -203,6 +203,13 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<Inp
             rt.mark_dirty();
             Ok(InputOutcome::Continue)
         }
+        // ponytail: key handling (select/kill) is the next SDD task — closing
+        // on any key keeps this arm compiling and non-broken meanwhile.
+        InputMode::ProcessMonitor { .. } => {
+            rt.state.input_mode = InputMode::Terminal;
+            rt.mark_dirty();
+            Ok(InputOutcome::Continue)
+        }
         InputMode::Search { mut buffer } => {
             rt.mark_dirty();
             match key.code {

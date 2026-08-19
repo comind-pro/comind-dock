@@ -131,6 +131,14 @@ pub enum InputMode {
         y: u16,
         items: Vec<MenuItem>,
     },
+    /// Process-monitor overlay: `selected` indexes into the killable rows
+    /// (protected/cdock-owned processes are skipped — see ui::procmon).
+    // ponytail: constructed by the SDD process-monitor key-handling task —
+    // allow until then.
+    #[allow(dead_code)]
+    ProcessMonitor {
+        selected: usize,
+    },
 }
 
 /// What a pane close did to the surrounding structure.
@@ -563,9 +571,7 @@ impl AppState {
         let src_id = self.workspaces[wi].tabs[ti].id;
         match dest {
             TabTarget::Existing(id) if id == src_id => return false,
-            TabTarget::Existing(id)
-                if !self.workspaces[wi].tabs.iter().any(|t| t.id == id) =>
-            {
+            TabTarget::Existing(id) if !self.workspaces[wi].tabs.iter().any(|t| t.id == id) => {
                 return false;
             }
             _ => {}
