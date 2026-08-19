@@ -194,6 +194,211 @@ pub fn process_env_var(pid: u32, key: &str) -> Option<String> {
     }
 }
 
+/// Every live process cdock spawned (via a shell or directly), attributed
+/// to the pane whose CDOCK_PANE_ID it inherited: the process-monitor view.
+/// Scans every pid on the box — proc_listpids has no "just cdock's tree"
+/// filter — but the per-pid work (one sysctl to check the tag) is cheap,
+/// and the two proc_pidinfo calls only run for pids that already matched.
+// ponytail: caller (runtime::refresh_monitor) is SDD process-monitor Task 3.
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+pub fn cdock_processes() -> Vec<crate::platform::ProcInfo> {
+    use crate::platform::ProcInfo;
+    use crate::state::ids::PaneId;
+    use std::os::raw::c_void;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    const PROC_ALL_PIDS: u32 = 1;
+
+    // Size the buffer from a first zero-length call, doubled for headroom
+    // (pids created between the sizing call and the real one).
+    let first = unsafe { libc::proc_listpids(PROC_ALL_PIDS, 0, std::ptr::null_mut(), 0) };
+    if first <= 0 {
+        return Vec::new();
+    }
+    let cap = ((first as usize / std::mem::size_of::<i32>()) * 2).max(64);
+    let mut pids = vec![0i32; cap];
+    let bytes = unsafe {
+        libc::proc_listpids(
+            PROC_ALL_PIDS,
+            0,
+            pids.as_mut_ptr() as *mut c_void,
+            std::mem::size_of_val(pids.as_slice()) as libc::c_int,
+        )
+    };
+    if bytes <= 0 {
+        return Vec::new();
+    }
+    let n = (bytes as usize / std::mem::size_of::<i32>()).min(pids.len());
+
+    pids[..n]
+        .iter()
+        .filter(|p| **p > 0)
+        .filter_map(|&raw_pid| {
+            let pid = raw_pid as u32;
+            let pane: u64 = process_env_var(pid, "CDOCK_PANE_ID")?.parse().ok()?;
+
+            let mut ti: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+            let ti_size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+            let ti_written = unsafe {
+                libc::proc_pidinfo(
+                    raw_pid,
+                    libc::PROC_PIDTASKINFO,
+                    0,
+                    &mut ti as *mut _ as *mut c_void,
+                    ti_size,
+                )
+            };
+            if ti_written <= 0 {
+                return None; // zombie/race: pid exited between listpids and here
+            }
+
+            let mut bi: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+            let bi_size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+            let bi_written = unsafe {
+                libc::proc_pidinfo(
+                    raw_pid,
+                    libc::PROC_PIDTBSDINFO,
+                    0,
+                    &mut bi as *mut _ as *mut c_void,
+                    bi_size,
+                )
+            };
+            if bi_written <= 0 {
+                return None;
+            }
+
+            Some(ProcInfo {
+                pid,
+                ppid: bi.pbi_ppid,
+                pane: PaneId(pane),
+                cmd: process_ident(pid).unwrap_or_default(),
+                start: UNIX_EPOCH
+                    + Duration::new(bi.pbi_start_tvsec, (bi.pbi_start_tvusec * 1000) as u32),
+                cpu_ns: ti.pti_total_user + ti.pti_total_system,
+                rss: ti.pti_resident_size,
+            })
+        })
+        .collect()
+}
+
+/// System-wide CPU% and memory snapshot alongside `cdock_processes`. Memory
+/// is one `host_statistics64` call; CPU% needs two `host_processor_info`
+/// samples ~50ms apart because a single snapshot only gives cumulative
+/// ticks since boot, not a live rate.
+// ponytail: caller (runtime::refresh_monitor) is SDD process-monitor Task 3.
+#[cfg(target_os = "macos")]
+#[allow(deprecated)] // mach_host_self: libc's only handle, no mach2 dep here
+#[allow(dead_code)]
+pub fn system_load() -> crate::platform::SystemLoad {
+    use crate::platform::SystemLoad;
+
+    let mem_total: u64 = unsafe {
+        let mut mib = [libc::CTL_HW, libc::HW_MEMSIZE];
+        let mut total: u64 = 0;
+        let mut size = std::mem::size_of::<u64>();
+        if libc::sysctl(
+            mib.as_mut_ptr(),
+            2,
+            &mut total as *mut _ as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        ) == 0
+        {
+            total
+        } else {
+            0
+        }
+    };
+
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(0) as u64;
+
+    let mem_used: u64 = unsafe {
+        let mut vmstat: libc::vm_statistics64 = std::mem::zeroed();
+        let mut count = libc::HOST_VM_INFO64_COUNT;
+        let kr = libc::host_statistics64(
+            libc::mach_host_self(),
+            libc::HOST_VM_INFO64,
+            &mut vmstat as *mut _ as libc::host_info64_t,
+            &mut count,
+        );
+        if kr == libc::KERN_SUCCESS {
+            (vmstat.active_count as u64
+                + vmstat.wire_count as u64
+                + vmstat.compressor_page_count as u64)
+                * page_size
+        } else {
+            0
+        }
+    };
+
+    SystemLoad { cpu_pct: cpu_load_pct().unwrap_or(0.0), mem_used, mem_total }
+}
+
+/// Busy/total tick counters from every CPU, summed. Two calls in
+/// `system_load` diff these into a percentage; a single sample can't (it's
+/// cumulative since boot).
+#[cfg(target_os = "macos")]
+#[allow(deprecated)] // mach_host_self/mach_task_self_: libc's only handle, no mach2 dep here
+fn cpu_ticks_sample() -> Option<(u64, u64)> {
+    unsafe {
+        let mut num_cpus: libc::natural_t = 0;
+        let mut info: libc::processor_info_array_t = std::ptr::null_mut();
+        let mut info_count: libc::mach_msg_type_number_t = 0;
+        let kr = libc::host_processor_info(
+            libc::mach_host_self(),
+            libc::PROCESSOR_CPU_LOAD_INFO,
+            &mut num_cpus,
+            &mut info,
+            &mut info_count,
+        );
+        if kr != libc::KERN_SUCCESS || info.is_null() {
+            return None;
+        }
+
+        let loads = std::slice::from_raw_parts(
+            info as *const libc::processor_cpu_load_info,
+            num_cpus as usize,
+        );
+        let (mut busy, mut total) = (0u64, 0u64);
+        for l in loads {
+            let user = l.cpu_ticks[libc::CPU_STATE_USER as usize] as u64;
+            let sys = l.cpu_ticks[libc::CPU_STATE_SYSTEM as usize] as u64;
+            let nice = l.cpu_ticks[libc::CPU_STATE_NICE as usize] as u64;
+            let idle = l.cpu_ticks[libc::CPU_STATE_IDLE as usize] as u64;
+            busy += user + sys + nice;
+            total += user + sys + nice + idle;
+        }
+
+        // host_processor_info hands back kernel-owned (vm_allocate'd)
+        // memory; must be explicitly freed or every sample leaks it.
+        #[allow(deprecated)] // mach_task_self_: libc's only handle, no mach2 dep here
+        let this_task = libc::mach_task_self_;
+        libc::vm_deallocate(
+            this_task,
+            info as libc::vm_address_t,
+            info_count as libc::vm_size_t
+                * std::mem::size_of::<libc::integer_t>() as libc::vm_size_t,
+        );
+
+        Some((busy, total))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn cpu_load_pct() -> Option<f32> {
+    let a = cpu_ticks_sample()?;
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let b = cpu_ticks_sample()?;
+    let d_busy = b.0.saturating_sub(a.0);
+    let d_total = b.1.saturating_sub(a.1);
+    if d_total == 0 {
+        return Some(0.0);
+    }
+    Some((d_busy as f32 / d_total as f32) * 100.0)
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     #[test]
@@ -214,6 +419,43 @@ mod tests {
             idents.iter().any(|(pid, n)| *pid > 0 && n.ends_with("/sleep")),
             "children: {idents:?}"
         );
+    }
+
+    #[test]
+    fn cdock_processes_sees_a_child_tagged_with_pane_env() {
+        // A child that inherits CDOCK_PANE_ID must be attributed to that pane.
+        //
+        // NOT `sleep`: on current macOS, the kernel redacts environment
+        // variables from `sysctl(KERN_PROCARGS2)` for Apple-signed "platform
+        // binaries" (everything in /bin, /usr/bin — verified via `codesign
+        // -dv /bin/sleep` showing `Platform identifier=26`) from ANY
+        // external reader, including the spawning parent — confirmed with
+        // `ps eww` on a real `sleep &` job showing no env either. Root is
+        // needed to see it; this test runs unprivileged. A Homebrew-built
+        // python3 is ad-hoc signed (no platform flag), so its env is
+        // visible like any ordinary (non-Apple) binary — which is what
+        // cdock actually needs to inspect (agent CLIs, not /bin/sleep).
+        let mut child = std::process::Command::new("python3")
+            .args(["-c", "import time; time.sleep(5)"])
+            .env("CDOCK_PANE_ID", "7")
+            .spawn()
+            .expect("spawn python3");
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        let procs = super::cdock_processes();
+        let _ = child.kill();
+        let _ = child.wait();
+        let mine = procs.iter().find(|p| p.pid == child.id());
+        let p = mine.expect("tagged child is listed");
+        assert_eq!(p.pane.0, 7, "attributed to CDOCK_PANE_ID");
+        assert!(p.cmd.contains("python3") || p.cmd.contains("Python"), "cmd captured: {}", p.cmd);
+        assert!(p.rss > 0, "rss captured");
+    }
+
+    #[test]
+    fn system_load_is_populated() {
+        let l = super::system_load();
+        assert!(l.mem_total > 0, "mem_total read");
+        assert!(l.mem_used <= l.mem_total);
     }
 }
 
