@@ -38,8 +38,7 @@ fn human_bytes(n: u64) -> String {
 
 /// `Ns` / `MmSSs` / `HhMMm` since `start`.
 fn human_uptime(start: std::time::SystemTime) -> String {
-    let secs =
-        std::time::SystemTime::now().duration_since(start).map(|d| d.as_secs()).unwrap_or(0);
+    let secs = std::time::SystemTime::now().duration_since(start).map(|d| d.as_secs()).unwrap_or(0);
     if secs < 60 {
         format!("{secs}s")
     } else if secs < 3600 {

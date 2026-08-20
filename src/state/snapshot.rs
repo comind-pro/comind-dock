@@ -40,6 +40,17 @@ pub type PaneSpawn = (PaneId, PaneMeta);
 pub struct Snapshot {
     pub active_workspace: usize,
     pub workspaces: Vec<WsSnap>,
+    /// Closed spaces the "+ new space" menu reopens, newest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent: Vec<RecentSnap>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RecentSnap {
+    pub name: String,
+    pub cwd: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -164,6 +175,15 @@ impl Snapshot {
     pub fn of(state: &AppState, panes: &std::collections::HashMap<PaneId, PaneMeta>) -> Self {
         Snapshot {
             active_workspace: state.active_workspace,
+            recent: state
+                .recent_spaces
+                .iter()
+                .map(|r| RecentSnap {
+                    name: r.name.clone(),
+                    cwd: r.cwd.to_string_lossy().into_owned(),
+                    profile: r.profile.clone(),
+                })
+                .collect(),
             workspaces: state
                 .workspaces
                 .iter()
@@ -260,6 +280,16 @@ impl Snapshot {
             panes.iter().filter_map(|(id, m)| m.name.clone().map(|n| (*id, n))).collect();
         let state = AppState {
             pane_names,
+            recent_spaces: self
+                .recent
+                .iter()
+                .filter(|r| !r.cwd.is_empty())
+                .map(|r| crate::state::workspace::RecentSpace {
+                    name: r.name.clone(),
+                    cwd: std::path::PathBuf::from(&r.cwd),
+                    profile: r.profile.clone(),
+                })
+                .collect(),
             workspaces,
             active_workspace,
             sidebar_visible: true,
@@ -498,6 +528,29 @@ pub fn take_screen(dir: &std::path::Path, id: u64) -> Option<String> {
 mod tests {
     use super::*;
     use crate::state::layout::Dir;
+
+    /// The "+ new space" history must survive a restart, profile included.
+    #[test]
+    fn snapshot_round_trip_preserves_recent_spaces() {
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
+        let pane = s.new_workspace("proj".into(), std::path::PathBuf::from("/tmp/proj"), None);
+        s.workspaces[s.active_workspace].profile = Some("reviewer".into());
+        s.close_pane(pane);
+
+        let snap = Snapshot::of(&s, &std::collections::HashMap::new());
+        let json = serde_json::to_string(&snap).unwrap();
+        let back: Snapshot = serde_json::from_str(&json).unwrap();
+        let (restored, _) = back.restore().unwrap();
+        assert_eq!(restored.recent_spaces, s.recent_spaces);
+    }
+
+    /// A snapshot written by an older version has no `recent` field.
+    #[test]
+    fn snapshot_without_recent_field_loads() {
+        let json = r#"{"active_workspace":0,"workspaces":[]}"#;
+        let snap: Snapshot = serde_json::from_str(json).unwrap();
+        assert!(snap.recent.is_empty());
+    }
 
     #[test]
     fn snapshot_round_trip_preserves_structure() {

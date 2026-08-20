@@ -469,10 +469,8 @@ fn dispatch(rt: &mut Runtime, action: Action, area: Rect) -> io::Result<InputOut
             }
         }
         Action::NewWorkspace => {
-            let name = rt.workspace_name();
-            let cwd = rt.new_space_cwd();
-            let pane = rt.state.new_workspace(name, cwd, None);
-            rt.spawn_pane(pane, area.width, area.height)?;
+            let (name, cwd) = (rt.workspace_name(), rt.new_space_cwd());
+            rt.open_space(name, cwd, None, area);
         }
         Action::RenameWorkspace => {
             let id = rt.state.active_workspace().id;

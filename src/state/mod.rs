@@ -8,7 +8,7 @@ pub mod workspace;
 
 use ids::{IdGen, PaneId};
 use layout::{Dir, Node, Side};
-use workspace::{Tab, Workspace};
+use workspace::{RecentSpace, Tab, Workspace};
 
 /// What a text prompt is naming.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +55,12 @@ pub enum MenuAction {
     StartProfile(String, Option<ids::PaneId>),
     /// Submenu of recent Claude Code sessions on the system.
     ContinuePicker,
+    /// Submenu: a new space here, then spaces from history (closed spaces and
+    /// folders of recent agent sessions).
+    NewSpacePicker,
+    /// Open a space at a folder: (name, cwd, profile). One shell pane — a
+    /// closed space's layout and agents are not restored.
+    OpenRecentSpace(String, std::path::PathBuf, Option<String>),
     /// Resume conversation `id` in a space anchored at its folder;
     /// the third field is the CLAUDE_CONFIG_DIR profile (None = default).
     ResumeClaudeSession(String, std::path::PathBuf, Option<std::path::PathBuf>),
@@ -189,9 +195,16 @@ pub struct AppState {
     /// state; persisted per pane in the snapshot.
     #[serde(default)]
     pub pane_names: std::collections::HashMap<PaneId, String>,
+    /// Spaces the user closed, newest first — the "+ new space" menu reopens
+    /// them. Capped at RECENT_SPACES.
+    #[serde(default)]
+    pub recent_spaces: Vec<RecentSpace>,
     #[serde(default)]
     ids: IdGen,
 }
+
+/// How many closed spaces the "+ new space" menu remembers.
+pub const RECENT_SPACES: usize = 10;
 
 fn default_true() -> bool {
     true
@@ -207,6 +220,7 @@ impl AppState {
         let ws = Workspace::new(ids.workspace(), workspace_name, cwd, tab);
         Self {
             pane_names: std::collections::HashMap::new(),
+            recent_spaces: Vec::new(),
             workspaces: vec![ws],
             active_workspace: 0,
             sidebar_visible: true,
@@ -354,7 +368,8 @@ impl AppState {
         // Bare root leaf → the tab closes.
         ws.tabs.remove(ti);
         if ws.tabs.is_empty() {
-            self.workspaces.remove(wi);
+            let gone = self.workspaces.remove(wi);
+            self.remember_space(gone);
             if self.workspaces.is_empty() {
                 return CloseOutcome::LastClosed;
             }
@@ -383,6 +398,16 @@ impl AppState {
         ws.active_tab = ws.active_tab.min(ws.tabs.len() - 1);
         debug_assert!(self.check_invariants());
         CloseOutcome::TabClosed
+    }
+
+    /// A closed space goes to the front of the history, one entry per folder.
+    // ponytail: a worktree space loses its parent link here — reopening it
+    // makes a plain space at that folder.
+    fn remember_space(&mut self, ws: Workspace) {
+        self.recent_spaces.retain(|r| r.cwd != ws.cwd);
+        self.recent_spaces
+            .insert(0, RecentSpace { name: ws.name, cwd: ws.cwd, profile: ws.profile });
+        self.recent_spaces.truncate(RECENT_SPACES);
     }
 
     pub fn toggle_zoom(&mut self) {
@@ -860,6 +885,47 @@ mod tests {
         assert!(s.check_invariants());
         assert_eq!(s.focused_pane(), pane);
         assert_eq!(s.active_workspace().tabs.len(), 1);
+    }
+
+    /// Closing a space files it under history: newest first, one entry per
+    /// folder (reopening then reclosing must not duplicate it), capped.
+    #[test]
+    fn closed_spaces_land_in_history() {
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
+        let first = s.focused_pane();
+        let second = s.new_workspace("proj".into(), std::path::PathBuf::from("/tmp/proj"), None);
+        s.workspaces[s.active_workspace].profile = Some("reviewer".into());
+
+        assert_eq!(s.close_pane(second), CloseOutcome::WorkspaceClosed);
+        assert_eq!(
+            s.recent_spaces,
+            vec![RecentSpace {
+                name: "proj".into(),
+                cwd: "/tmp/proj".into(),
+                profile: Some("reviewer".into()),
+            }]
+        );
+
+        // Same folder again: one entry, and it moves back to the front.
+        let again = s.new_workspace("proj".into(), std::path::PathBuf::from("/tmp/proj"), None);
+        let other = s.new_workspace("other".into(), std::path::PathBuf::from("/tmp/other"), None);
+        assert_eq!(s.close_pane(other), CloseOutcome::WorkspaceClosed);
+        assert_eq!(s.close_pane(again), CloseOutcome::WorkspaceClosed);
+        assert_eq!(
+            s.recent_spaces.iter().map(|r| r.cwd.clone()).collect::<Vec<_>>(),
+            vec![std::path::PathBuf::from("/tmp/proj"), std::path::PathBuf::from("/tmp/other")]
+        );
+
+        for i in 0..RECENT_SPACES {
+            let p = s.new_workspace(
+                format!("w{i}"),
+                std::path::PathBuf::from(format!("/tmp/{i}")),
+                None,
+            );
+            s.close_pane(p);
+        }
+        assert_eq!(s.recent_spaces.len(), RECENT_SPACES, "history is capped");
+        assert_eq!(s.close_pane(first), CloseOutcome::LastClosed);
     }
 
     #[test]

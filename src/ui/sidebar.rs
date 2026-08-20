@@ -46,7 +46,14 @@ fn status_marker(status: crate::detect::Status, theme: &Theme) -> (&'static str,
 /// Two rows for an agent pane: `marker + name` (name gets the full width so it
 /// isn't cramped), then the muted `status · agent @profile` detail indented
 /// under it. Non-agent panes (plain shells) emit nothing.
-fn agent_rows(rt: &Runtime, theme: &Theme, pane: PaneId, indent: &str, width: u16, out: &mut Vec<Row>) {
+fn agent_rows(
+    rt: &Runtime,
+    theme: &Theme,
+    pane: PaneId,
+    indent: &str,
+    width: u16,
+    out: &mut Vec<Row>,
+) {
     let Some(p) = rt.panes.get(&pane) else { return };
     let Some(agent) = p.agent else { return };
     let state = &rt.state;
@@ -166,8 +173,8 @@ fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
         }
         let subtitle = parts.join(" · ");
         let name = crate::agents::truncate_clean(&ws.name, 20);
-        let pad = (width as usize)
-            .saturating_sub(indent.width() + name.width() + subtitle.width() + 1);
+        let pad =
+            (width as usize).saturating_sub(indent.width() + name.width() + subtitle.width() + 1);
         let mut spans = vec![Span::raw(indent.to_string()), Span::styled(name, name_style)];
         if !subtitle.is_empty() {
             spans.push(Span::raw(" ".repeat(pad.max(1))));

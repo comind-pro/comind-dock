@@ -63,10 +63,8 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 rt.mark_dirty();
             }
             (None, MouseEventKind::ScrollDown) => {
-                let n = rt
-                    .monitor()
-                    .map(|s| crate::ui::procmon::killable_rows(s).len())
-                    .unwrap_or(0);
+                let n =
+                    rt.monitor().map(|s| crate::ui::procmon::killable_rows(s).len()).unwrap_or(0);
                 if n > 0 {
                     rt.state.input_mode = InputMode::ProcessMonitor {
                         selected: (selected + 1).min(n - 1),
@@ -220,17 +218,13 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                         rt.state.focus_pane(pane);
                     }
                     Some(sidebar::Target::NewWorkspace) => {
-                        let name = rt.workspace_name();
-                        let cwd = rt.new_space_cwd();
-                        let pane = rt.state.new_workspace(name, cwd, None);
-                        let size = view
-                            .pane_rects
-                            .first()
-                            .map(|(_, r)| (r.width, r.height))
-                            .unwrap_or((80, 24));
-                        if let Err(e) = rt.spawn_pane(pane, size.0.max(4), size.1.max(4)) {
-                            tracing::warn!(error = %e, "new workspace spawn failed");
-                        }
+                        return run_menu_action(
+                            rt,
+                            MenuAction::NewSpacePicker,
+                            ev.column,
+                            ev.row,
+                            area,
+                        );
                     }
                     None => {}
                 }
@@ -777,6 +771,53 @@ fn run_menu_action(
                 }
             }
         }
+        MenuAction::NewSpacePicker => {
+            // Already-open folders are not history — the sidebar has them.
+            let here = rt.new_space_cwd();
+            let mut seen: std::collections::HashSet<std::path::PathBuf> =
+                rt.state.workspaces.iter().map(|w| w.cwd.clone()).collect();
+            seen.insert(here.clone());
+            let mut items = vec![MenuItem {
+                label: format!("new space here · {}", short_path(&here)),
+                action: MenuAction::OpenRecentSpace(rt.workspace_name(), here, None),
+            }];
+            let closed = rt
+                .state
+                .recent_spaces
+                .iter()
+                .map(|r| (r.name.clone(), r.cwd.clone(), r.profile.clone()));
+            // Folders where an agent ran are spaces the user had, too — the
+            // ones from before this feature existed included.
+            let sessions = crate::agents::recent_claude_sessions(crate::state::RECENT_SPACES)
+                .into_iter()
+                .map(|s| {
+                    let name = s
+                        .cwd
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "/".to_string());
+                    (name, s.cwd, None)
+                });
+            for (name, cwd, profile) in closed.chain(sessions) {
+                if items.len() > crate::state::RECENT_SPACES {
+                    break;
+                }
+                // A folder that no longer exists would spawn a pane nowhere.
+                if !cwd.is_dir() || !seen.insert(cwd.clone()) {
+                    continue;
+                }
+                items.push(MenuItem {
+                    label: format!("{name} · {}", short_path(&cwd)),
+                    action: MenuAction::OpenRecentSpace(name, cwd, profile),
+                });
+            }
+            rt.state.input_mode = InputMode::Menu { x, y, items };
+            Ok(())
+        }
+        MenuAction::OpenRecentSpace(name, cwd, profile) => {
+            rt.open_space(name, cwd, profile, area);
+            Ok(())
+        }
         MenuAction::ContinuePicker => {
             // Sessions open in a pane with a LIVE agent are hidden — no
             // double resume. Panes whose agent exited (shell remains) keep a
@@ -1227,6 +1268,18 @@ fn run_menu_action(
         tracing::warn!(error = %e, "menu action failed");
     }
     InputOutcome::Continue
+}
+
+/// `$HOME/x` → `~/x`: menu labels are narrow, the home prefix is noise.
+fn short_path(p: &std::path::Path) -> String {
+    match std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        Some(home) => match p.strip_prefix(&home) {
+            Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+            Ok(rest) => format!("~/{}", rest.display()),
+            Err(_) => p.display().to_string(),
+        },
+        None => p.display().to_string(),
+    }
 }
 
 fn pane_at(rects: &[(PaneId, Rect)], pos: Position) -> Option<(PaneId, Rect)> {

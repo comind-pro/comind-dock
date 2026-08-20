@@ -819,6 +819,25 @@ impl Runtime {
         }
     }
 
+    /// Space at `cwd` with one shell pane; `profile` becomes its default
+    /// agent profile. Used for a fresh space and for reopening a closed one.
+    pub fn open_space(
+        &mut self,
+        name: String,
+        cwd: std::path::PathBuf,
+        profile: Option<String>,
+        area: Rect,
+    ) {
+        let pane = self.state.new_workspace(name, cwd, None);
+        if let Some(ws) = self.state.workspaces.get_mut(self.state.active_workspace) {
+            ws.profile = profile;
+        }
+        if let Err(e) = self.spawn_pane(pane, area.width.max(4), area.height.max(4)) {
+            tracing::warn!(error = %e, "space spawn failed");
+            self.state.close_pane(pane); // a leaf without a PTY is unclosable
+        }
+    }
+
     /// Snapshot the session and write it out before returning. For the
     /// paths that must not outlive the write: shutdown, handoff.
     pub fn save_session(&mut self) {

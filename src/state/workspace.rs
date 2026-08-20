@@ -82,3 +82,12 @@ impl Workspace {
         &mut self.tabs[i]
     }
 }
+
+/// A closed space, kept so the "+ new space" menu can reopen it. Only what
+/// reopening needs — the layout, tabs and agents are gone with the panes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentSpace {
+    pub name: String,
+    pub cwd: PathBuf,
+    pub profile: Option<String>,
+}

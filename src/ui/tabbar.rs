@@ -148,9 +148,7 @@ fn segment_rect(
     for s in segs {
         let w = s.text.width() as u16;
         let matched = match (target, s.hit) {
-            (TabDrop::Tab(id), Some(Hit::Tab(ti))) => {
-                tabs.get(ti).is_some_and(|t| t.id == id)
-            }
+            (TabDrop::Tab(id), Some(Hit::Tab(ti))) => tabs.get(ti).is_some_and(|t| t.id == id),
             (TabDrop::NewTab, Some(Hit::NewTab)) => true,
             _ => false,
         };

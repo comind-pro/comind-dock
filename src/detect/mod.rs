@@ -289,15 +289,27 @@ mod tests {
             classify(
                 &m,
                 "",
-                &lines(&["⠦ run_commands(ls -la)", "Cline needs permission", "Approve tool call?", "  [y] Approve   [n] Deny"])
+                &lines(&[
+                    "⠦ run_commands(ls -la)",
+                    "Cline needs permission",
+                    "Approve tool call?",
+                    "  [y] Approve   [n] Deny"
+                ])
             ),
             Some(Status::Blocked)
         );
         // Thinking spinner.
-        assert_eq!(classify(&m, "", &lines(&["⠋ Thinking... (esc to cancel)"])), Some(Status::Working));
+        assert_eq!(
+            classify(&m, "", &lines(&["⠋ Thinking... (esc to cancel)"])),
+            Some(Status::Working)
+        );
         // Resting input box + footer.
         assert_eq!(
-            classify(&m, "", &lines(&["❯ Ask anything...", " ⏵⏵ Auto-approve all enabled (Shift+Tab)"])),
+            classify(
+                &m,
+                "",
+                &lines(&["❯ Ask anything...", " ⏵⏵ Auto-approve all enabled (Shift+Tab)"])
+            ),
             Some(Status::Idle)
         );
         assert_eq!(classify(&m, "", &lines(&["random text"])), None);
