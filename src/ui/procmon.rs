@@ -13,11 +13,12 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use crate::runtime::{MonitorRow, MonitorSnapshot, Runtime};
 use crate::state::ids::PaneId;
 
-/// Indices into `snap.rows` that aren't protected (cdock's own child procs).
-/// `selected` (in `InputMode::ProcessMonitor`) indexes into this list, not
-/// `snap.rows` directly — protected rows can't be selected/killed.
+/// Selectable/killable row indices into `snap.rows`. Every process is
+/// killable — including a pane's own agent/shell (killing it stops the agent
+/// and closes the pane, which is what the user asked for). `selected` indexes
+/// into this list, not `snap.rows` directly.
 pub fn killable_rows(snap: &MonitorSnapshot) -> Vec<usize> {
-    snap.rows.iter().enumerate().filter(|(_, r)| !r.protected).map(|(i, _)| i).collect()
+    (0..snap.rows.len()).collect()
 }
 
 /// Human-readable byte size — this box's numbers never reach TiB.
@@ -88,9 +89,6 @@ fn row_line(row: &MonitorRow, selected: bool) -> Line<'static> {
     let cmd = truncate(&row.info.cmd, 32);
     let text = format!("  {cmd:<32} {uptime:>7} {cpu} {mem:>9}{orphan}");
     let mut style = Style::new();
-    if row.protected {
-        style = style.add_modifier(Modifier::DIM);
-    }
     if selected {
         style = style.add_modifier(Modifier::REVERSED);
     }
@@ -253,22 +251,26 @@ fn render_detail(rt: &Runtime, pid: u32, area: Rect, frame: &mut Frame) {
         Line::from(info.cmd.clone()),
     ];
 
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " [k] kill    [Esc] back ",
+        Style::new().add_modifier(Modifier::BOLD),
+    )));
+
     let w = 60.min(area.width);
-    // +2 for borders, +2 slack for cmd wrapping onto extra lines.
-    let h = (lines.len() as u16 + 4).min(area.height);
+    // Box height must fit the wrapped cmd (and a possibly long cwd) so the
+    // kill/back footer never falls off the bottom. Estimate wrap rows from the
+    // widest fields at the inner width.
+    let inner_w = (w as usize).saturating_sub(2).max(1);
+    let wrap_rows = |s: &str| (s.chars().count().div_ceil(inner_w)).max(1) as u16;
+    let extra = wrap_rows(&info.cmd).saturating_sub(1) + wrap_rows(&cwd).saturating_sub(1);
+    let h = (lines.len() as u16 + extra + 2).min(area.height);
     let rect = Rect {
         x: area.x + (area.width - w) / 2,
         y: area.y + (area.height - h) / 2,
         width: w,
         height: h,
     };
-    let footer = if row.protected {
-        " protected — cannot kill    [Esc] back "
-    } else {
-        " [k] kill    [Esc] back "
-    };
-    lines.push(Line::from(""));
-    lines.push(Line::from(footer));
 
     frame.render_widget(Clear, rect);
     let block = Block::new()
@@ -293,7 +295,7 @@ pub fn render(rt: &Runtime, selected: usize, detail: Option<u32>, area: Rect, fr
 #[cfg(test)]
 mod tests {
     #[test]
-    fn killable_rows_excludes_protected() {
+    fn killable_rows_are_every_row() {
         use crate::runtime::{MonitorRow, MonitorSnapshot};
         let row = |pid, protected| MonitorRow {
             info: crate::platform::ProcInfo {
@@ -309,10 +311,11 @@ mod tests {
             orphan: false,
             protected,
         };
+        // Every process is killable now — including the pane's own agent.
         let snap = MonitorSnapshot {
             load: Default::default(),
             rows: vec![row(10, true), row(11, false), row(12, false)],
         };
-        assert_eq!(super::killable_rows(&snap), vec![1, 2]);
+        assert_eq!(super::killable_rows(&snap), vec![0, 1, 2]);
     }
 }

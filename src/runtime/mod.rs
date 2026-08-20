@@ -307,15 +307,12 @@ impl Runtime {
         self.mon_prev.clear();
     }
 
-    /// SIGTERM a pid from the monitor overlay. Refuses a pid that backs a
-    /// live pane's PTY child — killing a pane's own process belongs to
-    /// `kill_pane` (which also drives the state-close path); this is only
-    /// for stray/orphaned processes the overlay surfaces.
+    /// SIGTERM a pid from the monitor overlay. Any process the overlay lists is
+    /// fair game — including a pane's own agent/shell: killing that stops the
+    /// agent and the pane exits on its own (same end as closing it), which is
+    /// what the user asked for. Namespace scoping (only this session's
+    /// processes reach the list) is the real safety boundary.
     pub fn kill_process(&self, pid: u32) -> bool {
-        let protected = self.panes.values().any(|p| p.pty.child_pid == Some(pid));
-        if protected {
-            return false;
-        }
         // SAFETY: SIGTERM to a pid; failure (already gone) is ignored.
         unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) == 0 }
     }
