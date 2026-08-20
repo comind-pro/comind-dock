@@ -203,13 +203,67 @@ pub fn pid_at(rt: &Runtime, selected: usize, area: Rect, x: u16, y: u16) -> Opti
     line_pid.get(idx).copied().flatten()
 }
 
-/// Detail panel for a single process: pid/ppid/pane/cwd/uptime/cpu/mem, the
-/// full (unwrapped) cmd, and a kill/back footer. Falls back to a small
-/// "process ended" box if the pid dropped out of the last snapshot (it
-/// exited, or the overlay's poll caught it gone).
+/// The detail box's geometry + content for a live pid — `None` if the pid
+/// dropped out of the last snapshot (it exited). Shared by `render_detail`
+/// (drawing) and `detail_kill_click` (hit-testing the footer). The footer
+/// (`[k] kill  [Esc] back`) is the last content line, so it renders at the box
+/// bottom (`rect.y + rect.height - 2`), which is what the click test uses.
+fn detail_box(rt: &Runtime, pid: u32, area: Rect) -> Option<(Rect, Vec<Line<'static>>)> {
+    let row = rt.monitor().and_then(|s| s.rows.iter().find(|r| r.info.pid == pid))?;
+    let info = &row.info;
+    let orphan = if row.orphan { " [orphan]" } else { "" };
+    let cpu = row.cpu_pct.map(|p| format!("{p:.0}%")).unwrap_or_else(|| "—".to_string());
+    let cwd = crate::platform::process_cwd(pid)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "—".to_string());
+
+    let lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            format!("pid {pid} · ppid {}{orphan}", info.ppid),
+            Style::new().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!("pane   {}", pane_label(rt, info.pane))),
+        Line::from(format!("cwd    {cwd}")),
+        Line::from(format!("started {}", human_uptime(info.start))),
+        Line::from(format!("cpu {cpu}   mem {}", human_bytes(info.rss))),
+        Line::from(""),
+        Line::from(Span::styled("cmd:", Style::new().add_modifier(Modifier::BOLD))),
+        Line::from(info.cmd.clone()),
+        Line::from(""),
+        Line::from(Span::styled(
+            " [k] kill    [Esc] back ",
+            Style::new().add_modifier(Modifier::BOLD),
+        )),
+    ];
+
+    let w = 60.min(area.width);
+    // Box height must fit the wrapped cmd (and a possibly long cwd) so the
+    // kill/back footer never falls off the bottom.
+    let inner_w = (w as usize).saturating_sub(2).max(1);
+    let wrap_rows = |s: &str| (s.chars().count().div_ceil(inner_w)).max(1) as u16;
+    let extra = wrap_rows(&info.cmd).saturating_sub(1) + wrap_rows(&cwd).saturating_sub(1);
+    let h = (lines.len() as u16 + extra + 2).min(area.height);
+    let rect = Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    };
+    Some((rect, lines))
+}
+
+/// True when `(x, y)` lands on the detail box's footer row — the `[k] kill`
+/// button — so a click there kills the process.
+pub fn detail_kill_click(rt: &Runtime, pid: u32, area: Rect, x: u16, y: u16) -> bool {
+    let Some((rect, _)) = detail_box(rt, pid, area) else { return false };
+    let footer_row = rect.y + rect.height.saturating_sub(2);
+    rect.contains(Position { x, y }) && y == footer_row
+}
+
+/// Detail panel for a single process. Falls back to a small "process ended"
+/// box if the pid dropped out of the last snapshot.
 fn render_detail(rt: &Runtime, pid: u32, area: Rect, frame: &mut Frame) {
-    let row = rt.monitor().and_then(|s| s.rows.iter().find(|r| r.info.pid == pid));
-    let Some(row) = row else {
+    let Some((rect, lines)) = detail_box(rt, pid, area) else {
         let w = 30.min(area.width);
         let h = 3.min(area.height);
         let rect = Rect {
@@ -228,48 +282,6 @@ fn render_detail(rt: &Runtime, pid: u32, area: Rect, frame: &mut Frame) {
             rect,
         );
         return;
-    };
-
-    let info = &row.info;
-    let orphan = if row.orphan { " [orphan]" } else { "" };
-    let cpu = row.cpu_pct.map(|p| format!("{p:.0}%")).unwrap_or_else(|| "—".to_string());
-    let cwd = crate::platform::process_cwd(pid)
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "—".to_string());
-
-    let mut lines: Vec<Line> = vec![
-        Line::from(Span::styled(
-            format!("pid {pid} · ppid {}{orphan}", info.ppid),
-            Style::new().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(format!("pane   {}", pane_label(rt, info.pane))),
-        Line::from(format!("cwd    {cwd}")),
-        Line::from(format!("started {}", human_uptime(info.start))),
-        Line::from(format!("cpu {cpu}   mem {}", human_bytes(info.rss))),
-        Line::from(""),
-        Line::from(Span::styled("cmd:", Style::new().add_modifier(Modifier::BOLD))),
-        Line::from(info.cmd.clone()),
-    ];
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        " [k] kill    [Esc] back ",
-        Style::new().add_modifier(Modifier::BOLD),
-    )));
-
-    let w = 60.min(area.width);
-    // Box height must fit the wrapped cmd (and a possibly long cwd) so the
-    // kill/back footer never falls off the bottom. Estimate wrap rows from the
-    // widest fields at the inner width.
-    let inner_w = (w as usize).saturating_sub(2).max(1);
-    let wrap_rows = |s: &str| (s.chars().count().div_ceil(inner_w)).max(1) as u16;
-    let extra = wrap_rows(&info.cmd).saturating_sub(1) + wrap_rows(&cwd).saturating_sub(1);
-    let h = (lines.len() as u16 + extra + 2).min(area.height);
-    let rect = Rect {
-        x: area.x + (area.width - w) / 2,
-        y: area.y + (area.height - h) / 2,
-        width: w,
-        height: h,
     };
 
     frame.render_widget(Clear, rect);

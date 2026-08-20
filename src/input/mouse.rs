@@ -80,7 +80,12 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 rt.state.input_mode = InputMode::ProcessMonitor { selected, detail: None };
                 rt.mark_dirty();
             }
-            (Some(_), MouseEventKind::Down(_)) => {
+            (Some(pid), MouseEventKind::Down(_)) => {
+                // Click the [k] kill footer → kill; click anywhere else → back.
+                if crate::ui::procmon::detail_kill_click(rt, pid, area, ev.column, ev.row) {
+                    rt.kill_process(pid);
+                    rt.refresh_monitor();
+                }
                 rt.state.input_mode = InputMode::ProcessMonitor { selected, detail: None };
                 rt.mark_dirty();
             }
