@@ -231,6 +231,12 @@ pub fn cdock_processes() -> Vec<crate::platform::ProcInfo> {
     }
     let n = (bytes as usize / std::mem::size_of::<i32>()).min(pids.len());
 
+    // Only THIS session's processes: a dev server must not list — let alone
+    // kill — prod panes and vice versa, and pane ids collide across namespaces
+    // (dev %16 ≠ prod %16). Match the process's namespace env to our own.
+    let self_dev = std::env::var("CDOCK_DEV").ok();
+    let self_session = std::env::var("CDOCK_SESSION").ok();
+
     pids[..n]
         .iter()
         .filter(|p| **p > 0)
@@ -240,6 +246,12 @@ pub fn cdock_processes() -> Vec<crate::platform::ProcInfo> {
             // (the "%3"/"3" pane syntax) — strip the marker before parsing.
             let pane: u64 =
                 process_env_var(pid, "CDOCK_PANE_ID")?.trim_start_matches('%').parse().ok()?;
+            if process_env_var(pid, "CDOCK_DEV").as_deref() != self_dev.as_deref() {
+                return None;
+            }
+            if process_env_var(pid, "CDOCK_SESSION").as_deref() != self_session.as_deref() {
+                return None;
+            }
 
             let mut ti: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
             let ti_size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
