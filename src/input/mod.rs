@@ -203,6 +203,55 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<Inp
             rt.mark_dirty();
             Ok(InputOutcome::Continue)
         }
+        InputMode::ProcessMonitor { mut selected, detail: None } => {
+            rt.mark_dirty();
+            match key.code {
+                KeyCode::Up => {
+                    selected = selected.saturating_sub(1);
+                    rt.state.input_mode = InputMode::ProcessMonitor { selected, detail: None };
+                }
+                KeyCode::Down => {
+                    let n = rt
+                        .monitor()
+                        .map(|s| crate::ui::procmon::killable_rows(s).len())
+                        .unwrap_or(0);
+                    if n > 0 {
+                        selected = (selected + 1).min(n - 1);
+                    }
+                    rt.state.input_mode = InputMode::ProcessMonitor { selected, detail: None };
+                }
+                KeyCode::Enter => {
+                    let pid = rt.monitor().and_then(|snap| {
+                        crate::ui::procmon::killable_rows(snap)
+                            .get(selected)
+                            .map(|&idx| snap.rows[idx].info.pid)
+                    });
+                    let detail = pid;
+                    rt.state.input_mode = InputMode::ProcessMonitor { selected, detail };
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    rt.state.input_mode = InputMode::Terminal;
+                    rt.clear_monitor();
+                }
+                _ => {}
+            }
+            Ok(InputOutcome::Continue)
+        }
+        InputMode::ProcessMonitor { selected, detail: Some(pid) } => {
+            rt.mark_dirty();
+            match key.code {
+                KeyCode::Char('k') => {
+                    rt.kill_process(pid);
+                    rt.refresh_monitor();
+                    rt.state.input_mode = InputMode::ProcessMonitor { selected, detail: None };
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    rt.state.input_mode = InputMode::ProcessMonitor { selected, detail: None };
+                }
+                _ => {}
+            }
+            Ok(InputOutcome::Continue)
+        }
         InputMode::Search { mut buffer } => {
             rt.mark_dirty();
             match key.code {

@@ -42,6 +42,58 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
         return InputOutcome::Continue;
     }
 
+    // The process-monitor overlay owns the mouse while open. List view: a
+    // click on a row opens its detail, a click outside the box closes the
+    // overlay, the wheel scrolls the selection. Detail view: any click
+    // returns to the list. Everything else is swallowed so nothing leaks to
+    // the sidebar/panes underneath.
+    if let InputMode::ProcessMonitor { selected, detail } = rt.state.input_mode {
+        match (detail, ev.kind) {
+            (None, MouseEventKind::Down(_)) => {
+                match crate::ui::procmon::pid_at(rt, selected, area, ev.column, ev.row) {
+                    Some(pid) => {
+                        rt.state.input_mode =
+                            InputMode::ProcessMonitor { selected, detail: Some(pid) };
+                    }
+                    None => {
+                        rt.state.input_mode = InputMode::Terminal;
+                        rt.clear_monitor();
+                    }
+                }
+                rt.mark_dirty();
+            }
+            (None, MouseEventKind::ScrollDown) => {
+                let n = rt
+                    .monitor()
+                    .map(|s| crate::ui::procmon::killable_rows(s).len())
+                    .unwrap_or(0);
+                if n > 0 {
+                    rt.state.input_mode = InputMode::ProcessMonitor {
+                        selected: (selected + 1).min(n - 1),
+                        detail: None,
+                    };
+                    rt.mark_dirty();
+                }
+            }
+            (None, MouseEventKind::ScrollUp) => {
+                let selected = selected.saturating_sub(1);
+                rt.state.input_mode = InputMode::ProcessMonitor { selected, detail: None };
+                rt.mark_dirty();
+            }
+            (Some(pid), MouseEventKind::Down(_)) => {
+                // Click the [k] kill footer → kill; click anywhere else → back.
+                if crate::ui::procmon::detail_kill_click(rt, pid, area, ev.column, ev.row) {
+                    rt.kill_process(pid);
+                    rt.refresh_monitor();
+                }
+                rt.state.input_mode = InputMode::ProcessMonitor { selected, detail: None };
+                rt.mark_dirty();
+            }
+            _ => {}
+        }
+        return InputOutcome::Continue;
+    }
+
     // An open context menu captures clicks. Releases and moves (including
     // the release of the click that opened it) keep it open.
     if let InputMode::Menu { x, y, items } = rt.state.input_mode.clone() {
@@ -1162,6 +1214,12 @@ fn run_menu_action(
             if rt.state.workspace_index(ws_id).is_some() {
                 rt.open_worktree(ws_id, path, area, true);
             }
+            Ok(())
+        }
+        MenuAction::OpenProcessMonitor => {
+            rt.state.input_mode =
+                crate::state::InputMode::ProcessMonitor { selected: 0, detail: None };
+            rt.refresh_monitor();
             Ok(())
         }
     };

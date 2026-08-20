@@ -100,6 +100,8 @@ pub enum MenuAction {
     ReloadConfig,
     /// Download the new release and live-handoff into it (a visible tab).
     RunUpdate,
+    /// Open the process-monitor overlay.
+    OpenProcessMonitor,
     Detach,
     /// Stop the dock: save the session, every agent goes with it.
     Quit,
@@ -130,6 +132,14 @@ pub enum InputMode {
         x: u16,
         y: u16,
         items: Vec<MenuItem>,
+    },
+    /// Process-monitor overlay: `selected` indexes into the killable rows
+    /// (protected/cdock-owned processes are skipped — see ui::procmon).
+    /// `detail`: `Some(pid)` shows that process's detail panel; `None` shows
+    /// the list.
+    ProcessMonitor {
+        selected: usize,
+        detail: Option<u32>,
     },
 }
 
@@ -563,9 +573,7 @@ impl AppState {
         let src_id = self.workspaces[wi].tabs[ti].id;
         match dest {
             TabTarget::Existing(id) if id == src_id => return false,
-            TabTarget::Existing(id)
-                if !self.workspaces[wi].tabs.iter().any(|t| t.id == id) =>
-            {
+            TabTarget::Existing(id) if !self.workspaces[wi].tabs.iter().any(|t| t.id == id) => {
                 return false;
             }
             _ => {}

@@ -117,12 +117,28 @@ impl PaneRuntime {
 /// An in-progress mouse drag gesture.
 #[derive(Debug, Clone, Copy)]
 pub enum MouseDrag {
-    Divider { before: PaneId, after: PaneId, dir: Dir, extent: u16, last_pos: u16 },
-    Select { pane: PaneId },
+    Divider {
+        before: PaneId,
+        after: PaneId,
+        dir: Dir,
+        extent: u16,
+        last_pos: u16,
+    },
+    Select {
+        pane: PaneId,
+    },
     /// A tab being dragged off the bar toward a pane.
-    Tab { id: crate::state::ids::TabId, origin: (u16, u16), hover: Option<DropTarget> },
+    Tab {
+        id: crate::state::ids::TabId,
+        origin: (u16, u16),
+        hover: Option<DropTarget>,
+    },
     /// A pane grabbed by its border.
-    Pane { pane: PaneId, origin: (u16, u16), hover: Option<DropTarget> },
+    Pane {
+        pane: PaneId,
+        origin: (u16, u16),
+        hover: Option<DropTarget>,
+    },
 }
 
 /// Region of a hovered pane during a drag: four edges plus the center box.
@@ -147,6 +163,32 @@ pub enum TabDrop {
 pub enum DropTarget {
     Zone { pane: PaneId, zone: Zone },
     TabBar(TabDrop),
+}
+
+/// CPU percent from cumulative CPU-ns between two samples over dt.
+// ponytail: called by refresh_monitor below, which the SDD process-monitor
+// Task 4 overlay wires into the poll loop — allow until then.
+#[allow(dead_code)]
+fn cpu_pct(prev_ns: u64, now_ns: u64, dt: std::time::Duration) -> f32 {
+    let dt_ns = dt.as_nanos() as f64;
+    if dt_ns <= 0.0 {
+        return 0.0;
+    }
+    ((now_ns.saturating_sub(prev_ns)) as f64 / dt_ns * 100.0) as f32
+}
+
+/// Row read by SDD process-monitor Task 4 (overlay), not yet in this task.
+#[allow(dead_code)]
+pub struct MonitorRow {
+    pub info: crate::platform::ProcInfo,
+    pub cpu_pct: Option<f32>,
+    pub orphan: bool,
+    pub protected: bool,
+}
+#[allow(dead_code)]
+pub struct MonitorSnapshot {
+    pub load: crate::platform::SystemLoad,
+    pub rows: Vec<MonitorRow>,
 }
 
 pub struct Runtime {
@@ -181,6 +223,15 @@ pub struct Runtime {
     /// Bytes for the host terminal(s) outside the frame pipeline (OSC 52).
     raw_out: mpsc::UnboundedSender<Vec<u8>>,
     dirty: bool,
+    /// Last process-monitor snapshot; Some only while the overlay is open.
+    // ponytail: written by refresh_monitor/read by monitor(), wired into the
+    // poll loop by SDD process-monitor Task 4 — allow until then.
+    #[allow(dead_code)]
+    monitor: Option<MonitorSnapshot>,
+    /// pid → (cumulative cpu_ns, sampled-at) from the previous refresh, for
+    /// the two-sample CPU% delta.
+    #[allow(dead_code)]
+    mon_prev: HashMap<u32, (u64, std::time::Instant)>,
 }
 
 impl Runtime {
@@ -212,6 +263,58 @@ impl Runtime {
         if let Some(p) = self.panes.get_mut(&pane) {
             p.pty.kill();
         }
+    }
+
+    /// Take a fresh process-monitor snapshot: system load, every cdock-owned
+    /// process, CPU% from the delta against the previous refresh, and
+    /// orphan/protected flags. Call on poll while the monitor overlay is
+    /// open; `clear_monitor` on close so a closed overlay doesn't keep
+    /// scanning `/proc`-equivalents for nothing.
+    pub fn refresh_monitor(&mut self) {
+        let protected: std::collections::HashSet<u32> =
+            self.panes.values().filter_map(|p| p.pty.child_pid).collect();
+        let live_panes: std::collections::HashSet<crate::state::ids::PaneId> = self
+            .state
+            .workspaces
+            .iter()
+            .flat_map(|w| w.tabs.iter())
+            .flat_map(|t| t.layout.panes())
+            .collect();
+        let load = crate::platform::system_load();
+        let now = std::time::Instant::now();
+        let mut rows = Vec::new();
+        let mut next_prev = std::collections::HashMap::new();
+        for info in crate::platform::cdock_processes() {
+            let cpu_pct = self
+                .mon_prev
+                .get(&info.pid)
+                .map(|&(prev_ns, t)| cpu_pct(prev_ns, info.cpu_ns, now.duration_since(t)));
+            next_prev.insert(info.pid, (info.cpu_ns, now));
+            let orphan = info.ppid <= 1 || !live_panes.contains(&info.pane);
+            let protected = protected.contains(&info.pid);
+            rows.push(MonitorRow { info, cpu_pct, orphan, protected });
+        }
+        self.mon_prev = next_prev;
+        self.monitor = Some(MonitorSnapshot { load, rows });
+    }
+
+    pub fn monitor(&self) -> Option<&MonitorSnapshot> {
+        self.monitor.as_ref()
+    }
+
+    pub fn clear_monitor(&mut self) {
+        self.monitor = None;
+        self.mon_prev.clear();
+    }
+
+    /// SIGTERM a pid from the monitor overlay. Any process the overlay lists is
+    /// fair game — including a pane's own agent/shell: killing that stops the
+    /// agent and the pane exits on its own (same end as closing it), which is
+    /// what the user asked for. Namespace scoping (only this session's
+    /// processes reach the list) is the real safety boundary.
+    pub fn kill_process(&self, pid: u32) -> bool {
+        // SAFETY: SIGTERM to a pid; failure (already gone) is ignored.
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) == 0 }
     }
 
     pub fn split_focused(&mut self, dir: Dir, before: bool, area: Rect) -> io::Result<()> {
@@ -986,6 +1089,8 @@ pub fn build(
         data_tx,
         raw_out,
         dirty: true,
+        monitor: None,
+        mon_prev: HashMap::new(),
     };
     for (pane, meta) in initial_panes {
         // A failed resume must degrade into a shell, not close the pane —
@@ -1334,6 +1439,8 @@ pub fn build_from_handoff(
         data_tx: data_tx.clone(),
         raw_out,
         dirty: true,
+        monitor: None,
+        mon_prev: HashMap::new(),
     };
     for hp in h.panes {
         let (cols, rows) = hp.size;
@@ -1584,6 +1691,15 @@ mod tests {
         assert!(!holds(&container, &plain));
 
         std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn cpu_pct_from_two_samples() {
+        // 1s of CPU time over a 2s interval = 50%.
+        let p = super::cpu_pct(0, 1_000_000_000, std::time::Duration::from_secs(2));
+        assert!((p - 50.0).abs() < 0.5, "got {p}");
+        // No progress = 0.
+        assert_eq!(super::cpu_pct(5, 5, std::time::Duration::from_secs(1)), 0.0);
     }
 
     #[test]

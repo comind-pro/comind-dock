@@ -583,7 +583,12 @@ pub async fn run(
                     }
                 },
             },
-            _ = ws_poll.tick() => rt.poll_workspaces(),
+            _ = ws_poll.tick() => {
+                rt.poll_workspaces();
+                if matches!(rt.state.input_mode, crate::state::InputMode::ProcessMonitor { .. }) {
+                    rt.refresh_monitor();
+                }
+            }
             _ = agent_poll.tick() => {
                 rt.expire_toasts();
                 let (notices, changes) = rt.poll_agent_status(&manifests);
