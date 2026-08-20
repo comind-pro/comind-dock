@@ -236,7 +236,10 @@ pub fn cdock_processes() -> Vec<crate::platform::ProcInfo> {
         .filter(|p| **p > 0)
         .filter_map(|&raw_pid| {
             let pid = raw_pid as u32;
-            let pane: u64 = process_env_var(pid, "CDOCK_PANE_ID")?.parse().ok()?;
+            // pty.rs sets CDOCK_PANE_ID from PaneId's Display, which is "%N"
+            // (the "%3"/"3" pane syntax) — strip the marker before parsing.
+            let pane: u64 =
+                process_env_var(pid, "CDOCK_PANE_ID")?.trim_start_matches('%').parse().ok()?;
 
             let mut ti: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
             let ti_size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
@@ -459,9 +462,11 @@ mod tests {
         // python3 is ad-hoc signed (no platform flag), so its env is
         // visible like any ordinary (non-Apple) binary — which is what
         // cdock actually needs to inspect (agent CLIs, not /bin/sleep).
+        // Real pty env is "%N" (PaneId Display), not "N" — attribution must
+        // strip the marker. Using the real format so this test would catch it.
         let mut child = std::process::Command::new("python3")
             .args(["-c", "import time; time.sleep(5)"])
-            .env("CDOCK_PANE_ID", "7")
+            .env("CDOCK_PANE_ID", "%7")
             .spawn()
             .expect("spawn python3");
         std::thread::sleep(std::time::Duration::from_millis(80));
