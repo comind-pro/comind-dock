@@ -59,14 +59,22 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-/// Custom pane name, else its agent, else `pane %{id}`.
+/// A human label for the pane that owns a process: for a live pane,
+/// `{space} · {custom-name|agent|pane N}`; for an orphan whose pane was closed
+/// (the common case — a dead script the agent forgot), `{N} (closed)`.
 fn pane_label(rt: &Runtime, pane: PaneId) -> String {
-    if let Some(name) = rt.state.pane_name(pane) {
-        name.to_string()
-    } else if let Some(agent) = rt.panes.get(&pane).and_then(|p| p.agent) {
-        agent.to_string()
-    } else {
-        format!("pane {pane}")
+    match rt.state.locate_pane(pane) {
+        Some((wi, _)) => {
+            let space = &rt.state.workspaces[wi].name;
+            let who = rt
+                .state
+                .pane_name(pane)
+                .map(str::to_string)
+                .or_else(|| rt.panes.get(&pane).and_then(|p| p.agent).map(str::to_string))
+                .unwrap_or_else(|| format!("pane {pane}"));
+            format!("{space} · {who}")
+        }
+        None => format!("{pane} (closed)"),
     }
 }
 
