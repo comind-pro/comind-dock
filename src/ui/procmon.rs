@@ -196,8 +196,12 @@ pub fn pid_at(rt: &Runtime, selected: usize, area: Rect, x: u16, y: u16) -> Opti
     if rect.width == 0 || !rect.contains(Position { x, y }) {
         return None;
     }
-    // -1 for the top border row.
-    let idx = (y - rect.y).saturating_sub(1) as usize + scroll as usize;
+    // Exclude the top/bottom border rows — only content maps to a pid (a click
+    // on the top border with a scrolled list would otherwise pick a real row).
+    if y <= rect.y || y + 1 >= rect.y + rect.height {
+        return None;
+    }
+    let idx = (y - rect.y - 1) as usize + scroll as usize;
     line_pid.get(idx).copied().flatten()
 }
 
