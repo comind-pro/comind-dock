@@ -42,30 +42,46 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
         return InputOutcome::Continue;
     }
 
-    // The process-monitor overlay owns the mouse while open: a click closes it
-    // (like Help), the wheel scrolls the selection, everything else is
-    // swallowed so nothing leaks to the sidebar/panes underneath.
-    if let InputMode::ProcessMonitor { selected } = rt.state.input_mode {
-        match ev.kind {
-            MouseEventKind::Down(_) => {
-                rt.state.input_mode = InputMode::Terminal;
-                rt.clear_monitor();
+    // The process-monitor overlay owns the mouse while open. List view: a
+    // click on a row opens its detail, a click outside the box closes the
+    // overlay, the wheel scrolls the selection. Detail view: any click
+    // returns to the list. Everything else is swallowed so nothing leaks to
+    // the sidebar/panes underneath.
+    if let InputMode::ProcessMonitor { selected, detail } = rt.state.input_mode {
+        match (detail, ev.kind) {
+            (None, MouseEventKind::Down(_)) => {
+                match crate::ui::procmon::pid_at(rt, selected, area, ev.column, ev.row) {
+                    Some(pid) => {
+                        rt.state.input_mode =
+                            InputMode::ProcessMonitor { selected, detail: Some(pid) };
+                    }
+                    None => {
+                        rt.state.input_mode = InputMode::Terminal;
+                        rt.clear_monitor();
+                    }
+                }
                 rt.mark_dirty();
             }
-            MouseEventKind::ScrollDown => {
+            (None, MouseEventKind::ScrollDown) => {
                 let n = rt
                     .monitor()
                     .map(|s| crate::ui::procmon::killable_rows(s).len())
                     .unwrap_or(0);
                 if n > 0 {
-                    rt.state.input_mode =
-                        InputMode::ProcessMonitor { selected: (selected + 1).min(n - 1) };
+                    rt.state.input_mode = InputMode::ProcessMonitor {
+                        selected: (selected + 1).min(n - 1),
+                        detail: None,
+                    };
                     rt.mark_dirty();
                 }
             }
-            MouseEventKind::ScrollUp => {
-                rt.state.input_mode =
-                    InputMode::ProcessMonitor { selected: selected.saturating_sub(1) };
+            (None, MouseEventKind::ScrollUp) => {
+                let selected = selected.saturating_sub(1);
+                rt.state.input_mode = InputMode::ProcessMonitor { selected, detail: None };
+                rt.mark_dirty();
+            }
+            (Some(_), MouseEventKind::Down(_)) => {
+                rt.state.input_mode = InputMode::ProcessMonitor { selected, detail: None };
                 rt.mark_dirty();
             }
             _ => {}
@@ -1196,7 +1212,8 @@ fn run_menu_action(
             Ok(())
         }
         MenuAction::OpenProcessMonitor => {
-            rt.state.input_mode = crate::state::InputMode::ProcessMonitor { selected: 0 };
+            rt.state.input_mode =
+                crate::state::InputMode::ProcessMonitor { selected: 0, detail: None };
             rt.refresh_monitor();
             Ok(())
         }

@@ -107,8 +107,8 @@ pub fn render(view: &View, rt: &Runtime, frame: &mut Frame) {
         crate::state::InputMode::Menu { x, y, items } => {
             menu::render(*x, *y, items, &rt.theme, full, frame);
         }
-        crate::state::InputMode::ProcessMonitor { selected } => {
-            procmon::render(rt, *selected, full, frame);
+        crate::state::InputMode::ProcessMonitor { selected, detail } => {
+            procmon::render(rt, *selected, *detail, full, frame);
         }
         _ => {}
     }

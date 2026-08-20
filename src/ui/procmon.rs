@@ -1,9 +1,11 @@
-//! Process-monitor overlay: system load header + processes grouped by pane.
-//! `InputMode::ProcessMonitor { selected }` toggles it; key handling (select,
-//! kill) is a later task — this module only renders.
+//! Process-monitor overlay: system load header + processes grouped by pane,
+//! plus a detail panel for a single process (pid, ppid, pane, cwd, uptime,
+//! cpu, mem, full cmd, kill). `InputMode::ProcessMonitor { selected, detail }`
+//! toggles between the list (`detail: None`) and the detail view
+//! (`detail: Some(pid)`).
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
@@ -95,11 +97,20 @@ fn row_line(row: &MonitorRow, selected: bool) -> Line<'static> {
     Line::from(Span::styled(text, style))
 }
 
-/// Clear + Block + Paragraph overlay (see `ui::help::render_help`): system
-/// load header, then rows grouped by owning pane, the `selected`-th killable
-/// row reverse-video, protected rows dimmed with no selection marker.
-pub fn render(rt: &Runtime, selected: usize, area: Rect, frame: &mut Frame) {
-    let Some(snap) = rt.monitor() else { return };
+/// Build the list box's geometry and content: the centered box `Rect`, the
+/// scroll offset (so the selected row stays in view), the lines themselves,
+/// and a parallel `line_pid` (same length as `lines`) giving the pid a
+/// process row represents — `None` for the SYSTEM header / blank / pane-group
+/// header lines. Shared by `render_list` (drawing) and `pid_at` (hit-testing)
+/// so the two can never disagree about where a row lands.
+fn layout(
+    rt: &Runtime,
+    selected: usize,
+    area: Rect,
+) -> (Rect, u16, Vec<Line<'static>>, Vec<Option<u32>>) {
+    let Some(snap) = rt.monitor() else {
+        return (Rect::default(), 0, Vec::new(), Vec::new());
+    };
     let selected_row = killable_rows(snap).get(selected).copied();
 
     let cpu = snap.load.cpu_pct.map(|p| format!("{p:.0}%")).unwrap_or_else(|| "—".to_string());
@@ -114,6 +125,7 @@ pub fn render(rt: &Runtime, selected: usize, area: Rect, frame: &mut Frame) {
         )),
         Line::from(""),
     ];
+    let mut line_pid: Vec<Option<u32>> = vec![None, None];
 
     // Group rows by pane, preserving first-seen order (no indexmap dep for
     // one small overlay list).
@@ -132,11 +144,13 @@ pub fn render(rt: &Runtime, selected: usize, area: Rect, frame: &mut Frame) {
             pane_label(rt, *pane),
             Style::new().fg(rt.theme.accent).add_modifier(Modifier::BOLD),
         )));
+        line_pid.push(None);
         for &i in idxs {
             if Some(i) == selected_row {
                 sel_line = Some(lines.len());
             }
             lines.push(row_line(&snap.rows[i], Some(i) == selected_row));
+            line_pid.push(Some(snap.rows[i].info.pid));
         }
     }
 
@@ -154,12 +168,122 @@ pub fn render(rt: &Runtime, selected: usize, area: Rect, frame: &mut Frame) {
         width: w,
         height: h,
     };
+    (rect, scroll, lines, line_pid)
+}
+
+/// Clear + Block + Paragraph overlay (see `ui::help::render_help`): system
+/// load header, then rows grouped by owning pane, the `selected`-th killable
+/// row reverse-video, protected rows dimmed with no selection marker.
+fn render_list(rt: &Runtime, selected: usize, area: Rect, frame: &mut Frame) {
+    if rt.monitor().is_none() {
+        return;
+    }
+    let (rect, scroll, lines, _) = layout(rt, selected, area);
     frame.render_widget(Clear, rect);
     let block = Block::new()
         .borders(Borders::ALL)
         .title(" processes ")
         .border_style(Style::new().fg(rt.theme.accent));
     frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), rect);
+}
+
+/// The pid of the process row under screen position `(x, y)`, or `None` if
+/// the click landed outside the list box or on a non-row line (header/blank/
+/// group label). Shares `layout` with `render_list` so hit-testing always
+/// matches what's on screen.
+pub fn pid_at(rt: &Runtime, selected: usize, area: Rect, x: u16, y: u16) -> Option<u32> {
+    let (rect, scroll, _, line_pid) = layout(rt, selected, area);
+    if rect.width == 0 || !rect.contains(Position { x, y }) {
+        return None;
+    }
+    // -1 for the top border row.
+    let idx = (y - rect.y).saturating_sub(1) as usize + scroll as usize;
+    line_pid.get(idx).copied().flatten()
+}
+
+/// Detail panel for a single process: pid/ppid/pane/cwd/uptime/cpu/mem, the
+/// full (unwrapped) cmd, and a kill/back footer. Falls back to a small
+/// "process ended" box if the pid dropped out of the last snapshot (it
+/// exited, or the overlay's poll caught it gone).
+fn render_detail(rt: &Runtime, pid: u32, area: Rect, frame: &mut Frame) {
+    let row = rt.monitor().and_then(|s| s.rows.iter().find(|r| r.info.pid == pid));
+    let Some(row) = row else {
+        let w = 30.min(area.width);
+        let h = 3.min(area.height);
+        let rect = Rect {
+            x: area.x + (area.width - w) / 2,
+            y: area.y + (area.height - h) / 2,
+            width: w,
+            height: h,
+        };
+        frame.render_widget(Clear, rect);
+        let block = Block::new()
+            .borders(Borders::ALL)
+            .title(" process ")
+            .border_style(Style::new().fg(rt.theme.accent));
+        frame.render_widget(
+            Paragraph::new(Line::from(format!("pid {pid}: process ended"))).block(block),
+            rect,
+        );
+        return;
+    };
+
+    let info = &row.info;
+    let orphan = if row.orphan { " [orphan]" } else { "" };
+    let cpu = row.cpu_pct.map(|p| format!("{p:.0}%")).unwrap_or_else(|| "—".to_string());
+    let cwd = crate::platform::process_cwd(pid)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "—".to_string());
+
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            format!("pid {pid} · ppid {}{orphan}", info.ppid),
+            Style::new().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!("pane   {}", pane_label(rt, info.pane))),
+        Line::from(format!("cwd    {cwd}")),
+        Line::from(format!("started {}", human_uptime(info.start))),
+        Line::from(format!("cpu {cpu}   mem {}", human_bytes(info.rss))),
+        Line::from(""),
+        Line::from(Span::styled("cmd:", Style::new().add_modifier(Modifier::BOLD))),
+        Line::from(info.cmd.clone()),
+    ];
+
+    let w = 60.min(area.width);
+    // +2 for borders, +2 slack for cmd wrapping onto extra lines.
+    let h = (lines.len() as u16 + 4).min(area.height);
+    let rect = Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    };
+    let footer = if row.protected {
+        " protected — cannot kill    [Esc] back "
+    } else {
+        " [k] kill    [Esc] back "
+    };
+    lines.push(Line::from(""));
+    lines.push(Line::from(footer));
+
+    frame.render_widget(Clear, rect);
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .title(" process ")
+        .border_style(Style::new().fg(rt.theme.accent));
+    frame.render_widget(
+        Paragraph::new(lines).block(block).wrap(ratatui::widgets::Wrap { trim: false }),
+        rect,
+    );
+}
+
+/// Render the process-monitor overlay: the list, or a detail panel if
+/// `detail` names a pid.
+pub fn render(rt: &Runtime, selected: usize, detail: Option<u32>, area: Rect, frame: &mut Frame) {
+    match detail {
+        Some(pid) => render_detail(rt, pid, area, frame),
+        None => render_list(rt, selected, area, frame),
+    }
 }
 
 #[cfg(test)]

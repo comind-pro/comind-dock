@@ -135,8 +135,11 @@ pub enum InputMode {
     },
     /// Process-monitor overlay: `selected` indexes into the killable rows
     /// (protected/cdock-owned processes are skipped — see ui::procmon).
+    /// `detail`: `Some(pid)` shows that process's detail panel; `None` shows
+    /// the list.
     ProcessMonitor {
         selected: usize,
+        detail: Option<u32>,
     },
 }
 
