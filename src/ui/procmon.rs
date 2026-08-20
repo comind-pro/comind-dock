@@ -115,18 +115,29 @@ pub fn render(rt: &Runtime, selected: usize, area: Rect, frame: &mut Frame) {
         }
     }
 
+    // Track the line the selected row lands on so the view can scroll to it.
+    let mut sel_line: Option<usize> = None;
     for (pane, idxs) in &groups {
         lines.push(Line::from(Span::styled(
             pane_label(rt, *pane),
             Style::new().fg(rt.theme.accent).add_modifier(Modifier::BOLD),
         )));
         for &i in idxs {
+            if Some(i) == selected_row {
+                sel_line = Some(lines.len());
+            }
             lines.push(row_line(&snap.rows[i], Some(i) == selected_row));
         }
     }
 
-    let h = (lines.len() as u16 + 2).min(area.height);
     let w = 64.min(area.width);
+    let h = (lines.len() as u16 + 2).min(area.height);
+    let inner_h = h.saturating_sub(2) as usize; // visible content rows (minus borders)
+    // Scroll so the selected row stays in view once the list overflows the box.
+    let scroll = match sel_line {
+        Some(l) if l >= inner_h => (l - inner_h + 1) as u16,
+        _ => 0,
+    };
     let rect = Rect {
         x: area.x + (area.width - w) / 2,
         y: area.y + (area.height - h) / 2,
@@ -138,7 +149,7 @@ pub fn render(rt: &Runtime, selected: usize, area: Rect, frame: &mut Frame) {
         .borders(Borders::ALL)
         .title(" processes ")
         .border_style(Style::new().fg(rt.theme.accent));
-    frame.render_widget(Paragraph::new(lines).block(block), rect);
+    frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), rect);
 }
 
 #[cfg(test)]
