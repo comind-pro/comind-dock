@@ -46,14 +46,16 @@ fn human_uptime(start: std::time::SystemTime) -> String {
     }
 }
 
-/// Truncate to `max` chars, marking the cut with an ellipsis.
+/// Truncate to `max` chars keeping the TAIL — the script name / args at the
+/// end matter more than the shared `/Users/…/` path prefix. Ellipsis on the
+/// left marks the cut.
 fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
+    let count = s.chars().count();
+    if count <= max {
         s.to_string()
     } else {
-        let mut t: String = s.chars().take(max.saturating_sub(1)).collect();
-        t.push('…');
-        t
+        let tail: String = s.chars().skip(count - max.saturating_sub(1)).collect();
+        format!("…{tail}")
     }
 }
 
