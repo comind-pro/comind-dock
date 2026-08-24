@@ -386,7 +386,15 @@ pub fn detect_process(ident: &str) -> Option<&'static str> {
             std::path::Component::Normal(os) => os.to_str(),
             _ => None,
         })
-        .find_map(|comp| KNOWN.iter().find(|a| **a == comp).copied())
+        // Match ignoring a leading dot: the exe of an npm/npx-hosted agent is
+        // a dot-binary (".cline", ".claude"), which macOS `proc_name` reports
+        // verbatim when `proc_pidpath` fails (npx temp-cache installs the exe
+        // under ".cline-<hash>/.../bin/cline"). So the fallback name is
+        // ".cline", not the "cline" path component we usually match.
+        .find_map(|comp| {
+            let bare = comp.strip_prefix('.');
+            KNOWN.iter().find(|a| **a == bare.unwrap_or(comp)).copied()
+        })
 }
 
 /// Runtimes that host a CLI as a child process (npm's `node <path>/cli`):
@@ -687,5 +695,21 @@ mod tests {
         assert_eq!(detect("/Users/x/.local/share/claude/versions/99.0.1-beta", ""), Some("claude"));
         assert_eq!(detect("/opt/homebrew/bin/codex", ""), Some("codex"));
         assert_eq!(detect("/usr/local/bin/rg", ""), None);
+    }
+
+    /// macOS `proc_name` reports a dot-binary verbatim (".cline") when
+    /// `proc_pidpath` fails on exec queries for an npx temp-cache exe; the
+    /// component matcher must not trip on the leading dot.
+    #[test]
+    fn detect_process_ignores_dot_prefix_in_name_fallback() {
+        assert_eq!(detect_process("/Users/x/.nvm/versions/node/v22/bin/node"), None);
+        assert_eq!(
+            detect_process("/Users/x/.nvm/versions/node/v22/lib/node_modules/cline/bin/.cline"),
+            Some("cline")
+        );
+        // The proc_name-fallback string for the very same dot-binary:
+        assert_eq!(detect_process(".cline"), Some("cline"));
+        assert_eq!(detect_process("node"), None);
+        assert_eq!(detect_process("/usr/local/bin/rg"), None);
     }
 }
