@@ -380,20 +380,23 @@ pub fn truncate_clean(s: &str, n: usize) -> String {
 /// this is the poll-time source of truth, unlike the fuzzier title match.
 pub fn detect_process(ident: &str) -> Option<&'static str> {
     let lower = ident.to_ascii_lowercase();
-    std::path::Path::new(&lower)
-        .components()
+    let path = std::path::Path::new(&lower);
+    path.components()
         .filter_map(|c| match c {
             std::path::Component::Normal(os) => os.to_str(),
             _ => None,
         })
-        // Match ignoring a leading dot: the exe of an npm/npx-hosted agent is
-        // a dot-binary (".cline", ".claude"), which macOS `proc_name` reports
-        // verbatim when `proc_pidpath` fails (npx temp-cache installs the exe
-        // under ".cline-<hash>/.../bin/cline"). So the fallback name is
-        // ".cline", not the "cline" path component we usually match.
-        .find_map(|comp| {
-            let bare = comp.strip_prefix('.');
-            KNOWN.iter().find(|a| **a == bare.unwrap_or(comp)).copied()
+        .find_map(|comp| KNOWN.iter().find(|a| **a == comp).copied())
+        // Dot-strip the FILE NAME only: the exe of an npm/npx-hosted agent
+        // is a dot-binary (".cline"), which macOS `proc_name` reports
+        // verbatim when `proc_pidpath` fails — so the fallback ident is a
+        // bare ".cline". Directory components stay exact, or every exe
+        // under an agent's config dir (~/.claude/hooks/x) would match.
+        .or_else(|| {
+            path.file_name()
+                .and_then(|f| f.to_str())
+                .and_then(|f| f.strip_prefix('.'))
+                .and_then(|bare| KNOWN.iter().find(|a| **a == bare).copied())
         })
 }
 
@@ -711,5 +714,9 @@ mod tests {
         assert_eq!(detect_process(".cline"), Some("cline"));
         assert_eq!(detect_process("node"), None);
         assert_eq!(detect_process("/usr/local/bin/rg"), None);
+        // Dot-strip applies to the file name only — an agent's dot-config
+        // DIR must not identify every exe under it as that agent:
+        assert_eq!(detect_process("/Users/x/.claude/hooks/notify.sh"), None);
+        assert_eq!(detect_process("/Users/x/.cursor/extensions/srv/server"), None);
     }
 }
