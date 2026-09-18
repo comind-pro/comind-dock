@@ -15,8 +15,13 @@ pub enum AppEvent {
     /// Press Enter in a pane as its OWN late keystroke: a CR in the same
     /// burst as a bracketed paste is sometimes folded into the paste by
     /// agent TUIs (claude's paste debounce) — the message then sits in the
-    /// input box unsubmitted.
-    SubmitEnter(PaneId),
+    /// input box unsubmitted. Carries a normalized tail of the injected
+    /// message for the later delivery check.
+    SubmitEnter(PaneId, String),
+    /// Delivery check ~1s after SubmitEnter: if the message tail is STILL
+    /// on the pane's screen bottom (input box), the Enter was swallowed —
+    /// press it once more.
+    VerifySubmit(PaneId, String),
 }
 
 /// PTY output travels on its own BOUNDED channel: when the main loop falls

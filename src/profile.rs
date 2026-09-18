@@ -358,6 +358,10 @@ impl Profile {
                  codex support /compact; if your CLI lacks it, just keep the\n\
                  files current). Afterwards STATE.md restores anything the\n\
                  summary dropped. No relaunch needed.\n\n\
+                 Seeing vs touching: you may LOOK at anything — `pane list`,\n\
+                 `api snapshot`, `pane read <any id>` across the whole dock,\n\
+                 whenever context helps. WRITING (pane run / send-text /\n\
+                 behavior / closing) stays within YOUR team only.\n\n\
                  Each team-list row already carries the worker's name,\n\
                  agent, status, workspace and its project folder (cwd) — that IS\n\
                  your map: read those folders directly (git log, README, recent\n\
@@ -390,8 +394,13 @@ impl Profile {
                     and simply end your turn — no busy-wait loops needed. For a\n\
                     quick synchronous task `wait task-result <id> --timeout\n\
                     600000` still works (the result is consumed on read).\n\
-                 4. A worker gone quiet without an update: `pane read <id>\n\
-                    --lines 40` shows the screen; follow up via `pane run`.\n\
+                 4. Stalls: a worker idle ~10m without reporting triggers a\n\
+                    \"has been idle … without reporting\" update — read its\n\
+                    screen: it may have refused (provider limits), crashed to\n\
+                    the prompt, or finished without `task done`. Recover it,\n\
+                    re-task it, or move its work to another agent kind. You can\n\
+                    also check any quiet worker yourself: `pane read <id>\n\
+                    --lines 40`, follow up via `pane run`.\n\
                  5. Done: close panes YOU spawned (`tab close <id>`); never those\n\
                     the user assigned. Summarize: what was done, by whom, what is\n\
                     blocked, next steps.\n\n\

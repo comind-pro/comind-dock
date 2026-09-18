@@ -1,6 +1,6 @@
 pub mod event;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::time::Duration;
 
@@ -220,6 +220,9 @@ pub struct Runtime {
     /// Only typed panes block the orchestrator. Ephemeral — see
     /// poll_user_grip.
     pub user_grip: HashMap<PaneId, bool>,
+    /// Team workers already stall-nudged this idle stretch — re-armed when
+    /// they work again (or report). One warning per stall, not a drumbeat.
+    pub stall_nudged: HashSet<PaneId>,
     /// In-app notification toasts (top-right overlay, click jumps to pane).
     pub toasts: Vec<Toast>,
     /// A newer release tag found by the background check ("update ready").
@@ -605,12 +608,27 @@ impl Runtime {
 
     /// Queue a lone Enter for a pane, `delay` after now — used right after
     /// an injected paste so the submit arrives as its own keystroke burst
-    /// (see AppEvent::SubmitEnter).
-    pub fn submit_later(&self, pane: PaneId, delay: Duration) {
+    /// (see AppEvent::SubmitEnter). `msg` is the injected text: its
+    /// whitespace-normalized tail drives the later delivery check.
+    pub fn submit_later(&self, pane: PaneId, delay: Duration, msg: &str) {
+        let norm: String = msg.split_whitespace().collect();
+        let tail: String = {
+            let n = norm.chars().count();
+            norm.chars().skip(n.saturating_sub(24)).collect()
+        };
         let tx = self.tx.clone();
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
-            let _ = tx.send(AppEvent::SubmitEnter(pane));
+            let _ = tx.send(AppEvent::SubmitEnter(pane, tail));
+        });
+    }
+
+    /// Schedule the post-Enter delivery check (see AppEvent::VerifySubmit).
+    pub fn verify_submit_later(&self, pane: PaneId, tail: String, delay: Duration) {
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let _ = tx.send(AppEvent::VerifySubmit(pane, tail));
         });
     }
 
@@ -852,6 +870,10 @@ impl Runtime {
                 && (p.status != Status::Unknown
                     || p.reported.as_ref().is_some_and(|r| r.until > std::time::Instant::now()))
                 && prev_lasted >= Duration::from_secs(5)
+                // Team workers pause after EVERY turn while their task
+                // continues — their "finished" belongs to the orchestrator
+                // (task done), not to the operator's toasts and sounds.
+                && !self.state.teams.contains_key(&id)
             {
                 // Finished a real stretch of work — not spinner flicker.
                 if let Some(p) = self.panes.get_mut(&id) {
@@ -1255,6 +1277,7 @@ pub fn build(
         agent_sessions: HashMap::new(),
         results: HashMap::new(),
         user_grip: HashMap::new(),
+        stall_nudged: HashSet::new(),
         toasts: Vec::new(),
         update_available: None,
         last_view: None,
@@ -1448,6 +1471,7 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
     rt.agent_sessions.remove(&id);
     rt.results.remove(&id);
     rt.user_grip.remove(&id);
+    rt.stall_nudged.remove(&id);
     rt.state.teams.remove(&id);
     rt.state.teams.retain(|_, orch| *orch != id);
     rt.state.orchestrators.remove(&id);
@@ -1651,6 +1675,7 @@ pub fn build_from_handoff(
         agent_sessions: h.agent_sessions.into_iter().collect(),
         results: h.results.into_iter().collect(),
         user_grip: HashMap::new(),
+        stall_nudged: HashSet::new(),
         toasts: Vec::new(),
         update_available: None,
         last_view: None,

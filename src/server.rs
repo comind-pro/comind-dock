@@ -401,9 +401,29 @@ pub async fn run(
                             rt.update_available = Some(tag);
                             rt.mark_dirty();
                         }
-                        AppEvent::SubmitEnter(pane) => {
+                        AppEvent::SubmitEnter(pane, tail) => {
                             if let Some(p) = rt.panes.get_mut(&pane) {
                                 p.pty.write(b"\r");
+                                rt.verify_submit_later(pane, tail, Duration::from_millis(1200));
+                            }
+                        }
+                        AppEvent::VerifySubmit(pane, tail) => {
+                            if let Some(p) = rt.panes.get(&pane) {
+                                // Whitespace-normalized: screen wraps split
+                                // words, the tail must still match.
+                                let screen: String = p
+                                    .emu
+                                    .bottom_text(6)
+                                    .join(" ")
+                                    .split_whitespace()
+                                    .collect();
+                                if !tail.is_empty() && screen.contains(&tail) {
+                                    // Still sitting in the input box — the
+                                    // first Enter was folded into the paste.
+                                    if let Some(p) = rt.panes.get_mut(&pane) {
+                                        p.pty.write(b"\r");
+                                    }
+                                }
                             }
                         }
                         AppEvent::UpdateCheckDone(res) => {
@@ -649,6 +669,7 @@ pub async fn run(
                 for pane in rt.poll_user_grip(!clients.is_empty()) {
                     nudge_handback(&mut rt, pane);
                 }
+                nudge_stalls(&mut rt);
             }
             _ = autosave.tick() => {
                 if !clients.is_empty() || !opts.exit_when_no_clients {
@@ -721,8 +742,65 @@ fn nudge_orchestrator(rt: &mut Runtime, notice: &runtime::Notice) {
     );
     // Enter arrives as its own late keystroke — see AppEvent::SubmitEnter.
     match rt.paste_write(orch, &msg, false) {
-        Ok(()) => rt.submit_later(orch, Duration::from_millis(150)),
+        Ok(()) => rt.submit_later(orch, Duration::from_millis(150), &msg),
         Err(e) => tracing::warn!(error = %e, "orchestrator nudge failed"),
+    }
+}
+
+/// How long a team worker may sit idle without reporting before its
+/// orchestrator is told to look at it. Env override for tests.
+fn stall_after() -> Duration {
+    std::env::var("CDOCK_STALL_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(600))
+}
+
+/// A worker can die WITHOUT any signal: a refusal, a crash back to the
+/// prompt, a silent finish with no `task done` — all read as endless
+/// idle. After a long idle stretch with nothing reported, its
+/// orchestrator gets ONE "go look at it" nudge; working again re-arms.
+fn nudge_stalls(rt: &mut Runtime) {
+    let stall = stall_after();
+    let workers: Vec<_> = rt.state.teams.keys().copied().collect();
+    for pane in workers {
+        let Some(p) = rt.panes.get(&pane) else { continue };
+        match p.last_shown {
+            crate::detect::Status::Working | crate::detect::Status::Blocked => {
+                rt.stall_nudged.remove(&pane);
+                continue;
+            }
+            _ => {}
+        }
+        if rt.stall_nudged.contains(&pane)
+            || p.status_since.elapsed() < stall
+            // A parked result already nudged its own collection…
+            || rt.results.contains_key(&pane)
+            // …and a pane the user is editing is theirs, not stalled.
+            || rt.user_grip.get(&pane) == Some(&true)
+        {
+            continue;
+        }
+        let Some(&orch) = rt.state.teams.get(&pane) else { continue };
+        if orch == pane || !rt.state.orchestrators.contains(&orch) || !rt.panes.contains_key(&orch)
+        {
+            continue;
+        }
+        let mode = rt.state.orch_modes.get(&orch).copied().unwrap_or_default();
+        let msg = format!(
+            "[cdock] team update (mode: {}): %{} has been idle {}m without reporting a \
+             result — it may have stalled, refused, or finished silently. Read its screen \
+             (pane read {}) and recover or re-task it.",
+            mode.word(),
+            pane.0,
+            stall.as_secs() / 60,
+            pane.0,
+        );
+        if rt.paste_write(orch, &msg, false).is_ok() {
+            rt.submit_later(orch, Duration::from_millis(150), &msg);
+            rt.stall_nudged.insert(pane);
+        }
     }
 }
 
@@ -742,7 +820,7 @@ fn nudge_handback(rt: &mut Runtime, pane: crate::state::ids::PaneId) {
         pane.0,
     );
     match rt.paste_write(orch, &msg, false) {
-        Ok(()) => rt.submit_later(orch, Duration::from_millis(150)),
+        Ok(()) => rt.submit_later(orch, Duration::from_millis(150), &msg),
         Err(e) => tracing::warn!(error = %e, "handback nudge failed"),
     }
 }

@@ -377,7 +377,7 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             }
             Ok(match rt.paste_write(PaneId(pane), &command, false) {
                 Ok(()) => {
-                    rt.submit_later(PaneId(pane), Duration::from_millis(150));
+                    rt.submit_later(PaneId(pane), Duration::from_millis(150), &command);
                     json!({"ok": true})
                 }
                 Err(e) => err(e),
@@ -702,6 +702,9 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                 return Ok(json!({"ok": true, "ignored": "nested agent"}));
             }
             rt.results.insert(pane, result);
+            // A report ends any stall watch — the next quiet stretch may
+            // warn again.
+            rt.stall_nudged.remove(&pane);
             // The REAL task-completion signal: a reported result wakes the
             // orchestrator (status-"done" transitions are turn noise — an
             // agent's Stop hook fires after EVERY turn — and do not nudge).
@@ -718,7 +721,7 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                     pane.0,
                 );
                 if rt.paste_write(orch, &msg, false).is_ok() {
-                    rt.submit_later(orch, Duration::from_millis(150));
+                    rt.submit_later(orch, Duration::from_millis(150), &msg);
                 }
             }
             Ok(json!({"ok": true}))

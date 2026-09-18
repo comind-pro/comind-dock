@@ -115,8 +115,10 @@ no screen-scraping. Each pane holds ONE result slot, consumed on read.
 
 Rules: end every delegated prompt with the `task done … --pid $PPID`
 instruction; read a result BEFORE closing its pane (one slot, read-once);
-results cap at 256 KiB — summarize, don't dump; only touch panes in your
-team (`team list`) — others may belong to another orchestrator.
+results cap at 256 KiB — summarize, don't dump; only WRITE into panes in
+your team (`team list`) — others may belong to another orchestrator.
+LOOKING is unrestricted: `pane list` / `api snapshot` / `pane read` any
+pane whenever context helps.
 
 Orchestrator memory lives in its working folder (cdock memory, above the
 CLI's own): STATE.md is the index — goal, team, statuses, links into
@@ -129,8 +131,10 @@ Orchestrators are woken automatically: when a team member REPORTS a
 result (`task done`) or turns blocked, cdock types "[cdock] team update
 (mode: …): …" into the orchestrator's chat — assign work, end your
 turn, and act on updates as they arrive. A worker merely going idle
-never nudges (agents pause between turns mid-task) — a long-quiet
-worker is checked with `pane read`, not assumed finished. The mode inside the update is the orchestrator's CURRENT
+never nudges (agents pause between turns mid-task) — but one idle
+~10 minutes with nothing reported triggers a stall update: it may have
+refused, crashed to its prompt, or finished silently; read its screen
+and recover or re-task it. The mode inside the update is the orchestrator's CURRENT
 policy — report (one final report), auto (goal-bound self-driving loop:
 stop when the user's task is done, never invent side quests), notify
 (ask the user each step); switch it in the team panel or with
