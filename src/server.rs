@@ -733,12 +733,24 @@ fn nudge_orchestrator(rt: &mut Runtime, notice: &runtime::Notice) {
         return;
     }
     let mode = rt.state.orch_modes.get(&orch).copied().unwrap_or_default();
+    // Carry the prompt itself: the orchestrator can often answer (pane key
+    // <id> 1 / y / esc) without a pane-read round trip.
+    let screen = rt
+        .panes
+        .get(&notice.pane)
+        .map(|p| {
+            let joined = p.emu.bottom_text(6).join(" | ");
+            let squashed = joined.split_whitespace().collect::<Vec<_>>().join(" ");
+            squashed.chars().take(280).collect::<String>()
+        })
+        .unwrap_or_default();
     let msg = format!(
-        "[cdock] team update (mode: {}): %{} \"{}\" is blocked awaiting input — read its \
-         screen (pane read) and unblock it, or escalate to the user.",
+        "[cdock] team update (mode: {}): %{} \"{}\" is blocked awaiting input — answer it \
+         (`pane key {} <enter|esc|y|n|1..9>`), or escalate to the user. Screen: {screen}",
         mode.word(),
         notice.pane.0,
-        notice.name
+        notice.name,
+        notice.pane.0,
     );
     // Enter arrives as its own late keystroke — see AppEvent::SubmitEnter.
     match rt.paste_write(orch, &msg, false) {
@@ -757,25 +769,25 @@ fn stall_after() -> Duration {
         .unwrap_or(Duration::from_secs(600))
 }
 
-/// A worker can die WITHOUT any signal: a refusal, a crash back to the
-/// prompt, a silent finish with no `task done` — all read as endless
-/// idle. After a long idle stretch with nothing reported, its
-/// orchestrator gets ONE "go look at it" nudge; working again re-arms.
+/// A worker can die WITHOUT any signal: a refusal frozen on a "working"
+/// screen (a policy block), a crash back to the prompt, a silent finish
+/// with no `task done`. One agent-agnostic rule catches them all:
+/// SILENCE — no pane output for the whole threshold. Its orchestrator
+/// gets ONE "go look at it" nudge; new output re-arms the watch.
 fn nudge_stalls(rt: &mut Runtime) {
     let stall = stall_after();
     let workers: Vec<_> = rt.state.teams.keys().copied().collect();
     for pane in workers {
         let Some(p) = rt.panes.get(&pane) else { continue };
-        match p.last_shown {
-            crate::detect::Status::Working | crate::detect::Status::Blocked => {
-                rt.stall_nudged.remove(&pane);
-                continue;
-            }
-            _ => {}
+        if p.last_output.elapsed() < stall {
+            rt.stall_nudged.remove(&pane);
+            continue;
         }
+        let status = p.last_shown;
         if rt.stall_nudged.contains(&pane)
-            || p.status_since.elapsed() < stall
-            // A parked result already nudged its own collection…
+            // Blocked has its own (screen-carrying) nudge…
+            || status == crate::detect::Status::Blocked
+            // …a parked result already nudged its own collection…
             || rt.results.contains_key(&pane)
             // …and a pane the user is editing is theirs, not stalled.
             || rt.user_grip.get(&pane) == Some(&true)
@@ -789,12 +801,14 @@ fn nudge_stalls(rt: &mut Runtime) {
         }
         let mode = rt.state.orch_modes.get(&orch).copied().unwrap_or_default();
         let msg = format!(
-            "[cdock] team update (mode: {}): %{} has been idle {}m without reporting a \
-             result — it may have stalled, refused, or finished silently. Read its screen \
-             (pane read {}) and recover or re-task it.",
+            "[cdock] team update (mode: {}): %{} has been silent for {}m (status: {}) \
+             without reporting a result — it may be stuck on a refusal or prompt, have \
+             crashed, or finished silently. Read its screen (pane read {}) and recover \
+             or re-task it.",
             mode.word(),
             pane.0,
             stall.as_secs() / 60,
+            status.word(),
             pane.0,
         );
         if rt.paste_write(orch, &msg, false).is_ok() {

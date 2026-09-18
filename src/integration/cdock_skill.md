@@ -110,11 +110,15 @@ no screen-scraping. Each pane holds ONE result slot, consumed on read.
 "$CDOCK_BIN" pane run 7 "full task prompt…"                 # paste + Enter, multiline-safe
 "$CDOCK_BIN" wait task-result 7 --timeout 600000            # → {"ok":true,"result":"…"}
 "$CDOCK_BIN" task result 7                                  # non-blocking fetch (also consumes)
-"$CDOCK_BIN" task done "what I did and found" --pid $PPID   # from INSIDE the worker pane
+"$CDOCK_BIN" task done "what I did and found"               # from INSIDE the worker pane
+"$CDOCK_BIN" pane key 7 esc                                 # answer a TUI prompt (enter|esc|y|n|1..9|up|down)
+"$CDOCK_BIN" pane read 7 --plain --lines 20                 # raw text, no JSON envelope
+"$CDOCK_BIN" agent start --profile reviewer --wait-ready    # returns once it sits at its prompt
 ```
 
-Rules: end every delegated prompt with the `task done … --pid $PPID`
-instruction; read a result BEFORE closing its pane (one slot, read-once);
+Rules: end every delegated prompt with the `task done …` instruction
+(no --pid needed; sandboxed CLIs may have to escalate permissions for
+the socket); read a result BEFORE closing its pane (one slot, read-once);
 results cap at 256 KiB — summarize, don't dump; only WRITE into panes in
 your team (`team list`) — others may belong to another orchestrator.
 LOOKING is unrestricted: `pane list` / `api snapshot` / `pane read` any

@@ -271,6 +271,15 @@ enum PaneCmd {
         pane: String,
         #[arg(long)]
         lines: Option<usize>,
+        /// Print the raw text instead of a JSON envelope.
+        #[arg(long)]
+        plain: bool,
+    },
+    /// Press one named key in a pane: enter | esc | tab | space | up |
+    /// down | left | right | ctrl-c | y | n | 0-9 (answer TUI prompts).
+    Key {
+        pane: String,
+        key: String,
     },
     Focus {
         pane: String,
@@ -354,6 +363,10 @@ enum AgentCmd {
         /// (orchestrators pass $CDOCK_PANE_ID).
         #[arg(long)]
         team: Option<String>,
+        /// Block until the agent settles at its prompt (≤30s) before
+        /// returning — safe to `pane run` immediately after.
+        #[arg(long)]
+        wait_ready: bool,
     },
 }
 
@@ -936,7 +949,34 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             PaneCmd::SendText { pane, text, paste } => {
                 Req::SendText { pane: parse_pane(&pane)?, text, paste }
             }
-            PaneCmd::Read { pane, lines } => Req::Read { pane: parse_pane(&pane)?, lines },
+            PaneCmd::Read { pane, lines, plain } => {
+                let req = Req::Read { pane: parse_pane(&pane)?, lines };
+                if plain {
+                    let v = api::request(&req).map_err(|e| e.to_string())?;
+                    match v["text"].as_str() {
+                        Some(t) => println!("{t}"),
+                        None => println!("{v}"),
+                    }
+                    return Ok(v["ok"].as_bool().unwrap_or(false));
+                }
+                req
+            }
+            PaneCmd::Key { pane, key } => {
+                let bytes = match key.as_str() {
+                    "enter" => "\r",
+                    "esc" => "\x1b",
+                    "tab" => "\t",
+                    "space" => " ",
+                    "up" => "\x1b[A",
+                    "down" => "\x1b[B",
+                    "right" => "\x1b[C",
+                    "left" => "\x1b[D",
+                    "ctrl-c" => "\x03",
+                    k if k.len() == 1 && k.chars().all(|c| c.is_ascii_alphanumeric()) => k,
+                    other => return Err(format!("unknown key {other:?}")),
+                };
+                Req::SendText { pane: parse_pane(&pane)?, text: bytes.to_string(), paste: false }
+            }
             PaneCmd::Focus { pane } => Req::Focus { pane: parse_pane(&pane)? },
             PaneCmd::Attach { pane } => {
                 return run_pane_attach(parse_pane(&pane)?).map(|()| true);
@@ -983,7 +1023,9 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             };
             Req::AgentExplain { pane: parse_pane(&pane)? }
         }
-        Cmd::Agent { sub: AgentCmd::Start { command, profile, split, workspace, team } } => {
+        Cmd::Agent {
+            sub: AgentCmd::Start { command, profile, split, workspace, team, wait_ready },
+        } => {
             let (command, mut env, orchestrator) = match profile {
                 // Workspace-scoped agents (this cwd) win over global ones;
                 // "ws:"/"global:" prefixes pick explicitly.
@@ -1002,7 +1044,23 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(),
             );
             let team = team.as_deref().map(parse_pane).transpose()?;
-            Req::AgentStart { command, split, workspace, env, team, orchestrator }
+            let req = Req::AgentStart { command, split, workspace, env, team, orchestrator };
+            if wait_ready {
+                let v = api::request(&req).map_err(|e| e.to_string())?;
+                println!("{v}");
+                // Settle at the prompt: spawn output makes it Working, the
+                // quiet prompt brings it (back) to idle.
+                if let Some(pane) = v["pane"].as_u64() {
+                    let _ = api::request(&Req::WaitAgentStatus {
+                        pane,
+                        status: "idle".to_string(),
+                        timeout_ms: Some(30_000),
+                        transition: false,
+                    });
+                }
+                return Ok(v["ok"].as_bool().unwrap_or(false));
+            }
+            req
         }
         Cmd::Plugin { sub } => {
             return match sub {

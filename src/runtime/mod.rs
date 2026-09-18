@@ -55,6 +55,10 @@ pub struct PaneRuntime {
     /// CDOCK_AGENT_PROFILE of the agent process — the cdock profile the
     /// pane was launched with (role + skills). UI shows it as an override.
     pub agent_profile: Option<String>,
+    /// The user typed here without submitting yet (heuristic: last real
+    /// keystroke wasn't Enter/Esc/Ctrl-C). `pane run` refuses such panes —
+    /// an injected prompt would splice into the half-typed message.
+    pub user_input_pending: bool,
     /// Exe path of the agent process — resume by absolute path survives a
     /// server started with a PATH that can't find the launcher.
     pub agent_bin: Option<String>,
@@ -273,10 +277,17 @@ impl Runtime {
         if let Some(typed) = self.user_grip.get_mut(&focused) {
             *typed = true;
         }
-        if let Some(p) = self.panes.get_mut(&focused)
-            && let Some(bytes) = input::encode::encode_key(key, p.emu.term.mode())
-        {
-            p.pty.write(&bytes);
+        if let Some(p) = self.panes.get_mut(&focused) {
+            use crossterm::event::{KeyCode, KeyModifiers};
+            // Enter submits, Esc/Ctrl-C abandon — anything else leaves a
+            // half-typed message behind.
+            p.user_input_pending = !matches!(
+                (key.code, key.modifiers.contains(KeyModifiers::CONTROL)),
+                (KeyCode::Enter | KeyCode::Esc, _) | (KeyCode::Char('c'), true)
+            );
+            if let Some(bytes) = input::encode::encode_key(key, p.emu.term.mode()) {
+                p.pty.write(&bytes);
+            }
         }
     }
 
@@ -414,7 +425,9 @@ impl Runtime {
             .unwrap_or(&opts.shell)
             .split_whitespace()
             .next()
-            .map(|w| w.rsplit('/').next().unwrap_or(w).to_string())
+            // Shell-quoting from wrappers (hold_on_failure) leaks into the
+            // word: "codex'" / "'claude" read as parse bugs in agent list.
+            .map(|w| w.rsplit('/').next().unwrap_or(w).trim_matches(['\'', '"']).to_string())
             .unwrap_or_else(|| "shell".to_string());
         let pty = pty::spawn_shell(pane, cols, rows, self.tx.clone(), self.data_tx.clone(), &opts)?;
         self.panes.insert(
@@ -426,6 +439,7 @@ impl Runtime {
                 agent_pid: None,
                 agent_config_dir: None,
                 agent_profile: None,
+                user_input_pending: false,
                 agent_bin: None,
                 reported: None,
                 unseen: None,
@@ -1464,12 +1478,32 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
         rt.state.recent_orchestrators.insert(0, rec);
         rt.state.recent_orchestrators.truncate(crate::state::RECENT_ORCHESTRATORS);
     }
+    // A closing TEAM WORKER tells its orchestrator — otherwise the next
+    // pane read hits "no such pane" with no explanation. Its last result
+    // (if any) deliberately survives the pane: still collectable.
+    if let Some(&orch) = rt.state.teams.get(&id)
+        && orch != id
+        && rt.state.orchestrators.contains(&orch)
+        && rt.panes.contains_key(&orch)
+    {
+        let mode = rt.state.orch_modes.get(&orch).copied().unwrap_or_default();
+        let msg = format!(
+            "[cdock] team update (mode: {}): %{} closed and left your team. If it \
+             reported a result it is still collectable (`task result {}`); otherwise \
+             its work is gone — adjust your plan.",
+            mode.word(),
+            id.0,
+            id.0,
+        );
+        if rt.paste_write(orch, &msg, false).is_ok() {
+            rt.submit_later(orch, Duration::from_millis(150), &msg);
+        }
+    }
     if let Some(mut p) = rt.panes.remove(&id) {
         p.pty.kill();
     }
     rt.titles.remove(&id);
     rt.agent_sessions.remove(&id);
-    rt.results.remove(&id);
     rt.user_grip.remove(&id);
     rt.stall_nudged.remove(&id);
     rt.state.teams.remove(&id);
@@ -1705,6 +1739,7 @@ pub fn build_from_handoff(
                         agent_pid: None,
                         agent_config_dir: None,
                         agent_profile: None,
+                        user_input_pending: false,
                         agent_bin: None,
                         reported: None,
                         unseen: None,

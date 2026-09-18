@@ -375,6 +375,15 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             if let Some(e) = user_grip_err(rt, pane) {
                 return Ok(e);
             }
+            // A half-typed user message must not get spliced into an
+            // injected prompt. send-text stays available as the low-level
+            // escape hatch (e.g. `pane key <id> esc` first).
+            if rt.panes.get(&PaneId(pane)).is_some_and(|p| p.user_input_pending) {
+                return Ok(err(format!(
+                    "unsubmitted user input in pane %{pane} — coordinate with the user, \
+                     or clear it first (pane key {pane} esc)"
+                )));
+            }
             Ok(match rt.paste_write(PaneId(pane), &command, false) {
                 Ok(()) => {
                     rt.submit_later(PaneId(pane), Duration::from_millis(150), &command);
@@ -787,6 +796,12 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                         // into it are refused until the handback update.
                         // (Just viewing does not set this.)
                         "user_active": rt.user_grip.get(&id) == Some(&true),
+                        // A half-typed user message sits in its input box.
+                        "input_pending": p.map(|p| p.user_input_pending),
+                        // An uncollected task result is parked for it.
+                        "has_result": rt.results.contains_key(&id),
+                        // Seconds since the pane last printed anything.
+                        "quiet_secs": p.map(|p| p.last_output.elapsed().as_secs()),
                     })
                 })
                 .collect();

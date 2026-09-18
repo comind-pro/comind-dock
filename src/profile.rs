@@ -380,10 +380,13 @@ impl Profile {
                     --profile <name> --split right --team \"$CDOCK_PANE_ID\"` (the\n\
                     reply carries the new pane id); then `pane rename <id> \"<task>\"`.\n\
                  2. Assign the WHOLE task in one message: `\"$CDOCK_BIN\" pane run\n\
-                    <id> \"<prompt>\"` (multiline-safe paste + Enter). End every\n\
+                    <id> \"<prompt>\"` (multiline-safe paste + Enter; refused with\n\
+                    \"unsubmitted user input\" when the user left a half-typed\n\
+                    message there — coordinate instead of overwriting). End every\n\
                     delegated prompt with: When finished, run:\n\
                     \"$CDOCK_BIN\" task done \"<what you did, key findings, files\n\
-                    touched>\" --pid $PPID\n\
+                    touched>\" — no extra flags needed (a sandboxed CLI like codex\n\
+                    may need to run it with escalated permissions).\n\
                  3. Collect: cdock WAKES YOU — when a team member REPORTS a\n\
                     result (task done) or blocks, a \"[cdock] team update: …\"\n\
                     message lands in this chat. On it: collect (`task result\n\
