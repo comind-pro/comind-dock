@@ -378,12 +378,12 @@ impl Profile {
                    the supervision.\n\
                  - notify: never assign on your own — on each update, review and\n\
                    ASK the user what to do next.\n\n\
-                 The user may take a worker over: while they drive its pane,\n\
+                 The user may take a worker over: once they TYPE into its pane\n\
                  it is GREY for you — writes are refused (\"user is driving\"),\n\
                  team list shows user_active: true. Do not retry; work with the\n\
-                 rest of the team. When they move on you get a handback update\n\
-                 saying whether they edited the conversation — re-read the pane\n\
-                 before assigning further work there.\n\n\
+                 rest of the team. When they move on you get a handback update —\n\
+                 re-read the pane before assigning further work there. The user\n\
+                 merely LOOKING at a pane changes nothing: keep working.\n\n\
                  Roles and skills are YOURS to author: scaffold a role with\n\
                  `\"$CDOCK_BIN\" profile new <name> --ws` (write its agent.md;\n\
                  profile.toml takes command/env/skills), register know-how with\n\

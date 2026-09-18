@@ -638,10 +638,11 @@ pub async fn run(
                     }
                     nudge_orchestrator(&mut rt, &notice);
                 }
-                // The user left a team pane they were driving — its
-                // orchestrator reviews before touching it again.
-                for (pane, typed) in rt.poll_user_grip(!clients.is_empty()) {
-                    nudge_handback(&mut rt, pane, typed);
+                // The user left a team pane they EDITED — its orchestrator
+                // reviews before touching it again. (Panes they only
+                // looked at come back empty: no nudge, no block.)
+                for pane in rt.poll_user_grip(!clients.is_empty()) {
+                    nudge_handback(&mut rt, pane);
                 }
             }
             _ = autosave.tick() => {
@@ -723,21 +724,18 @@ fn nudge_orchestrator(rt: &mut Runtime, notice: &runtime::Notice) {
     }
 }
 
-/// The user finished driving a team pane directly: tell its orchestrator
+/// The user finished EDITING a team pane directly: tell its orchestrator
 /// to re-read the conversation before assigning anything further there.
-fn nudge_handback(rt: &mut Runtime, pane: crate::state::ids::PaneId, typed: bool) {
+/// (Fires only for typed-into panes — viewing is silent.)
+fn nudge_handback(rt: &mut Runtime, pane: crate::state::ids::PaneId) {
     let Some(&orch) = rt.state.teams.get(&pane) else { return };
     if orch == pane || !rt.state.orchestrators.contains(&orch) || !rt.panes.contains_key(&orch) {
         return;
     }
     let mode = rt.state.orch_modes.get(&orch).copied().unwrap_or_default();
-    let changed = if typed {
-        "and edited the conversation — re-read it (pane read) before assigning further work there"
-    } else {
-        "without typing — a quick pane read tells you if anything moved"
-    };
     let msg = format!(
-        "[cdock] team update (mode: {}): the user drove %{} directly {changed}.",
+        "[cdock] team update (mode: {}): the user drove %{} directly and edited the \
+         conversation — re-read it (pane read) before assigning further work there.",
         mode.word(),
         pane.0,
     );

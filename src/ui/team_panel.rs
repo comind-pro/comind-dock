@@ -113,8 +113,9 @@ pub fn render(rt: &Runtime, theme: &Theme, orch: PaneId, rect: Rect, frame: &mut
         let suffix = format!(" %{}", id.0);
         let budget = inner_w.saturating_sub(2 + suffix.len()).max(4);
         let name = crate::agents::truncate_clean(&pane_label(rt, id), budget);
-        // The user is in that pane right now — grey for the orchestrator.
-        let word = if rt.user_grip.contains_key(&id) {
+        // The user is EDITING that pane right now — grey for the
+        // orchestrator (just viewing shows the normal status).
+        let word = if rt.user_grip.get(&id) == Some(&true) {
             "⊘ user"
         } else {
             status.map(|s| s.word()).unwrap_or("?")

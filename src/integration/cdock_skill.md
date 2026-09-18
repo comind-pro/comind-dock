@@ -124,10 +124,10 @@ stop when the user's task is done, never invent side quests), notify
 (ask the user each step); switch it in the team panel or with
 `"$CDOCK_BIN" team mode <orch> report|auto|notify`.
 
-While the USER drives a team pane (it is their focused pane), writes
-into it are refused ("user is driving") and team list shows
-`user_active: true` — don't retry; a handback update arrives when they
-move on, saying whether the conversation changed.
+While the USER edits a team pane (focused AND typing — merely looking
+never blocks), writes into it are refused ("user is driving") and team
+list shows `user_active: true` — don't retry; a handback update arrives
+when they move on so you re-read the conversation first.
 
 An orchestrator may grow its own team: spawn helpers into an existing
 workspace (`agent start --profile <p> --workspace <id> --team

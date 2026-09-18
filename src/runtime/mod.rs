@@ -216,9 +216,10 @@ pub struct Runtime {
     // ponytail: in-memory only, no queue — lost on server restart/handoff;
     // persist alongside agent_sessions if orchestration must survive one.
     pub results: HashMap<PaneId, String>,
-    /// Team panes the user currently drives (focused): (since, typed).
-    /// Ephemeral — see poll_user_grip.
-    pub user_grip: HashMap<PaneId, (std::time::Instant, bool)>,
+    /// Team panes the user is in (focused): value = has the user TYPED.
+    /// Only typed panes block the orchestrator. Ephemeral — see
+    /// poll_user_grip.
+    pub user_grip: HashMap<PaneId, bool>,
     /// In-app notification toasts (top-right overlay, click jumps to pane).
     pub toasts: Vec<Toast>,
     /// A newer release tag found by the background check ("update ready").
@@ -264,10 +265,10 @@ impl Runtime {
     /// Encode a key for the focused pane's modes and write it to its PTY.
     pub fn send_key(&mut self, key: &crossterm::event::KeyEvent) {
         let focused = self.state.focused_pane();
-        // The user typed into a gripped team pane: the handback update will
-        // tell the orchestrator the conversation actually changed.
-        if let Some(grip) = self.user_grip.get_mut(&focused) {
-            grip.1 = true;
+        // The user typed into a watched team pane: from now on it is
+        // GRIPPED — the orchestrator's writes are refused until handback.
+        if let Some(typed) = self.user_grip.get_mut(&focused) {
+            *typed = true;
         }
         if let Some(p) = self.panes.get_mut(&focused)
             && let Some(bytes) = input::encode::encode_key(key, p.emu.term.mode())
@@ -276,33 +277,22 @@ impl Runtime {
         }
     }
 
-    /// Track the user "gripping" team panes: while a team worker is the
-    /// focused pane of an attached client, the orchestrator must not type
-    /// into it (api refuses). When the user moves on after a real stay
-    /// (≥5s — tab-cycling doesn't count), the returned handbacks tell each
-    /// orchestrator to review the pane before continuing; the bool says
-    /// whether the user actually typed.
-    pub fn poll_user_grip(&mut self, clients_attached: bool) -> Vec<(PaneId, bool)> {
+    /// Track the user in team panes. Merely LOOKING at a worker never
+    /// blocks anything — only once the user TYPES does the pane become
+    /// gripped (api refuses orchestrator writes). When the user moves on
+    /// from a pane they typed into, the returned handbacks tell each
+    /// orchestrator to re-read the conversation before continuing.
+    pub fn poll_user_grip(&mut self, clients_attached: bool) -> Vec<PaneId> {
         let focused = self.state.focused_pane();
-        if clients_attached && self.state.teams.contains_key(&focused) {
-            self.user_grip.entry(focused).or_insert_with(|| (std::time::Instant::now(), false));
-        }
-        let ended: Vec<PaneId> = self
-            .user_grip
-            .keys()
-            .copied()
-            .filter(|id| !clients_attached || *id != focused || !self.state.teams.contains_key(id))
-            .collect();
-        let mut handbacks = Vec::new();
-        for id in ended {
-            if let Some((since, typed)) = self.user_grip.remove(&id)
-                && since.elapsed() >= Duration::from_secs(5)
-                && self.panes.contains_key(&id)
-            {
-                handbacks.push((id, typed));
-            }
-        }
-        handbacks
+        let state = &self.state;
+        let panes = &self.panes;
+        grip_step(
+            &mut self.user_grip,
+            focused,
+            clients_attached,
+            |id| state.teams.contains_key(&id),
+            |id| panes.contains_key(&id),
+        )
     }
 
     /// Kill a pane's child; PtyExit drives the state change (single close path).
@@ -1840,9 +1830,117 @@ pub fn handle_input(
     Ok(InputOutcome::Continue)
 }
 
+/// One grip tick, pure for tests: watch the focused team pane (typed =
+/// false until send_key flips it), end watches on panes the user left,
+/// and return handbacks ONLY for panes the user actually typed into —
+/// looking around must never block or nudge anything.
+fn grip_step(
+    grip: &mut HashMap<PaneId, bool>,
+    focused: PaneId,
+    clients_attached: bool,
+    in_team: impl Fn(PaneId) -> bool,
+    alive: impl Fn(PaneId) -> bool,
+) -> Vec<PaneId> {
+    if clients_attached && in_team(focused) {
+        grip.entry(focused).or_insert(false);
+    }
+    let ended: Vec<PaneId> = grip
+        .keys()
+        .copied()
+        .filter(|id| !clients_attached || *id != focused || !in_team(*id))
+        .collect();
+    let mut handbacks = Vec::new();
+    for id in ended {
+        if let Some(typed) = grip.remove(&id)
+            && typed
+            && alive(id)
+        {
+            handbacks.push(id);
+        }
+    }
+    handbacks
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use crate::detect::Status;
+    use crate::state::ids::PaneId;
+
+    /// Just LOOKING at a team pane never produces a handback; only panes
+    /// the user typed into do, and only once they leave.
+    #[test]
+    fn grip_viewing_never_blocks_typing_does() {
+        use super::grip_step;
+        let mut grip: HashMap<PaneId, bool> = HashMap::new();
+        let team = |id: PaneId| id == PaneId(5) || id == PaneId(6);
+        let alive = |_| true;
+
+        // The user focuses team pane %5: watched, not gripped.
+        assert!(grip_step(&mut grip, PaneId(5), true, team, alive).is_empty());
+        assert_eq!(grip.get(&PaneId(5)), Some(&false), "watched, typed=false");
+
+        // They look away without typing: no handback, watch dropped.
+        assert!(grip_step(&mut grip, PaneId(1), true, team, alive).is_empty());
+        assert!(grip.is_empty(), "viewing leaves no trace");
+
+        // Back in %5, this time they type (send_key flips the flag)…
+        grip_step(&mut grip, PaneId(5), true, team, alive);
+        *grip.get_mut(&PaneId(5)).unwrap() = true;
+        // …still focused: no handback yet (they are mid-edit).
+        assert!(grip_step(&mut grip, PaneId(5), true, team, alive).is_empty());
+        assert_eq!(grip.get(&PaneId(5)), Some(&true), "gripped while editing");
+
+        // They move on: exactly one handback for the edited pane.
+        assert_eq!(grip_step(&mut grip, PaneId(6), true, team, alive), vec![PaneId(5)]);
+        assert_eq!(grip.get(&PaneId(6)), Some(&false), "new focus is only watched");
+    }
+
+    /// Non-team panes are never watched; a detached client (no UI) ends
+    /// every watch; a typed pane that died yields no handback.
+    #[test]
+    fn grip_edges() {
+        use super::grip_step;
+        let team = |id: PaneId| id == PaneId(5);
+
+        // Non-team focus: nothing tracked.
+        let mut grip: HashMap<PaneId, bool> = HashMap::new();
+        grip_step(&mut grip, PaneId(9), true, team, |_| true);
+        assert!(grip.is_empty());
+
+        // Client detaches while the user was editing %5: handback fires
+        // (the user is gone either way — the orchestrator may resume).
+        let mut grip = HashMap::from([(PaneId(5), true)]);
+        assert_eq!(grip_step(&mut grip, PaneId(5), false, team, |_| true), vec![PaneId(5)]);
+
+        // The edited pane died before the user left: nothing to review.
+        let mut grip = HashMap::from([(PaneId(5), true)]);
+        assert!(grip_step(&mut grip, PaneId(1), true, team, |_| false).is_empty());
+
+        // A pane dropped from the team mid-watch ends quietly when clean.
+        let mut grip = HashMap::from([(PaneId(5), false)]);
+        assert!(grip_step(&mut grip, PaneId(5), true, |_| false, |_| true).is_empty());
+        assert!(grip.is_empty());
+    }
+
+    /// The mode cycle is a closed loop over all three modes.
+    #[test]
+    fn orch_mode_cycle_and_words() {
+        use crate::state::OrchMode;
+        let mut m = OrchMode::default();
+        assert_eq!(m, OrchMode::Report);
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            seen.push(m.word());
+            m = m.next();
+        }
+        assert_eq!(m, OrchMode::Report, "cycle closes");
+        assert_eq!(seen, vec!["report", "auto", "notify"]);
+        for w in seen {
+            assert_eq!(OrchMode::parse(w).map(|m| m.word()), Some(w), "parse↔word round-trip");
+        }
+    }
 
     #[test]
     fn only_an_idle_claude_gets_its_conversation_renamed() {

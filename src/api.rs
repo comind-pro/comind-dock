@@ -756,9 +756,10 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                         } else {
                             "user"
                         },
-                        // The user is driving this pane right now — writes
+                        // The user is EDITING this pane right now — writes
                         // into it are refused until the handback update.
-                        "user_active": rt.user_grip.contains_key(&id),
+                        // (Just viewing does not set this.)
+                        "user_active": rt.user_grip.get(&id) == Some(&true),
                     })
                 })
                 .collect();
@@ -888,12 +889,12 @@ fn wait(
     Err(PendingWait { pane, cond, deadline })
 }
 
-/// The user is driving this team pane right now (it is their focused
-/// pane): automation must not type into it — it gets a clean error and a
-/// handback update later instead.
+/// The user is EDITING this team pane right now (focused AND typed —
+/// merely looking never blocks): automation must not type into it — it
+/// gets a clean error and a handback update later instead.
 fn user_grip_err(rt: &Runtime, pane: u64) -> Option<Value> {
     let id = PaneId(pane);
-    (rt.state.teams.contains_key(&id) && rt.user_grip.contains_key(&id))
+    (rt.state.teams.contains_key(&id) && rt.user_grip.get(&id) == Some(&true))
         .then(|| err(format!("the user is driving pane {id} — wait for the handback update")))
 }
 
