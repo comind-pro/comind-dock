@@ -208,6 +208,29 @@ fn parse_session(path: &std::path::Path) -> Option<ClaudeSession> {
 /// Which profile (CLAUDE_CONFIG_DIR) owns conversation `id`: scans every
 /// ~/.claude*/projects for <id>.jsonl. None → default profile or unknown.
 /// Self-heals snapshots that predate profile-env tracking.
+/// Does a Claude Code conversation transcript still exist (any profile)?
+/// `claude --resume <id>` on a deleted session prints an error and exits —
+/// relaunch must fall back to a fresh start instead.
+pub fn claude_session_exists(id: &str) -> bool {
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        return false;
+    };
+    let Ok(entries) = std::fs::read_dir(&home) else { return false };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !(name == ".claude" || name.starts_with(".claude-")) || !e.path().is_dir() {
+            continue;
+        }
+        let Ok(dirs) = std::fs::read_dir(e.path().join("projects")) else { continue };
+        for d in dirs.flatten() {
+            if d.path().join(format!("{id}.jsonl")).exists() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub fn find_session_profile(id: &str) -> Option<std::path::PathBuf> {
     let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
     let entries = std::fs::read_dir(&home).ok()?;

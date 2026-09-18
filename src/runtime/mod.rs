@@ -543,6 +543,22 @@ impl Runtime {
                 .expect("unbounded"),
         };
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        // cdock memory: STATE.md is the orchestrator's index (goal, team,
+        // per-worker one-liners, links into notes/) — agent-agnostic and
+        // conversation-independent, so a fresh session (or another CLI)
+        // picks up exactly where the last one left off.
+        let state_md = dir.join("STATE.md");
+        if !state_md.exists() {
+            let _ = std::fs::write(
+                &state_md,
+                "# Orchestrator state\n\n\
+                 <!-- cdock memory: maintained by the orchestrator, newest truth wins\n\
+                 over any conversation. Keep: goal, mode, team roster with one-line\n\
+                 statuses, decisions, next steps. Link details: [notes](notes/). -->\n\n\
+                 ## Goal\n\n(none yet)\n\n## Team\n\n(none yet)\n\n## Log\n\n",
+            );
+            let _ = std::fs::create_dir_all(dir.join("notes"));
+        }
         let typed = command.to_string();
         let mut profile = crate::profile::load_any("orchestrator", &dir)?;
         profile.toml.command = command.to_string();

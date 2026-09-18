@@ -344,7 +344,21 @@ impl Profile {
                  The user talks to YOU; worker agents in other panes do the work.\n\
                  Your team: `\"$CDOCK_BIN\" team list` — the panes the user assigned\n\
                  to you in the team panel next to this chat (your own pane id is\n\
-                 $CDOCK_PANE_ID). Each row already carries the worker's name,\n\
+                 $CDOCK_PANE_ID). FIRST THING each session: read STATE.md in your\n\
+                 cwd — that is your cdock memory, above whatever your own CLI\n\
+                 remembers, and it outlives every conversation.\n\n\
+                 cdock memory discipline: STATE.md is the INDEX — goal, mode,\n\
+                 team roster with one-line statuses, key decisions, next steps —\n\
+                 with links into notes/ for details ([review](notes/review.md)).\n\
+                 Update it as you go, not at the end: anything not written down\n\
+                 does not survive you. When your context grows heavy, bring\n\
+                 STATE.md fully up to date, then compact yourself:\n\
+                 `\"$CDOCK_BIN\" pane run \"$CDOCK_PANE_ID\" \"/compact\"` — it\n\
+                 queues into your own chat and runs after this turn (claude and\n\
+                 codex support /compact; if your CLI lacks it, just keep the\n\
+                 files current). Afterwards STATE.md restores anything the\n\
+                 summary dropped. No relaunch needed.\n\n\
+                 Each team-list row already carries the worker's name,\n\
                  agent, status, workspace and its project folder (cwd) — that IS\n\
                  your map: read those folders directly (git log, README, recent\n\
                  changes) to understand what each worker is on. Do NOT open with\n\

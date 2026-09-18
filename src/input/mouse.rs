@@ -854,11 +854,18 @@ fn run_menu_action(
             let Some(rec) = rt.state.recent_orchestrators.get(i).cloned() else {
                 return InputOutcome::Continue;
             };
-            // Resume the exact conversation when the hook reported one;
-            // otherwise relaunch WHAT ran there (codex, cline, claude-oleh…).
+            // Resume the exact conversation when the hook reported one AND
+            // its transcript still exists — resuming a deleted claude
+            // session dies with "No conversation found" and strands a bare
+            // shell. Otherwise relaunch WHAT ran there fresh; it recovers
+            // from STATE.md in its working folder.
             let command = rec
                 .ident
                 .as_deref()
+                .filter(|ident| match ident.split_once(':') {
+                    Some(("claude", id)) => crate::agents::claude_session_exists(id),
+                    _ => true, // codex/cline transcripts aren't checkable here
+                })
                 .map(crate::agents::resume_command)
                 .or_else(|| rec.command.clone())
                 .unwrap_or_else(|| "claude".to_string());

@@ -118,6 +118,13 @@ instruction; read a result BEFORE closing its pane (one slot, read-once);
 results cap at 256 KiB — summarize, don't dump; only touch panes in your
 team (`team list`) — others may belong to another orchestrator.
 
+Orchestrator memory lives in its working folder (cdock memory, above the
+CLI's own): STATE.md is the index — goal, team, statuses, links into
+notes/ — updated continuously; a heavy context is handled by updating
+STATE.md then self-running `/compact` (`pane run $CDOCK_PANE_ID
+"/compact"`), and a relaunched or freshly started orchestrator recovers
+from STATE.md even when the old conversation is gone.
+
 Orchestrators are woken automatically: when a team member turns done or
 blocked, cdock types "[cdock] team update (mode: …): …" into the
 orchestrator's chat — assign work, end your turn, and act on updates as
