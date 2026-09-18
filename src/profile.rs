@@ -131,6 +131,24 @@ pub fn orchestrators_dir() -> Option<PathBuf> {
     crate::config::config_path(None).and_then(|p| p.parent().map(|d| d.join("orchestrators")))
 }
 
+/// Non-claude agents can't take `--append-system-prompt`: hand the role
+/// over as files they DO read from their cwd — AGENTS.md (codex and most
+/// others), plus .clinerules for cline. Claude gets nothing here (its
+/// prompt rides in on the command line; a duplicate AGENTS.md would
+/// double the role).
+pub fn write_role_files(dir: &std::path::Path, command: &str, prompt: Option<&str>) {
+    let Some(prompt) = prompt else { return };
+    let base =
+        command.split_whitespace().next().unwrap_or("").rsplit('/').next().unwrap_or_default();
+    if base.starts_with("claude") {
+        return;
+    }
+    let _ = std::fs::write(dir.join("AGENTS.md"), prompt);
+    if base.starts_with("cline") {
+        let _ = std::fs::write(dir.join(".clinerules"), prompt);
+    }
+}
+
 /// Per-workspace agent metadata: profiles scoped to one space, keyed by its
 /// folder (slug = absolute path with '/' → '%'), OUTSIDE the repo itself.
 pub fn ws_profiles_dir(cwd: &std::path::Path) -> Option<PathBuf> {
@@ -536,6 +554,32 @@ mod tests {
 
         unsafe { std::env::remove_var("CDOCK_CONFIG_PATH") };
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The role reaches non-claude orchestrators via cwd files: AGENTS.md
+    /// for codex-likes, plus .clinerules for cline; claude gets none (its
+    /// prompt rides the command line — a duplicate would double the role).
+    #[test]
+    fn role_files_per_agent_kind() {
+        let dir = std::env::temp_dir().join(format!("cdock-rolefiles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        write_role_files(&dir, "codex --model o3", Some("the role"));
+        assert_eq!(std::fs::read_to_string(dir.join("AGENTS.md")).unwrap(), "the role");
+        assert!(!dir.join(".clinerules").exists());
+
+        write_role_files(&dir, "/usr/local/bin/cline", Some("cline role"));
+        assert_eq!(std::fs::read_to_string(dir.join(".clinerules")).unwrap(), "cline role");
+
+        let claude_dir = dir.join("claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        write_role_files(&claude_dir, "claude-oleh", Some("the role"));
+        assert!(!claude_dir.join("AGENTS.md").exists(), "claude* writes nothing");
+        write_role_files(&claude_dir, "codex", None);
+        assert!(!claude_dir.join("AGENTS.md").exists(), "no prompt, no files");
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

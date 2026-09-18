@@ -855,11 +855,12 @@ fn run_menu_action(
                 return InputOutcome::Continue;
             };
             // Resume the exact conversation when the hook reported one;
-            // otherwise a fresh claude under the same profile.
+            // otherwise relaunch WHAT ran there (codex, cline, claude-oleh…).
             let command = rec
                 .ident
                 .as_deref()
                 .map(crate::agents::resume_command)
+                .or_else(|| rec.command.clone())
                 .unwrap_or_else(|| "claude".to_string());
             match rt.start_orchestrator(
                 &command,

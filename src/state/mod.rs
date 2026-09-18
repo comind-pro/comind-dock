@@ -234,6 +234,11 @@ pub struct AppState {
     /// (report). Switched from the team panel or `team mode`.
     #[serde(default)]
     pub orch_modes: std::collections::HashMap<PaneId, OrchMode>,
+    /// Live orchestrator → the command it was started with (feeds the
+    /// recents record; not rebuilt on cold restore — the record then falls
+    /// back to the pane's detected agent).
+    #[serde(default)]
+    pub orch_cmds: std::collections::HashMap<PaneId, String>,
     /// Workers the ORCHESTRATOR itself added (CLI team set / --team).
     /// Absent = user-assigned: the server refuses CLI removal of those —
     /// an orchestrator may only drop members it added itself.
@@ -317,6 +322,10 @@ pub struct RecentOrchestrator {
     /// Reaction mode at close time — relaunch restores it.
     #[serde(default)]
     pub mode: Option<OrchMode>,
+    /// The command it ran (codex, cline, claude-oleh…) — relaunch without
+    /// a resumable session id starts THIS, not a hardcoded claude.
+    #[serde(default)]
+    pub command: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -338,6 +347,7 @@ impl AppState {
             recent_orchestrators: Vec::new(),
             orch_dirs: std::collections::HashMap::new(),
             orch_modes: std::collections::HashMap::new(),
+            orch_cmds: std::collections::HashMap::new(),
             orch_added: std::collections::HashSet::new(),
             recent_spaces: Vec::new(),
             workspaces: vec![ws],

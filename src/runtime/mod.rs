@@ -543,9 +543,12 @@ impl Runtime {
                 .expect("unbounded"),
         };
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let typed = command.to_string();
         let mut profile = crate::profile::load_any("orchestrator", &dir)?;
         profile.toml.command = command.to_string();
         let (command, mut env) = profile.resolve_with(None);
+        // codex/cline/… read their role from cwd files, not the command line.
+        crate::profile::write_role_files(&dir, &typed, profile.prompt_text_with(None).as_deref());
         crate::agents::inherit_claude_profile(&mut env, config_dir);
         let pane = match self.state.workspaces.iter().position(|w| w.name == "orchestrators") {
             Some(wi) => {
@@ -556,6 +559,7 @@ impl Runtime {
         };
         self.state.orchestrators.insert(pane);
         self.state.orch_dirs.insert(pane, dir.display().to_string());
+        self.state.orch_cmds.insert(pane, typed);
         self.spawn_pane_full(
             pane,
             area.width.max(2) / 2,
@@ -1397,6 +1401,14 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
             team: rt.state.teams.iter().filter(|(_, o)| **o == id).map(|(w, _)| w.0).collect(),
             dir: rt.state.orch_dirs.get(&id).cloned(),
             mode: rt.state.orch_modes.get(&id).copied(),
+            // Cold restore empties orch_cmds — the detected agent word
+            // (codex, cline…) is the honest fallback then.
+            command: rt
+                .state
+                .orch_cmds
+                .get(&id)
+                .cloned()
+                .or_else(|| rt.panes.get(&id).and_then(|p| p.agent.map(str::to_string))),
         };
         rt.state.recent_orchestrators.retain(|r| r.ident != rec.ident);
         rt.state.recent_orchestrators.insert(0, rec);
@@ -1414,6 +1426,7 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
     rt.state.orchestrators.remove(&id);
     rt.state.orch_dirs.remove(&id);
     rt.state.orch_modes.remove(&id);
+    rt.state.orch_cmds.remove(&id);
     // Ownership marks live only as long as the membership itself.
     let crate::state::AppState { teams, orch_added, .. } = &mut rt.state;
     orch_added.retain(|w| teams.contains_key(w));
