@@ -64,6 +64,20 @@ pub fn pane_label(rt: &Runtime, id: PaneId) -> String {
         .unwrap_or_default()
 }
 
+/// Picker label for a candidate: name, id, which agent CLI it runs and
+/// the space it lives in — twins are indistinguishable without those.
+pub fn candidate_label(rt: &Runtime, id: PaneId) -> String {
+    let name = crate::agents::truncate_clean(&pane_label(rt, id), 28);
+    let agent = rt.panes.get(&id).and_then(|p| p.agent).unwrap_or("?");
+    let ws = rt
+        .state
+        .locate_pane(id)
+        .and_then(|(wi, _)| rt.state.workspaces.get(wi))
+        .map(|w| crate::agents::truncate_clean(&w.name, 18))
+        .unwrap_or_default();
+    format!("{name} %{} · {agent} · {ws}", id.0)
+}
+
 /// Total text lines the panel body holds (the "+ add" row + 2 per member).
 fn line_count(rt: &Runtime, orch: PaneId) -> u16 {
     1 + members(rt, orch).len() as u16 * 2

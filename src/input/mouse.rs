@@ -239,11 +239,7 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                         let items: Vec<MenuItem> = crate::ui::team_panel::candidates(rt, orch)
                             .into_iter()
                             .map(|id| MenuItem {
-                                label: format!(
-                                    "{} %{}",
-                                    crate::ui::team_panel::pane_label(rt, id),
-                                    id.0
-                                ),
+                                label: crate::ui::team_panel::candidate_label(rt, id),
                                 action: MenuAction::SetTeam(id, Some(orch)),
                             })
                             .collect();
