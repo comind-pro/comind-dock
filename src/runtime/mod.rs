@@ -603,6 +603,17 @@ impl Runtime {
         });
     }
 
+    /// Queue a lone Enter for a pane, `delay` after now — used right after
+    /// an injected paste so the submit arrives as its own keystroke burst
+    /// (see AppEvent::SubmitEnter).
+    pub fn submit_later(&self, pane: PaneId, delay: Duration) {
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let _ = tx.send(AppEvent::SubmitEnter(pane));
+        });
+    }
+
     /// Write text into a pane's PTY, bracketed-paste-wrapped when the app
     /// enabled the mode — a multiline prompt lands as one paste instead of
     /// submitting line by line. `submit` appends Enter AFTER the paste closes.

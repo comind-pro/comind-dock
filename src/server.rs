@@ -401,6 +401,11 @@ pub async fn run(
                             rt.update_available = Some(tag);
                             rt.mark_dirty();
                         }
+                        AppEvent::SubmitEnter(pane) => {
+                            if let Some(p) = rt.panes.get_mut(&pane) {
+                                p.pty.write(b"\r");
+                            }
+                        }
                         AppEvent::UpdateCheckDone(res) => {
                             match res {
                                 Ok(Some(tag)) => {
@@ -719,8 +724,10 @@ fn nudge_orchestrator(rt: &mut Runtime, notice: &runtime::Notice) {
         notice.pane.0,
         notice.name
     );
-    if let Err(e) = rt.paste_write(orch, &msg, true) {
-        tracing::warn!(error = %e, "orchestrator nudge failed");
+    // Enter arrives as its own late keystroke — see AppEvent::SubmitEnter.
+    match rt.paste_write(orch, &msg, false) {
+        Ok(()) => rt.submit_later(orch, Duration::from_millis(150)),
+        Err(e) => tracing::warn!(error = %e, "orchestrator nudge failed"),
     }
 }
 
@@ -739,8 +746,9 @@ fn nudge_handback(rt: &mut Runtime, pane: crate::state::ids::PaneId) {
         mode.word(),
         pane.0,
     );
-    if let Err(e) = rt.paste_write(orch, &msg, true) {
-        tracing::warn!(error = %e, "handback nudge failed");
+    match rt.paste_write(orch, &msg, false) {
+        Ok(()) => rt.submit_later(orch, Duration::from_millis(150)),
+        Err(e) => tracing::warn!(error = %e, "handback nudge failed"),
     }
 }
 

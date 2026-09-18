@@ -12,6 +12,11 @@ pub enum AppEvent {
     /// A manual "check for update" finished: Ok(Some(tag)) = newer found,
     /// Ok(None) = already current, Err = the check itself failed.
     UpdateCheckDone(Result<Option<String>, String>),
+    /// Press Enter in a pane as its OWN late keystroke: a CR in the same
+    /// burst as a bracketed paste is sometimes folded into the paste by
+    /// agent TUIs (claude's paste debounce) — the message then sits in the
+    /// input box unsubmitted.
+    SubmitEnter(PaneId),
 }
 
 /// PTY output travels on its own BOUNDED channel: when the main loop falls

@@ -368,13 +368,18 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             }
         }
         // Always paste-wrapped: a multiline command pasted into an agent TUI
-        // must land as one block, with Enter after the paste closes.
+        // must land as one block. Enter follows as its OWN late keystroke —
+        // in the same burst as the paste close, agent TUIs sometimes fold
+        // it into the paste and the message sits unsubmitted.
         Req::Run { pane, command } => {
             if let Some(e) = user_grip_err(rt, pane) {
                 return Ok(e);
             }
-            Ok(match rt.paste_write(PaneId(pane), &command, true) {
-                Ok(()) => json!({"ok": true}),
+            Ok(match rt.paste_write(PaneId(pane), &command, false) {
+                Ok(()) => {
+                    rt.submit_later(PaneId(pane), Duration::from_millis(150));
+                    json!({"ok": true})
+                }
                 Err(e) => err(e),
             })
         }
