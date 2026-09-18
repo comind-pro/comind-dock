@@ -120,6 +120,8 @@ pub enum MenuAction {
     ReloadConfig,
     /// Download the new release and live-handoff into it (a visible tab).
     RunUpdate,
+    /// Manual release check now (the 6h background job may not have run).
+    CheckUpdate,
     /// Open the process-monitor overlay.
     OpenProcessMonitor,
     Detach,

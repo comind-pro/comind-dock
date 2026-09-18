@@ -1397,6 +1397,10 @@ fn run_menu_action(
                 Some(crate::agents::hold_on_failure(&format!("'{bin}' update --handoff"))),
             )
         }
+        MenuAction::CheckUpdate => {
+            rt.check_update_now();
+            Ok(())
+        }
         MenuAction::Detach => return InputOutcome::Detach,
         MenuAction::Quit => return InputOutcome::Shutdown,
         MenuAction::ListWorktrees(ws_id) => {

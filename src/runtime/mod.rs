@@ -537,6 +537,21 @@ impl Runtime {
         Ok(pane)
     }
 
+    /// Manual "check for update" from the menu — one immediate check in a
+    /// thread (network must never block the UI loop); the result rides
+    /// back as an AppEvent and lands in a toast. The 6h background check
+    /// stays untouched.
+    pub fn check_update_now(&mut self) {
+        self.add_plain_toast("checking for updates…".to_string(), 5);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let upd = crate::config::load(None).0.update;
+            let res = crate::update::latest_release(&upd.repo, upd.channel)
+                .map(|rel| crate::update::is_newer(&rel.tag).then_some(rel.tag));
+            let _ = tx.send(AppEvent::UpdateCheckDone(res));
+        });
+    }
+
     /// Write text into a pane's PTY, bracketed-paste-wrapped when the app
     /// enabled the mode — a multiline prompt lands as one paste instead of
     /// submitting line by line. `submit` appends Enter AFTER the paste closes.

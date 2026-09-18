@@ -45,11 +45,16 @@ pub fn app_items(update: Option<&str>) -> Vec<MenuItem> {
     .into_iter()
     .map(|(label, action)| MenuItem { label: label.to_string(), action })
     .collect();
-    if let Some(tag) = update {
-        items.push(MenuItem {
+    match update {
+        Some(tag) => items.push(MenuItem {
             label: format!("● update ready {tag}"),
             action: MenuAction::RunUpdate,
-        });
+        }),
+        // The 6h background job may simply not have run yet.
+        None => items.push(MenuItem {
+            label: "check for update".to_string(),
+            action: MenuAction::CheckUpdate,
+        }),
     }
     items.push(MenuItem { label: "detach".to_string(), action: MenuAction::Detach });
     items

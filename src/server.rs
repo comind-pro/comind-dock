@@ -401,6 +401,20 @@ pub async fn run(
                             rt.update_available = Some(tag);
                             rt.mark_dirty();
                         }
+                        AppEvent::UpdateCheckDone(res) => {
+                            match res {
+                                Ok(Some(tag)) => {
+                                    rt.add_plain_toast(format!("● update ready {tag}"), 10);
+                                    rt.update_available = Some(tag);
+                                }
+                                Ok(None) => rt.add_plain_toast(
+                                    format!("cdock {} is up to date", env!("CARGO_PKG_VERSION")),
+                                    8,
+                                ),
+                                Err(e) => rt.add_plain_toast(format!("update check: {e}"), 10),
+                            }
+                            rt.mark_dirty();
+                        }
                     }
                     next = rx.try_recv().ok();
                 }

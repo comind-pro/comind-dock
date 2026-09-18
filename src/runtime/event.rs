@@ -9,6 +9,9 @@ pub enum AppEvent {
     Term(PaneId, alacritty_terminal::event::Event),
     /// The background release check found a newer version tag.
     UpdateAvailable(String),
+    /// A manual "check for update" finished: Ok(Some(tag)) = newer found,
+    /// Ok(None) = already current, Err = the check itself failed.
+    UpdateCheckDone(Result<Option<String>, String>),
 }
 
 /// PTY output travels on its own BOUNDED channel: when the main loop falls
