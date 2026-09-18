@@ -99,9 +99,9 @@ no screen-scraping. Each pane holds ONE result slot, consumed on read.
 "$CDOCK_BIN" agent start --profile orchestrator             # built-in coordinator role
 # (users start one from the sidebar menu: "new orchestrator" — its tab keeps
 #  an always-open team panel where they click chats in and out of the team;
-#  ANY agent CLI can be the orchestrator — codex/cline read the role from
-#  AGENTS.md/.clinerules in their working folder, claude from the prompt —
-#  and any mix of agents can be the workers: one system)
+#  ANY agent CLI can be the orchestrator — codex/agy/cline read the role
+#  from AGENTS.md (.clinerules for cline) in their working folder, claude
+#  from the prompt — and any mix of agents can be the workers: one system)
 "$CDOCK_BIN" team list    # your workers WITH context: name, agent, status,
                           # workspace and its project folder (cwd) — read the
                           # folder directly; no snapshot/pane-read sweep needed

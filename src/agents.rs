@@ -6,7 +6,7 @@
 
 const KNOWN: &[&str] = &[
     "claude", "codex", "opencode", "aider", "gemini", "goose", "amp", "pi", "cursor", "copilot",
-    "droid", "qwen", "crush", "cline",
+    "droid", "qwen", "crush", "cline", "agy",
 ];
 
 /// Command that relaunches an agent after a restart. `ident` is either a
@@ -452,6 +452,15 @@ mod tests {
         assert_eq!(detect("Cline", "node"), Some("cline"));
         assert_eq!(resume_command("cline:ses_42"), "cline --id ses_42");
         assert_eq!(resume_command("cline"), "cline");
+    }
+
+    /// Antigravity CLI: recognized by exe and title, relaunches as itself.
+    #[test]
+    fn agy_is_known() {
+        assert_eq!(detect("", "agy"), Some("agy"));
+        assert_eq!(detect("Antigravity agy session", "zsh"), Some("agy"));
+        assert_eq!(detect_process("/Users/x/.local/bin/agy"), Some("agy"));
+        assert_eq!(resume_command("agy"), "agy");
     }
 
     #[test]
