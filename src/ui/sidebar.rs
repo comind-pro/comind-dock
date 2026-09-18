@@ -86,6 +86,15 @@ fn agent_rows(
         .and_then(crate::agents::profile_label_from_dir)
         .map(|l| format!(" @{l}"))
         .unwrap_or_default();
+    // Team membership: a worker names its orchestrator, an orchestrator
+    // shows how many workers report to it.
+    let team = match state.teams.get(&pane) {
+        Some(orch) => format!(" · team %{}", orch.0),
+        None => match state.teams.values().filter(|o| **o == pane).count() {
+            0 => String::new(),
+            n => format!(" · ⌂{n}"),
+        },
+    };
     // User-given name wins; then the agent's OSC title; then the bare agent name.
     // The name gets nearly the full sidebar width — its own row, not shared.
     let name_budget = (width as usize).saturating_sub(indent.width() + dot.width() + 1).max(6);
@@ -110,7 +119,7 @@ fn agent_rows(
     });
     out.push(Row {
         line: Line::from(Span::styled(
-            format!("{indent}  {status} · {agent}{profile}"),
+            format!("{indent}  {status} · {agent}{profile}{team}"),
             Style::new().fg(theme.muted),
         )),
         target: Some(Target::Pane(pane)),

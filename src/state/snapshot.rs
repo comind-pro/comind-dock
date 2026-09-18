@@ -28,6 +28,9 @@ pub struct PaneMeta {
     pub behavior: Option<String>,
     /// User-given pane name (wins over the agent's OSC title).
     pub name: Option<String>,
+    /// SAVED pane id of this pane's orchestrator (teams map) — restore
+    /// remaps it to the freshly allocated id.
+    pub team: Option<u64>,
     /// Pane id at SAVE time — keys the screens-<session>/pane-<id>.txt
     /// file; restore-side only (save derives it from the layout leaf).
     pub saved_pane: Option<u64>,
@@ -95,6 +98,9 @@ pub enum NodeSnap {
         behavior: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// Saved pane id of this pane's orchestrator (teams map).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team: Option<u64>,
         /// Pane id at save time — names the screen-history file.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pane: Option<u64>,
@@ -125,6 +131,7 @@ fn node_to_snap(node: &Node, panes: &std::collections::HashMap<PaneId, PaneMeta>
                 agent_bin: meta.agent_bin,
                 behavior: meta.behavior,
                 name: meta.name,
+                team: meta.team,
                 pane: Some(id.0),
             }
         }
@@ -142,7 +149,7 @@ fn node_to_snap(node: &Node, panes: &std::collections::HashMap<PaneId, PaneMeta>
 
 fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen, agents: &mut Vec<PaneSpawn>) -> Node {
     match snap {
-        NodeSnap::Leaf { agent, cwd, env, agent_bin, behavior, name, pane } => {
+        NodeSnap::Leaf { agent, cwd, env, agent_bin, behavior, name, team, pane } => {
             let id = ids.pane();
             agents.push((
                 id,
@@ -153,6 +160,7 @@ fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen, agents: &mut Vec<PaneSpawn>) -
                     agent_bin: agent_bin.clone(),
                     behavior: behavior.clone(),
                     name: name.clone(),
+                    team: *team,
                     saved_pane: *pane,
                 },
             ));
@@ -278,8 +286,19 @@ impl Snapshot {
             .min(workspaces.len() - 1);
         let pane_names =
             panes.iter().filter_map(|(id, m)| m.name.clone().map(|n| (*id, n))).collect();
+        // Teams reference panes by SAVED id — remap through the fresh ids;
+        // an entry whose orchestrator pane didn't restore is dropped.
+        let saved_to_new: std::collections::HashMap<u64, PaneId> =
+            panes.iter().filter_map(|(id, m)| m.saved_pane.map(|s| (s, *id))).collect();
+        let teams = panes
+            .iter()
+            .filter_map(|(id, m)| {
+                m.team.and_then(|t| saved_to_new.get(&t)).map(|orch| (*id, *orch))
+            })
+            .collect();
         let state = AppState {
             pane_names,
+            teams,
             recent_spaces: self
                 .recent
                 .iter()
@@ -574,6 +593,7 @@ mod tests {
                 agent_bin: Some("/usr/local/bin/claude".into()),
                 behavior: Some("ws:researcher".into()),
                 name: Some("kafka refactor".into()),
+                team: None,
                 saved_pane: None,
             },
         )]);
@@ -621,6 +641,28 @@ mod tests {
             "and is seeded into the restored state under the NEW pane id"
         );
         assert!(restored.check_invariants());
+    }
+
+    /// Team assignments survive the round trip, remapped to the fresh pane
+    /// ids restore allocates.
+    #[test]
+    fn snapshot_round_trip_remaps_teams() {
+        let mut s = AppState::new("main".into(), std::path::PathBuf::from("/tmp"));
+        s.split_focused(Dir::Right, false);
+        let panes = s.workspaces[0].tabs[0].layout.panes();
+        let (orch, worker) = (panes[0], panes[1]);
+        let metas = std::collections::HashMap::from([(
+            worker,
+            PaneMeta { team: Some(orch.0), ..Default::default() },
+        )]);
+        let snap = Snapshot::of(&s, &metas);
+        let json = serde_json::to_string(&snap).unwrap();
+        let back: Snapshot = serde_json::from_str(&json).unwrap();
+        let (restored, spawned) = back.restore().unwrap();
+        let new_worker = spawned.iter().find(|(_, m)| m.saved_pane == Some(worker.0)).unwrap().0;
+        let new_orch = spawned.iter().find(|(_, m)| m.saved_pane == Some(orch.0)).unwrap().0;
+        assert_eq!(restored.teams.get(&new_worker), Some(&new_orch));
+        assert_eq!(restored.teams.len(), 1, "only the assigned pane joins a team");
     }
 
     /// A degenerate (empty-tabs) workspace between a parent and its worktree

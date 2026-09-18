@@ -190,7 +190,29 @@ pub fn load_any(name: &str, ws_cwd: &std::path::Path) -> Result<Profile, String>
     if name.contains(':') {
         return load_behavior(name, ws_cwd);
     }
-    load_behavior(&format!("ws:{name}"), ws_cwd).or_else(|_| load(name))
+    load_behavior(&format!("ws:{name}"), ws_cwd)
+        .or_else(|_| load(name))
+        .or_else(|e| if name == "orchestrator" { ensure_builtin_orchestrator() } else { Err(e) })
+}
+
+/// The built-in "orchestrator" profile: materialized on the first
+/// `--profile orchestrator` when the user has none. Create-if-missing —
+/// user edits to the materialized files survive.
+fn ensure_builtin_orchestrator() -> Result<Profile, String> {
+    let dir = profiles_dir().ok_or("cannot determine config dir")?.join("orchestrator");
+    if !dir.join("profile.toml").exists() {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        std::fs::write(
+            dir.join("profile.toml"),
+            "# Built-in orchestrator profile (yours to edit).\n\
+             command = \"claude\"\n\
+             orchestrator = true\n",
+        )
+        .map_err(|e| e.to_string())?;
+        std::fs::write(dir.join("agent.md"), include_str!("integration/orchestrator_agent.md"))
+            .map_err(|e| e.to_string())?;
+    }
+    load("orchestrator")
 }
 
 impl Profile {
@@ -293,11 +315,28 @@ impl Profile {
             }
             text.push_str(&format!(
                 "\n## You are an orchestrator\n\n\
-                 Spawn specialist agents into panes and coordinate them with the\n\
-                 cdock CLI (you have the cdock skill): `\"$CDOCK_BIN\" agent start\n\
-                 --profile <name> [--split right|down]`, then watch them via\n\
-                 `\"$CDOCK_BIN\" events --only agent-status` or `wait agent-status`,\n\
-                 read their screens with `pane read`.\n\n\
+                 The user talks to YOU; worker agents in other panes do the work.\n\
+                 Your team: `\"$CDOCK_BIN\" team list` — the panes the user assigned\n\
+                 to you (your own pane id is $CDOCK_PANE_ID). Work ONLY with your\n\
+                 team; other panes may belong to other orchestrators.\n\n\
+                 Delegation cycle:\n\
+                 1. Spawn when the team lacks a role: `\"$CDOCK_BIN\" agent start\n\
+                    --profile <name> --split right --team \"$CDOCK_PANE_ID\"` (the\n\
+                    reply carries the new pane id); then `pane rename <id> \"<task>\"`.\n\
+                 2. Assign the WHOLE task in one message: `\"$CDOCK_BIN\" pane run\n\
+                    <id> \"<prompt>\"` (multiline-safe paste + Enter). End every\n\
+                    delegated prompt with: When finished, run:\n\
+                    \"$CDOCK_BIN\" task done \"<what you did, key findings, files\n\
+                    touched>\" --pid $PPID\n\
+                 3. Collect: `\"$CDOCK_BIN\" wait task-result <id> --timeout 600000`\n\
+                    — the result is consumed on read. Several workers: assign all\n\
+                    first, then wait one by one (results are stored, none is lost).\n\
+                 4. On timeout: `pane read <id> --lines 40` shows the screen;\n\
+                    `wait agent-status <id> --status blocked --transition` tells\n\
+                    you it awaits input — follow up via `pane run`.\n\
+                 5. Done: close panes YOU spawned (`tab close <id>`); never those\n\
+                    the user assigned. Summarize: what was done, by whom, what is\n\
+                    blocked, next steps.\n\n\
                  Available profiles:\n{roster}"
             ));
         }
@@ -338,6 +377,9 @@ pub fn set_skills(profile_dir: &std::path::Path, skills: &[String]) -> Result<()
 
 const PROFILE_TOML_TEMPLATE: &str = r#"# Which agent CLI this profile runs.
 command = "claude"
+
+# Orchestrator: gets the profile roster + delegation workflow in its prompt.
+# orchestrator = true
 
 # Extra environment for the pane.
 [env]
@@ -420,6 +462,16 @@ mod tests {
         // Duplicate scaffold refuses.
         assert!(scaffold_ws(cwd, "researcher").is_err());
 
+        // Built-in orchestrator: load_any materializes it on first use…
+        let p = load_any("orchestrator", cwd).unwrap();
+        assert!(p.toml.orchestrator);
+        let agent_md = profiles_dir().unwrap().join("orchestrator").join("agent.md");
+        assert!(agent_md.exists());
+        // …and never overwrites user edits (create-if-missing).
+        std::fs::write(&agent_md, "customized").unwrap();
+        load_any("orchestrator", cwd).unwrap();
+        assert_eq!(std::fs::read_to_string(&agent_md).unwrap(), "customized");
+
         unsafe { std::env::remove_var("CDOCK_CONFIG_PATH") };
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -444,6 +496,7 @@ mod tests {
         let staged = std::fs::read_to_string(dir.join("staged-prompt.md")).unwrap();
         assert!(staged.contains("the role"));
         assert!(staged.contains("orchestrator"), "roster block present");
+        assert!(staged.contains("wait task-result"), "delegation cycle present");
         assert!(env.iter().any(|(k, _)| k == "CDOCK_AGENT_PROFILE"));
         std::fs::remove_dir_all(&dir).unwrap();
 

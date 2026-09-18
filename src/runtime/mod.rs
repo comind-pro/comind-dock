@@ -208,6 +208,11 @@ pub struct Runtime {
     /// Agent conversation ids reported by SessionStart integration hooks —
     /// lets restore resume each pane's own conversation.
     pub agent_sessions: HashMap<PaneId, String>,
+    /// Task results reported via `task done` — one slot per pane, consumed
+    /// on read by an orchestrator (`task result` / `wait task-result`).
+    // ponytail: in-memory only, no queue — lost on server restart/handoff;
+    // persist alongside agent_sessions if orchestration must survive one.
+    pub results: HashMap<PaneId, String>,
     /// In-app notification toasts (top-right overlay, click jumps to pane).
     pub toasts: Vec<Toast>,
     /// A newer release tag found by the background check ("update ready").
@@ -474,6 +479,17 @@ impl Runtime {
         let text = profile
             .prompt_text_with(Some(&ws_cwd))
             .ok_or("behavior profile has an empty prompt")?;
+        self.paste_write(pane, &text, true)?;
+        let p = self.panes.get_mut(&pane).ok_or("no such pane")?;
+        p.behavior = ident;
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Write text into a pane's PTY, bracketed-paste-wrapped when the app
+    /// enabled the mode — a multiline prompt lands as one paste instead of
+    /// submitting line by line. `submit` appends Enter AFTER the paste closes.
+    pub fn paste_write(&mut self, pane: PaneId, text: &str, submit: bool) -> Result<(), String> {
         let p = self.panes.get_mut(&pane).ok_or("no such pane")?;
         use alacritty_terminal::term::TermMode;
         if p.emu.term.mode().contains(TermMode::BRACKETED_PASTE) {
@@ -483,9 +499,9 @@ impl Runtime {
         } else {
             p.pty.write(text.as_bytes());
         }
-        p.pty.write(b"\r");
-        p.behavior = ident;
-        self.dirty = true;
+        if submit {
+            p.pty.write(b"\r");
+        }
         Ok(())
     }
 
@@ -918,7 +934,8 @@ impl Runtime {
                 env.push(("CDOCK_AGENT_PROFILE".to_string(), name));
             }
             let name = self.state.pane_name(*id).map(str::to_string);
-            if agent.is_some() || cwd.is_some() || name.is_some() {
+            let team = self.state.teams.get(id).map(|orch| orch.0);
+            if agent.is_some() || cwd.is_some() || name.is_some() || team.is_some() {
                 metas.insert(
                     *id,
                     crate::state::snapshot::PaneMeta {
@@ -928,6 +945,7 @@ impl Runtime {
                         agent_bin: p.agent_bin.clone(),
                         behavior: p.behavior.clone(),
                         name,
+                        team,
                         saved_pane: None, // save-side: the layout leaf carries the id
                     },
                 );
@@ -1098,6 +1116,7 @@ pub fn build(
         branches: HashMap::new(),
         persist: true,
         agent_sessions: HashMap::new(),
+        results: HashMap::new(),
         toasts: Vec::new(),
         update_available: None,
         last_view: None,
@@ -1260,6 +1279,9 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
     }
     rt.titles.remove(&id);
     rt.agent_sessions.remove(&id);
+    rt.results.remove(&id);
+    rt.state.teams.remove(&id);
+    rt.state.teams.retain(|_, orch| *orch != id);
     rt.dirty = true;
     // Read before close_pane: closing the last pane of the last workspace
     // empties `state.workspaces`, and new_space_cwd() → focused_pane() →
@@ -1448,6 +1470,7 @@ pub fn build_from_handoff(
         titles: h.titles.into_iter().collect(),
         branches: HashMap::new(),
         agent_sessions: h.agent_sessions.into_iter().collect(),
+        results: HashMap::new(),
         toasts: Vec::new(),
         update_available: None,
         last_view: None,

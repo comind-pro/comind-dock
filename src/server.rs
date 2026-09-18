@@ -615,7 +615,7 @@ pub async fn run(
                     }
                 }
                 // After the poll — waiters must see fresh statuses.
-                api::check_waiters(&rt, &mut waiters);
+                api::check_waiters(&mut rt, &mut waiters);
                 for notice in notices {
                     // Suppress for the pane the user is looking at right now.
                     let visible = !clients.is_empty() && rt.state.focused_pane() == notice.pane;

@@ -1031,6 +1031,13 @@ fn run_menu_action(
                     },
                     action: MenuAction::BehaviorPicker(pane),
                 },
+                MenuItem {
+                    label: match rt.state.teams.get(&pane) {
+                        Some(o) => format!("orchestrator: %{}...", o.0),
+                        None => "orchestrator...".to_string(),
+                    },
+                    action: MenuAction::OrchestratorPicker(pane),
+                },
                 MenuItem { label: "rename…".to_string(), action: MenuAction::RenamePane(pane) },
                 MenuItem { label: "focus".to_string(), action: MenuAction::FocusPane(pane) },
                 MenuItem { label: "close pane".to_string(), action: MenuAction::ClosePane(pane) },
@@ -1127,6 +1134,63 @@ fn run_menu_action(
                 }
                 Err(e) => rt.add_plain_toast(format!("behavior: {e}"), 10),
             }
+            Ok(())
+        }
+        MenuAction::OrchestratorPicker(pane) => {
+            // Every OTHER agent pane is a candidate orchestrator — the user
+            // knows which pane coordinates; ● marks the current assignment.
+            let current = rt.state.teams.get(&pane).copied();
+            let mut items: Vec<MenuItem> = Vec::new();
+            for ws in &rt.state.workspaces {
+                for tab in &ws.tabs {
+                    for id in tab.layout.panes() {
+                        if id == pane {
+                            continue;
+                        }
+                        let Some(p) = rt.panes.get(&id) else { continue };
+                        if p.agent.is_none() {
+                            continue;
+                        }
+                        let name = rt
+                            .state
+                            .pane_name(id)
+                            .map(str::to_string)
+                            .or_else(|| rt.titles.get(&id).cloned())
+                            .unwrap_or_else(|| p.program.clone());
+                        let mark = if current == Some(id) { "● " } else { "" };
+                        items.push(MenuItem {
+                            label: format!("{mark}{name} %{}", id.0),
+                            action: MenuAction::SetTeam(pane, Some(id)),
+                        });
+                    }
+                }
+            }
+            if items.is_empty() {
+                items.push(MenuItem {
+                    label: "(no agent panes)".to_string(),
+                    action: MenuAction::SetTeam(pane, current),
+                });
+            }
+            if current.is_some() {
+                items.push(MenuItem {
+                    label: "(clear)".to_string(),
+                    action: MenuAction::SetTeam(pane, None),
+                });
+            }
+            rt.state.input_mode = InputMode::Menu { x, y, items };
+            Ok(())
+        }
+        MenuAction::SetTeam(worker, orchestrator) => {
+            match orchestrator {
+                Some(o) => {
+                    rt.state.teams.insert(worker, o);
+                    rt.add_plain_toast(format!("%{} → team %{}", worker.0, o.0), 8);
+                }
+                None => {
+                    rt.state.teams.remove(&worker);
+                }
+            }
+            rt.mark_dirty();
             Ok(())
         }
         MenuAction::SkillEdit(source) => {

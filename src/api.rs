@@ -28,10 +28,14 @@ pub enum Req {
         direction: Option<String>,
         command: Option<String>,
     },
-    /// Write literal text to a pane's PTY (no Enter).
+    /// Write literal text to a pane's PTY (no Enter). `paste` wraps the
+    /// text in bracketed paste (when the pane's app enabled the mode) so a
+    /// multiline prompt lands as one block instead of line-by-line submits.
     SendText {
         pane: u64,
         text: String,
+        #[serde(default)]
+        paste: bool,
     },
     /// Write text + Enter.
     Run {
@@ -55,6 +59,9 @@ pub enum Req {
         workspace: Option<u64>,
         #[serde(default)]
         env: Vec<(String, String)>,
+        /// Orchestrator pane the new pane joins as a team member.
+        #[serde(default)]
+        team: Option<u64>,
     },
     /// From the agent's SessionStart integration hook: which conversation
     /// runs in this pane (restore resumes exactly it).
@@ -163,6 +170,11 @@ pub enum Req {
         pane: u64,
         status: String,
         timeout_ms: Option<u64>,
+        /// Arm only after seeing a DIFFERENT status: "wait idle" sent to an
+        /// already-idle pane then resolves on the working→idle transition
+        /// instead of instantly.
+        #[serde(default)]
+        transition: bool,
     },
     WaitOutput {
         pane: u64,
@@ -170,14 +182,51 @@ pub enum Req {
         needle: String,
         timeout_ms: Option<u64>,
     },
+    /// A pane's agent reports its finished-task result. One slot per pane:
+    /// overwritten by the next report, consumed by task-result /
+    /// wait-task-result (an orchestrator reads it exactly once).
+    TaskDone {
+        pane: u64,
+        result: String,
+        /// The reporting agent's pid — same nested-claude guard as
+        /// report-agent.
+        #[serde(default)]
+        pid: Option<u32>,
+    },
+    /// Fetch AND consume a pane's stored task result.
+    TaskResult {
+        pane: u64,
+    },
+    /// Block until the pane has a task result; delivers and consumes it.
+    WaitTaskResult {
+        pane: u64,
+        timeout_ms: Option<u64>,
+    },
+    /// Orchestrator teams (worker pane → orchestrator pane), optionally
+    /// filtered to one orchestrator's roster.
+    TeamList {
+        #[serde(default)]
+        orchestrator: Option<u64>,
+    },
+    /// Assign a worker pane to an orchestrator's team (what the pane menu
+    /// does); null orchestrator removes the assignment.
+    TeamSet {
+        worker: u64,
+        orchestrator: Option<u64>,
+    },
 }
 
 pub enum WaitCond {
-    Status(crate::detect::Status),
+    /// `armed` starts false for a --transition wait: it flips on the first
+    /// poll that sees a DIFFERENT status, and only an armed waiter
+    /// resolves — a plain wait starts armed (old behavior).
+    Status { want: crate::detect::Status, armed: bool },
     /// Needle plus a rolling tail of raw pane output — fast output can
     /// scroll past between 500ms polls, so the PTY-data path feeds chunks
     /// here and matching never misses.
     Output(String, String),
+    /// A `task done` result parked for this pane (consumed on delivery).
+    TaskResult,
 }
 
 pub struct PendingWait {
@@ -295,8 +344,22 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
         Req::ReloadManifests | Req::Handoff | Req::Shutdown | Req::AgentExplain { .. } => {
             Ok(err("handled by the server loop"))
         }
-        Req::SendText { pane, text } => Ok(write_pty(rt, pane, text.as_bytes())),
-        Req::Run { pane, command } => Ok(write_pty(rt, pane, format!("{command}\r").as_bytes())),
+        Req::SendText { pane, text, paste } => {
+            if paste {
+                Ok(match rt.paste_write(PaneId(pane), &text, false) {
+                    Ok(()) => json!({"ok": true}),
+                    Err(e) => err(e),
+                })
+            } else {
+                Ok(write_pty(rt, pane, text.as_bytes()))
+            }
+        }
+        // Always paste-wrapped: a multiline command pasted into an agent TUI
+        // must land as one block, with Enter after the paste closes.
+        Req::Run { pane, command } => Ok(match rt.paste_write(PaneId(pane), &command, true) {
+            Ok(()) => json!({"ok": true}),
+            Err(e) => err(e),
+        }),
         Req::Read { pane, lines } => match rt.panes.get(&PaneId(pane)) {
             Some(p) => {
                 let text = p.emu.bottom_text(lines.unwrap_or(30)).join("\n");
@@ -312,7 +375,7 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                 Ok(err(format!("no such pane %{pane}")))
             }
         }
-        Req::AgentStart { command, split, workspace, env } => {
+        Req::AgentStart { command, split, workspace, env, team } => {
             let Some(wi) = resolve_ws(rt, workspace) else {
                 return Ok(err("no such workspace"));
             };
@@ -341,6 +404,9 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             match rt.spawn_pane_env(pane, w, h, Some(crate::agents::hold_on_failure(&command)), env)
             {
                 Ok(()) => {
+                    if let Some(orch) = team.map(PaneId).filter(|o| rt.panes.contains_key(o)) {
+                        rt.state.teams.insert(pane, orch);
+                    }
                     rt.mark_dirty();
                     Ok(json!({"ok": true, "pane": pane.0}))
                 }
@@ -581,14 +647,75 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             rt.mark_dirty();
             Ok(json!({"ok": true}))
         }
-        Req::WaitAgentStatus { pane, status, timeout_ms } => {
+        Req::WaitAgentStatus { pane, status, timeout_ms, transition } => {
             let Some(status) = parse_status(&status) else {
                 return Ok(err(format!("bad status {status:?}")));
             };
-            wait(rt, pane, WaitCond::Status(status), timeout_ms)
+            wait(rt, pane, WaitCond::Status { want: status, armed: !transition }, timeout_ms)
         }
         Req::WaitOutput { pane, needle, timeout_ms } => {
             wait(rt, pane, WaitCond::Output(needle, String::new()), timeout_ms)
+        }
+        Req::TaskDone { pane, result, pid } => {
+            let pane = PaneId(pane);
+            let Some(p) = rt.panes.get(&pane) else {
+                return Ok(err(format!("no such pane {pane}")));
+            };
+            // Same nested-claude guard as report-agent: only the pane's own
+            // agent may report a result for it.
+            if let (Some(agent_pid), Some(reporter)) = (p.agent_pid, pid)
+                && agent_pid != reporter
+            {
+                return Ok(json!({"ok": true, "ignored": "nested agent"}));
+            }
+            rt.results.insert(pane, result);
+            Ok(json!({"ok": true}))
+        }
+        Req::TaskResult { pane } => match rt.results.remove(&PaneId(pane)) {
+            Some(result) => Ok(json!({"ok": true, "pane": pane, "result": result})),
+            None => Ok(err(format!("no result for pane %{pane}"))),
+        },
+        Req::WaitTaskResult { pane, timeout_ms } => {
+            // A result already parked resolves instantly — even one that
+            // outlived its pane.
+            if let Some(result) = rt.results.remove(&PaneId(pane)) {
+                return Ok(json!({"ok": true, "pane": pane, "result": result}));
+            }
+            wait(rt, pane, WaitCond::TaskResult, timeout_ms)
+        }
+        Req::TeamList { orchestrator } => {
+            let mut rows: Vec<(u64, u64)> = rt
+                .state
+                .teams
+                .iter()
+                .filter(|(_, o)| orchestrator.is_none_or(|want| o.0 == want))
+                .map(|(w, o)| (w.0, o.0))
+                .collect();
+            rows.sort_unstable();
+            let teams: Vec<Value> =
+                rows.iter().map(|(w, o)| json!({"worker": w, "orchestrator": o})).collect();
+            Ok(json!({"ok": true, "teams": teams}))
+        }
+        Req::TeamSet { worker, orchestrator } => {
+            let worker = PaneId(worker);
+            if !rt.panes.contains_key(&worker) {
+                return Ok(err(format!("no such pane {worker}")));
+            }
+            match orchestrator {
+                Some(o) => {
+                    let orch = PaneId(o);
+                    if !rt.panes.contains_key(&orch) {
+                        return Ok(err(format!("no such pane {orch}")));
+                    }
+                    rt.state.teams.insert(worker, orch);
+                }
+                None => {
+                    rt.state.teams.remove(&worker);
+                }
+            }
+            rt.mark_dirty();
+            rt.save_session();
+            Ok(json!({"ok": true}))
         }
     }
 }
@@ -600,11 +727,11 @@ pub const REFERENCE: &str = r#"[
   {"cmd":"pane-list"},
   {"cmd":"snapshot"},
   {"cmd":"split","pane":1,"direction":"right","command":"cargo test"},
-  {"cmd":"send-text","pane":1,"text":"hello"},
+  {"cmd":"send-text","pane":1,"text":"hello","paste":false},
   {"cmd":"run","pane":1,"command":"ls"},
   {"cmd":"read","pane":1,"lines":30},
   {"cmd":"focus","pane":1},
-  {"cmd":"agent-start","command":"claude","split":"right","workspace":3,"env":[["K","V"]]},
+  {"cmd":"agent-start","command":"claude","split":"right","workspace":3,"env":[["K","V"]],"team":5},
   {"cmd":"report-agent-session","pane":1,"session_id":"uuid","agent":"claude"},
   {"cmd":"report-agent","pane":1,"state":"blocked","label":"awaiting review","ttl_ms":60000,"pid":4321},
   {"cmd":"report-metadata","pane":1,"title":"builder"},
@@ -625,8 +752,13 @@ pub const REFERENCE: &str = r#"[
   {"cmd":"worktree-create","workspace":3,"branch":"feature"},
   {"cmd":"worktree-open","workspace":3,"branch":"feature"},
   {"cmd":"worktree-remove","workspace":6,"force":false},
-  {"cmd":"wait-agent-status","pane":1,"status":"idle","timeout_ms":60000},
+  {"cmd":"wait-agent-status","pane":1,"status":"idle","timeout_ms":60000,"transition":false},
   {"cmd":"wait-output","pane":1,"match":"done","timeout_ms":60000},
+  {"cmd":"task-done","pane":1,"result":"what was done and found","pid":4321},
+  {"cmd":"task-result","pane":1},
+  {"cmd":"wait-task-result","pane":1,"timeout_ms":600000},
+  {"cmd":"team-list","orchestrator":5},
+  {"cmd":"team-set","worker":1,"orchestrator":5},
   {"cmd":"subscribe","events":["agent-status","output"],"pane":1}
 ]"#;
 
@@ -698,6 +830,8 @@ fn pane_list(rt: &Runtime) -> Value {
                         crate::runtime::NoticeKind::Done => "done",
                         crate::runtime::NoticeKind::Blocked => "blocked",
                     }),
+                    // Orchestrator pane this pane reports to (teams map).
+                    "team": rt.state.teams.get(&id).map(|o| o.0),
                     "focused": id == focused,
                 }));
             }
@@ -783,30 +917,56 @@ pub fn feed_waiters(waiters: &mut [(PendingWait, Replier)], pane: PaneId, chunk:
 /// Resolve parked waits: condition met, pane gone, or deadline passed.
 /// Called from the server's 500ms agent poll — that granularity is the
 /// wait resolution.
-pub fn check_waiters(rt: &Runtime, waiters: &mut Vec<(PendingWait, Replier)>) {
+pub fn check_waiters(rt: &mut Runtime, waiters: &mut Vec<(PendingWait, Replier)>) {
     // The CLI hung up (Ctrl-C)? Nobody is listening — drop the waiter.
     waiters.retain(|(_, tx)| !tx.is_closed());
     let mut i = 0;
     while i < waiters.len() {
-        let (w, _) = &waiters[i];
-        let result = match rt.panes.get(&w.pane) {
-            None => Some(err("pane closed")),
-            Some(p) => match &w.cond {
-                WaitCond::Status(want) if p.effective_status() == *want => {
-                    Some(json!({"ok": true, "status": want.word()}))
+        let (w, _) = &mut waiters[i];
+        let pane = w.pane;
+        let deadline_hit = w.deadline.is_some_and(|d| Instant::now() >= d);
+        let result = match &mut w.cond {
+            // Checked BEFORE pane existence: a result whose pane closed in
+            // the same tick still gets delivered.
+            WaitCond::TaskResult => {
+                if let Some(result) = rt.results.remove(&pane) {
+                    Some(json!({"ok": true, "pane": pane.0, "result": result}))
+                } else if !rt.panes.contains_key(&pane) {
+                    Some(err("pane closed"))
+                } else if deadline_hit {
+                    Some(err("timeout"))
+                } else {
+                    None
                 }
-                WaitCond::Output(needle, tail) => {
-                    let on_screen = p.emu.bottom_text(30).join("\n").contains(needle.as_str());
-                    if on_screen || tail.contains(needle.as_str()) {
-                        Some(json!({"ok": true}))
-                    } else if w.deadline.is_some_and(|d| Instant::now() >= d) {
+            }
+            WaitCond::Status { want, armed } => match rt.panes.get(&pane) {
+                None => Some(err("pane closed")),
+                Some(p) => {
+                    let current = p.effective_status();
+                    if !*armed && current != *want {
+                        *armed = true;
+                    }
+                    if *armed && current == *want {
+                        Some(json!({"ok": true, "status": want.word()}))
+                    } else if deadline_hit {
                         Some(err("timeout"))
                     } else {
                         None
                     }
                 }
-                _ if w.deadline.is_some_and(|d| Instant::now() >= d) => Some(err("timeout")),
-                _ => None,
+            },
+            WaitCond::Output(needle, tail) => match rt.panes.get(&pane) {
+                None => Some(err("pane closed")),
+                Some(p) => {
+                    let on_screen = p.emu.bottom_text(30).join("\n").contains(needle.as_str());
+                    if on_screen || tail.contains(needle.as_str()) {
+                        Some(json!({"ok": true}))
+                    } else if deadline_hit {
+                        Some(err("timeout"))
+                    } else {
+                        None
+                    }
+                }
             },
         };
         match result {
@@ -1043,5 +1203,27 @@ mod tests {
         assert!(serde_json::from_str::<Req>(r#"{"cmd":"nope"}"#).is_err());
         assert_eq!(parse_status("blocked"), Some(crate::detect::Status::Blocked));
         assert_eq!(parse_status("bogus"), None);
+    }
+
+    /// Old clients omit the new optional fields — they must keep parsing
+    /// with the defaults (paste=false, transition=false, team=None).
+    #[test]
+    fn req_wire_format_back_compat() {
+        let req: Req = serde_json::from_str(r#"{"cmd":"send-text","pane":1,"text":"hi"}"#)
+            .expect("send-text without paste parses");
+        assert!(matches!(req, Req::SendText { paste: false, .. }));
+        let req: Req =
+            serde_json::from_str(r#"{"cmd":"wait-agent-status","pane":1,"status":"idle"}"#)
+                .expect("wait-agent-status without transition parses");
+        assert!(matches!(req, Req::WaitAgentStatus { transition: false, .. }));
+        let req: Req = serde_json::from_str(r#"{"cmd":"agent-start","command":"claude"}"#)
+            .expect("agent-start without team parses");
+        assert!(matches!(req, Req::AgentStart { team: None, .. }));
+        let req: Req = serde_json::from_str(r#"{"cmd":"task-done","pane":7,"result":"r"}"#)
+            .expect("task-done without pid parses");
+        assert!(matches!(req, Req::TaskDone { pid: None, .. }));
+        let req: Req = serde_json::from_str(r#"{"cmd":"team-set","worker":3,"orchestrator":null}"#)
+            .expect("team-set clear parses");
+        assert!(matches!(req, Req::TeamSet { worker: 3, orchestrator: None }));
     }
 }

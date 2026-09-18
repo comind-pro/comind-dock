@@ -81,10 +81,35 @@ them. They live in cdock metadata (not the repo), keyed to this folder:
 "$CDOCK_BIN" wait agent-status 5 --status idle --timeout 600000
 "$CDOCK_BIN" pane send-text 5 "review the diff in src/"   # no Enter
 "$CDOCK_BIN" pane send-text 5 $'\r'                        # Enter separately
+"$CDOCK_BIN" pane send-text 5 "line1
+line2" --paste                                             # multiline-safe block
 ```
 
 Agent statuses: `working`, `blocked` (needs human input), `done`, `idle`,
-`unknown`.
+`unknown`. `wait agent-status --transition` arms only after the status
+LEAVES the target first — use it right after sending a prompt, or an
+already-idle pane resolves the wait instantly.
+
+## Delegate and collect results
+
+An orchestrator hands a pane a task and gets a structured result back —
+no screen-scraping. Each pane holds ONE result slot, consumed on read.
+
+```bash
+"$CDOCK_BIN" agent start --profile orchestrator             # built-in coordinator role
+"$CDOCK_BIN" team list                                      # panes assigned to YOU (via UI or team set)
+"$CDOCK_BIN" team set 7 "$CDOCK_PANE_ID"                    # adopt pane 7 into your team
+"$CDOCK_BIN" agent start --profile reviewer --split right --team "$CDOCK_PANE_ID"
+"$CDOCK_BIN" pane run 7 "full task prompt…"                 # paste + Enter, multiline-safe
+"$CDOCK_BIN" wait task-result 7 --timeout 600000            # → {"ok":true,"result":"…"}
+"$CDOCK_BIN" task result 7                                  # non-blocking fetch (also consumes)
+"$CDOCK_BIN" task done "what I did and found" --pid $PPID   # from INSIDE the worker pane
+```
+
+Rules: end every delegated prompt with the `task done … --pid $PPID`
+instruction; read a result BEFORE closing its pane (one slot, read-once);
+results cap at 256 KiB — summarize, don't dump; only touch panes in your
+team (`team list`) — others may belong to another orchestrator.
 
 ## Rules
 

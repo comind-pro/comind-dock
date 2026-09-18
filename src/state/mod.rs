@@ -98,6 +98,10 @@ pub enum MenuAction {
     BehaviorPicker(ids::PaneId),
     /// Inject the behavior into the running session; None clears the mark.
     SetBehavior(ids::PaneId, Option<String>),
+    /// Submenu: pick which orchestrator pane this pane reports to.
+    OrchestratorPicker(ids::PaneId),
+    /// Assign the worker to an orchestrator's team; None removes it.
+    SetTeam(ids::PaneId, Option<ids::PaneId>),
     /// Submenu to pick the default editor (persisted into config.toml).
     EditorPicker,
     SetEditor(String),
@@ -195,6 +199,12 @@ pub struct AppState {
     /// state; persisted per pane in the snapshot.
     #[serde(default)]
     pub pane_names: std::collections::HashMap<PaneId, String>,
+    /// Orchestrator teams: worker pane → the orchestrator pane it reports
+    /// to. Assigned from the pane menu (or `team set`); orchestrators read
+    /// their roster via `team list`. Crosses the handoff with the state;
+    /// persisted per pane in the snapshot.
+    #[serde(default)]
+    pub teams: std::collections::HashMap<PaneId, PaneId>,
     /// Spaces the user closed, newest first — the "+ new space" menu reopens
     /// them. Capped at RECENT_SPACES.
     #[serde(default)]
@@ -220,6 +230,7 @@ impl AppState {
         let ws = Workspace::new(ids.workspace(), workspace_name, cwd, tab);
         Self {
             pane_names: std::collections::HashMap::new(),
+            teams: std::collections::HashMap::new(),
             recent_spaces: Vec::new(),
             workspaces: vec![ws],
             active_workspace: 0,

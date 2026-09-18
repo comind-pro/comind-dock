@@ -74,6 +74,16 @@ enum Cmd {
         #[command(subcommand)]
         sub: WaitCmd,
     },
+    /// Task results: a worker pane reports, an orchestrator collects.
+    Task {
+        #[command(subcommand)]
+        sub: TaskCmd,
+    },
+    /// Orchestrator teams: which worker panes report to which orchestrator.
+    Team {
+        #[command(subcommand)]
+        sub: TeamCmd,
+    },
     /// Install per-agent integration hooks (session identity).
     Integration {
         #[command(subcommand)]
@@ -252,6 +262,9 @@ enum PaneCmd {
     SendText {
         pane: String,
         text: String,
+        /// Bracketed-paste the text (multiline-safe for agent TUIs).
+        #[arg(long)]
+        paste: bool,
     },
     /// Read the last non-empty screen lines.
     Read {
@@ -337,6 +350,10 @@ enum AgentCmd {
         split: Option<String>,
         #[arg(long)]
         workspace: Option<u64>,
+        /// Orchestrator pane the new agent joins as a team member
+        /// (orchestrators pass $CDOCK_PANE_ID).
+        #[arg(long)]
+        team: Option<String>,
     },
 }
 
@@ -440,7 +457,53 @@ enum WaitCmd {
         status: String,
         #[arg(long)]
         timeout: Option<u64>,
+        /// Resolve only on a status CHANGE into the target: an already-idle
+        /// pane keeps waiting until it leaves idle and comes back.
+        #[arg(long)]
+        transition: bool,
     },
+    /// Wait until a pane reports a task result; prints and consumes it.
+    TaskResult {
+        pane: String,
+        #[arg(long)]
+        timeout: Option<u64>,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum TaskCmd {
+    /// Report this pane's finished-task result (an orchestrator collects
+    /// it via `task result` / `wait task-result`).
+    Done {
+        /// Result text (or use --file).
+        result: Option<String>,
+        /// Read the result from a file instead.
+        #[arg(long, conflicts_with = "result")]
+        file: Option<std::path::PathBuf>,
+        /// Pane the result belongs to (default: $CDOCK_PANE_ID).
+        #[arg(long)]
+        pane: Option<String>,
+        /// Reporter pid (pass $PPID) — nested-agent guard, as report-agent.
+        #[arg(long)]
+        pid: Option<u32>,
+    },
+    /// Fetch and consume a pane's stored result (exit 1 when none).
+    Result { pane: String },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum TeamCmd {
+    /// Team assignments; --orchestrator (default: $CDOCK_PANE_ID) narrows
+    /// to one roster, `team list --all` shows every team.
+    List {
+        #[arg(long)]
+        orchestrator: Option<String>,
+        /// Every team, not just the caller's.
+        #[arg(long, conflicts_with = "orchestrator")]
+        all: bool,
+    },
+    /// Assign a worker pane to an orchestrator ("none" removes it).
+    Set { worker: String, orchestrator: String },
 }
 
 /// Sessions are files in the state dir: session-<name>.json (+ sockets
@@ -840,7 +903,7 @@ fn run_pane_attach(pane: u64) -> Result<(), String> {
             };
             pending = rest;
             if !text.is_empty() {
-                let _ = api::request(&api::Req::SendText { pane, text });
+                let _ = api::request(&api::Req::SendText { pane, text, paste: false });
             }
         }
     });
@@ -868,7 +931,9 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 command,
             },
             PaneCmd::Run { pane, command } => Req::Run { pane: parse_pane(&pane)?, command },
-            PaneCmd::SendText { pane, text } => Req::SendText { pane: parse_pane(&pane)?, text },
+            PaneCmd::SendText { pane, text, paste } => {
+                Req::SendText { pane: parse_pane(&pane)?, text, paste }
+            }
             PaneCmd::Read { pane, lines } => Req::Read { pane: parse_pane(&pane)?, lines },
             PaneCmd::Focus { pane } => Req::Focus { pane: parse_pane(&pane)? },
             PaneCmd::Attach { pane } => {
@@ -916,7 +981,7 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             };
             Req::AgentExplain { pane: parse_pane(&pane)? }
         }
-        Cmd::Agent { sub: AgentCmd::Start { command, profile, split, workspace } } => {
+        Cmd::Agent { sub: AgentCmd::Start { command, profile, split, workspace, team } } => {
             let (command, mut env) = match profile {
                 // Workspace-scoped agents (this cwd) win over global ones;
                 // "ws:"/"global:" prefixes pick explicitly.
@@ -931,7 +996,8 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 &mut env,
                 std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(),
             );
-            Req::AgentStart { command, split, workspace, env }
+            let team = team.as_deref().map(parse_pane).transpose()?;
+            Req::AgentStart { command, split, workspace, env, team }
         }
         Cmd::Plugin { sub } => {
             return match sub {
@@ -1101,9 +1167,59 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             WaitCmd::Output { pane, pattern, timeout } => {
                 Req::WaitOutput { pane: parse_pane(&pane)?, needle: pattern, timeout_ms: timeout }
             }
-            WaitCmd::AgentStatus { pane, status, timeout } => {
-                Req::WaitAgentStatus { pane: parse_pane(&pane)?, status, timeout_ms: timeout }
+            WaitCmd::AgentStatus { pane, status, timeout, transition } => Req::WaitAgentStatus {
+                pane: parse_pane(&pane)?,
+                status,
+                timeout_ms: timeout,
+                transition,
+            },
+            WaitCmd::TaskResult { pane, timeout } => {
+                Req::WaitTaskResult { pane: parse_pane(&pane)?, timeout_ms: timeout }
             }
+        },
+        Cmd::Task { sub } => match sub {
+            TaskCmd::Done { result, file, pane, pid } => {
+                let pane = match pane {
+                    Some(p) => parse_pane(&p)?,
+                    None => {
+                        let id = std::env::var("CDOCK_PANE_ID")
+                            .map_err(|_| "no --pane and no $CDOCK_PANE_ID".to_string())?;
+                        parse_pane(&id)?
+                    }
+                };
+                let result = match (result, file) {
+                    (Some(r), _) => r,
+                    (None, Some(f)) => std::fs::read_to_string(&f).map_err(|e| e.to_string())?,
+                    (None, None) => return Err("result text or --file required".to_string()),
+                };
+                // The server caps a request line at 1 MiB; fail with advice
+                // instead of a cryptic socket error.
+                if result.len() > 256 * 1024 {
+                    return Err("result exceeds 256 KiB — summarize it".to_string());
+                }
+                Req::TaskDone { pane, result, pid }
+            }
+            TaskCmd::Result { pane } => Req::TaskResult { pane: parse_pane(&pane)? },
+        },
+        Cmd::Team { sub } => match sub {
+            TeamCmd::List { orchestrator, all } => {
+                // Caller's own roster by default; --all drops the filter.
+                let orchestrator = match (orchestrator, all) {
+                    (Some(o), _) => Some(parse_pane(&o)?),
+                    (None, true) => None,
+                    (None, false) => match std::env::var("CDOCK_PANE_ID") {
+                        Ok(id) => Some(parse_pane(&id)?),
+                        Err(_) => None,
+                    },
+                };
+                Req::TeamList { orchestrator }
+            }
+            TeamCmd::Set { worker, orchestrator } => Req::TeamSet {
+                worker: parse_pane(&worker)?,
+                orchestrator: (orchestrator != "none")
+                    .then(|| parse_pane(&orchestrator))
+                    .transpose()?,
+            },
         },
         Cmd::Api { sub: ApiCmd::Snapshot } => Req::Snapshot,
         Cmd::Api { sub: ApiCmd::Reference | ApiCmd::Schema } => {
