@@ -125,10 +125,12 @@ STATE.md then self-running `/compact` (`pane run $CDOCK_PANE_ID
 "/compact"`), and a relaunched or freshly started orchestrator recovers
 from STATE.md even when the old conversation is gone.
 
-Orchestrators are woken automatically: when a team member turns done or
-blocked, cdock types "[cdock] team update (mode: …): …" into the
-orchestrator's chat — assign work, end your turn, and act on updates as
-they arrive. The mode inside the update is the orchestrator's CURRENT
+Orchestrators are woken automatically: when a team member REPORTS a
+result (`task done`) or turns blocked, cdock types "[cdock] team update
+(mode: …): …" into the orchestrator's chat — assign work, end your
+turn, and act on updates as they arrive. A worker merely going idle
+never nudges (agents pause between turns mid-task) — a long-quiet
+worker is checked with `pane read`, not assumed finished. The mode inside the update is the orchestrator's CURRENT
 policy — report (one final report), auto (goal-bound self-driving loop:
 stop when the user's task is done, never invent side quests), notify
 (ask the user each step); switch it in the team panel or with

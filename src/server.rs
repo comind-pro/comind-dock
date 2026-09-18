@@ -692,12 +692,16 @@ fn spawn_and_reap(mut cmd: std::process::Command) {
     }
 }
 
-/// A team member finished or blocked: wake its orchestrator by typing a
-/// short update into its chat — the orchestrator collects, reviews and
-/// assigns the next task WITHOUT the user relaying between panes. A busy
-/// claude queues the message; notices are already debounced (done = a
-/// confirmed ≥5s stretch of work), so this cannot storm.
+/// A team member BLOCKED: wake its orchestrator by typing a short update
+/// into its chat. Status-"done" transitions deliberately do NOT nudge:
+/// agent Stop hooks fire at the end of every TURN, so a worker posting an
+/// interim status reads as "finished" — the real task-completion signal
+/// is its `task done` report (nudged from the api handler). A busy claude
+/// queues the message.
 fn nudge_orchestrator(rt: &mut Runtime, notice: &runtime::Notice) {
+    if notice.kind != runtime::NoticeKind::Blocked {
+        return;
+    }
     let Some(&orch) = rt.state.teams.get(&notice.pane) else { return };
     // Only into a marked orchestrator pane that still lives — anything
     // else (a plain shell) would try to EXECUTE the pasted text.
@@ -707,19 +711,10 @@ fn nudge_orchestrator(rt: &mut Runtime, notice: &runtime::Notice) {
     {
         return;
     }
-    let what = match notice.kind {
-        runtime::NoticeKind::Done => {
-            "finished — collect its result (task result / pane read), review the work, \
-             then act per your mode"
-        }
-        runtime::NoticeKind::Blocked => {
-            "is blocked awaiting input — read its screen (pane read) and unblock it, \
-             or escalate to the user"
-        }
-    };
     let mode = rt.state.orch_modes.get(&orch).copied().unwrap_or_default();
     let msg = format!(
-        "[cdock] team update (mode: {}): %{} \"{}\" {what}.",
+        "[cdock] team update (mode: {}): %{} \"{}\" is blocked awaiting input — read its \
+         screen (pane read) and unblock it, or escalate to the user.",
         mode.word(),
         notice.pane.0,
         notice.name

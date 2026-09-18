@@ -702,6 +702,25 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                 return Ok(json!({"ok": true, "ignored": "nested agent"}));
             }
             rt.results.insert(pane, result);
+            // The REAL task-completion signal: a reported result wakes the
+            // orchestrator (status-"done" transitions are turn noise — an
+            // agent's Stop hook fires after EVERY turn — and do not nudge).
+            if let Some(&orch) = rt.state.teams.get(&pane).filter(|&&o| {
+                o != pane && rt.state.orchestrators.contains(&o) && rt.panes.contains_key(&o)
+            }) {
+                let mode = rt.state.orch_modes.get(&orch).copied().unwrap_or_default();
+                let msg = format!(
+                    "[cdock] team update (mode: {}): %{} reported a result — collect it \
+                     with `task result {}` (one-shot), review the work, then act per \
+                     your mode.",
+                    mode.word(),
+                    pane.0,
+                    pane.0,
+                );
+                if rt.paste_write(orch, &msg, false).is_ok() {
+                    rt.submit_later(orch, Duration::from_millis(150));
+                }
+            }
             Ok(json!({"ok": true}))
         }
         Req::TaskResult { pane } => match rt.results.remove(&PaneId(pane)) {

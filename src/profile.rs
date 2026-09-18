@@ -380,14 +380,16 @@ impl Profile {
                     delegated prompt with: When finished, run:\n\
                     \"$CDOCK_BIN\" task done \"<what you did, key findings, files\n\
                     touched>\" --pid $PPID\n\
-                 3. Collect: cdock WAKES YOU — when a team member finishes or\n\
-                    blocks, a \"[cdock] team update: …\" message lands in this\n\
-                    chat. On it: collect (`task result <id>` / `pane read`),\n\
-                    REVIEW the work in the worker's folder, then assign the next\n\
-                    task or report to the user. Assign work and simply end your\n\
-                    turn — no busy-wait loops needed. For a quick synchronous\n\
-                    task `wait task-result <id> --timeout 600000` still works\n\
-                    (the result is consumed on read).\n\
+                 3. Collect: cdock WAKES YOU — when a team member REPORTS a\n\
+                    result (task done) or blocks, a \"[cdock] team update: …\"\n\
+                    message lands in this chat. On it: collect (`task result\n\
+                    <id>`), REVIEW the work in the worker's folder, then assign\n\
+                    the next task or report to the user. A worker merely going\n\
+                    idle means nothing — agents pause between turns while their\n\
+                    task continues; NEVER treat idle as finished. Assign work\n\
+                    and simply end your turn — no busy-wait loops needed. For a\n\
+                    quick synchronous task `wait task-result <id> --timeout\n\
+                    600000` still works (the result is consumed on read).\n\
                  4. A worker gone quiet without an update: `pane read <id>\n\
                     --lines 40` shows the screen; follow up via `pane run`.\n\
                  5. Done: close panes YOU spawned (`tab close <id>`); never those\n\
