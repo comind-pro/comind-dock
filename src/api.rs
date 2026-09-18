@@ -16,7 +16,7 @@ use crate::runtime::Runtime;
 use crate::state::ids::PaneId;
 use crate::state::layout::Dir;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "kebab-case")]
 pub enum Req {
     PaneList,
@@ -1170,7 +1170,15 @@ pub fn spawn_conn(stream: tokio::net::UnixStream, tx: mpsc::UnboundedSender<Conn
                     if tx.send(ConnMsg::Req(req, rtx)).is_err() {
                         break;
                     }
-                    rrx.await.unwrap_or_else(|_| err("server shutting down"))
+                    // A dropped replier means exec-handoff or shutdown tore
+                    // the request down. Close WITHOUT a reply: the client
+                    // sees a dropped line and its wait-retry re-arms on the
+                    // new server (a synthesized error reply would read as a
+                    // definitive answer and kill the retry).
+                    match rrx.await {
+                        Ok(v) => v,
+                        Err(_) => break,
+                    }
                 }
                 Err(e) => err(format!("bad request: {e}")),
             };
@@ -1224,8 +1232,76 @@ pub fn subscribe(spec: &SubSpec, mut f: impl FnMut(Value)) -> std::io::Result<()
 
 /// Blocking one-shot request from the CLI side. No read timeout — wait-*
 /// requests legitimately hold the line for minutes.
+///
+/// Transport failures ride out an exec-handoff (update): a refused
+/// connection (socket briefly gone, request never sent) retries for ~2s
+/// for EVERY request; a dropped line mid-wait re-arms the SAME wait on
+/// the new server with the remaining timeout — so an update is invisible
+/// to `wait …` callers. A dropped line on anything else is NOT retried:
+/// the server may already have acted (send-text would double-type).
 pub fn request(req: &Req) -> std::io::Result<Value> {
-    request_inner(req, None)
+    let start = Instant::now();
+    let wait_total = wait_timeout_of(req);
+    let mut req = req.clone();
+    // A wait retries a REFUSED connect only briefly: a handoff rebinds the
+    // socket in well under a second, while a real shutdown stays gone — the
+    // wait must then fail instead of spinning out its whole timeout.
+    let mut first_refused: Option<Instant> = None;
+    loop {
+        let e = match request_inner(&req, None) {
+            Ok(v) => return Ok(v),
+            Err(e) => e,
+        };
+        let refused = e.kind() == std::io::ErrorKind::ConnectionRefused;
+        let dropped = matches!(
+            e.kind(),
+            std::io::ErrorKind::UnexpectedEof
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::BrokenPipe
+        );
+        if refused {
+            first_refused.get_or_insert_with(Instant::now);
+        } else {
+            first_refused = None;
+        }
+        let refused_ok =
+            refused && first_refused.is_some_and(|t| t.elapsed() < Duration::from_secs(10));
+        match wait_total {
+            // Waits retry on a dropped line with the time budget they have
+            // left; a spent budget reports like a server timeout.
+            Some(total) if dropped || refused_ok => {
+                let remaining = total.saturating_sub(start.elapsed().as_millis() as u64);
+                if remaining == 0 {
+                    return Ok(err("timeout"));
+                }
+                set_wait_timeout(&mut req, remaining);
+            }
+            None if refused && start.elapsed() < Duration::from_secs(2) => {}
+            _ => return Err(e),
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// The effective timeout of a wait-* request (their 24h server cap when
+/// unset); None for every other request.
+fn wait_timeout_of(req: &Req) -> Option<u64> {
+    const CAP: u64 = 24 * 3600 * 1000;
+    match req {
+        Req::WaitAgentStatus { timeout_ms, .. }
+        | Req::WaitOutput { timeout_ms, .. }
+        | Req::WaitTaskResult { timeout_ms, .. } => Some(timeout_ms.unwrap_or(CAP).min(CAP)),
+        _ => None,
+    }
+}
+
+fn set_wait_timeout(req: &mut Req, ms: u64) {
+    if let Req::WaitAgentStatus { timeout_ms, .. }
+    | Req::WaitOutput { timeout_ms, .. }
+    | Req::WaitTaskResult { timeout_ms, .. } = req
+    {
+        *timeout_ms = Some(ms);
+    }
 }
 
 /// Bounded request for hook contexts: the SessionStart hook runs inside
@@ -1237,8 +1313,13 @@ pub fn request_with_timeout(req: &Req, timeout: Duration) -> std::io::Result<Val
 
 fn request_inner(req: &Req, timeout: Option<Duration>) -> std::io::Result<Value> {
     let sock = socket_path().ok_or_else(|| std::io::Error::other("cannot determine state dir"))?;
+    // ConnectionRefused kind survives so the retry loop can tell "never
+    // sent" (safe to retry anything) from "line dropped mid-flight".
     let stream = std::os::unix::net::UnixStream::connect(&sock).map_err(|e| {
-        std::io::Error::other(format!("no cdock server on {sock:?} ({e}); start `cdock` first"))
+        std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            format!("no cdock server on {sock:?} ({e}); start `cdock` first"),
+        )
     })?;
     stream.set_read_timeout(timeout)?;
     stream.set_write_timeout(timeout)?;
@@ -1248,7 +1329,12 @@ fn request_inner(req: &Req, timeout: Option<Duration>) -> std::io::Result<Value>
     stream.write_all(line.as_bytes())?;
     let mut reader = std::io::BufReader::new(stream);
     let mut resp = String::new();
-    reader.read_line(&mut resp)?;
+    if reader.read_line(&mut resp)? == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "connection closed before a reply (server restarted?)",
+        ));
+    }
     serde_json::from_str(&resp).map_err(std::io::Error::other)
 }
 
@@ -1339,6 +1425,16 @@ mod tests {
         let req: Req = serde_json::from_str(r#"{"cmd":"team-set","worker":3,"orchestrator":null}"#)
             .expect("team-set clear parses");
         assert!(matches!(req, Req::TeamSet { worker: 3, orchestrator: None }));
+        let mut w: Req =
+            serde_json::from_str(r#"{"cmd":"wait-task-result","pane":1,"timeout_ms":5000}"#)
+                .unwrap();
+        assert_eq!(wait_timeout_of(&w), Some(5000));
+        set_wait_timeout(&mut w, 1234);
+        assert_eq!(wait_timeout_of(&w), Some(1234), "retry re-arms with the remaining budget");
+        assert_eq!(wait_timeout_of(&serde_json::from_str(r#"{"cmd":"pane-list"}"#).unwrap()), None);
+        let capped: Req =
+            serde_json::from_str(r#"{"cmd":"wait-output","pane":1,"match":"x"}"#).unwrap();
+        assert_eq!(wait_timeout_of(&capped), Some(24 * 3600 * 1000), "unset = server cap");
         let req: Req =
             serde_json::from_str(r#"{"cmd":"team-mode","orchestrator":5,"mode":"auto"}"#)
                 .expect("team-mode parses");

@@ -1526,6 +1526,8 @@ pub struct Handoff {
     pub state: crate::state::AppState,
     pub titles: Vec<(PaneId, String)>,
     pub agent_sessions: Vec<(PaneId, String)>,
+    /// Uncollected task results — an update must not eat a worker's report.
+    pub results: Vec<(PaneId, String)>,
     pub panes: Vec<HandoffPane>,
 }
 
@@ -1556,6 +1558,7 @@ impl Default for Handoff {
             state: crate::state::AppState::new(String::new(), std::path::PathBuf::from("/")),
             titles: Vec::new(),
             agent_sessions: Vec::new(),
+            results: Vec::new(),
             panes: Vec::new(),
         }
     }
@@ -1603,6 +1606,7 @@ pub fn capture_handoff(rt: &Runtime, area: Rect) -> Handoff {
             .expect("state round-trips"),
         titles: rt.titles.iter().map(|(k, v)| (*k, v.clone())).collect(),
         agent_sessions: rt.agent_sessions.iter().map(|(k, v)| (*k, v.clone())).collect(),
+        results: rt.results.iter().map(|(k, v)| (*k, v.clone())).collect(),
         panes,
     }
 }
@@ -1634,7 +1638,7 @@ pub fn build_from_handoff(
         titles: h.titles.into_iter().collect(),
         branches: HashMap::new(),
         agent_sessions: h.agent_sessions.into_iter().collect(),
-        results: HashMap::new(),
+        results: h.results.into_iter().collect(),
         user_grip: HashMap::new(),
         toasts: Vec::new(),
         update_available: None,
