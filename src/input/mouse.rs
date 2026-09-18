@@ -233,16 +233,33 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
             if let Some((orch, tp)) = view.team_panel
                 && tp.contains(pos)
             {
-                if let Some((worker, member)) =
-                    crate::ui::team_panel::hit(rt, orch, tp, ev.column, ev.row)
-                {
-                    if member {
-                        rt.state.teams.remove(&worker);
-                    } else {
-                        rt.state.teams.insert(worker, orch);
+                match crate::ui::team_panel::hit(rt, orch, tp, ev.column, ev.row) {
+                    Some(crate::ui::team_panel::Hit::Add) => {
+                        // Picker of the other active agent panes.
+                        let items: Vec<MenuItem> = crate::ui::team_panel::candidates(rt, orch)
+                            .into_iter()
+                            .map(|id| MenuItem {
+                                label: format!(
+                                    "{} %{}",
+                                    crate::ui::team_panel::pane_label(rt, id),
+                                    id.0
+                                ),
+                                action: MenuAction::SetTeam(id, Some(orch)),
+                            })
+                            .collect();
+                        if items.is_empty() {
+                            rt.add_plain_toast("no other agent panes".to_string(), 8);
+                        } else {
+                            rt.state.input_mode =
+                                InputMode::Menu { x: ev.column, y: ev.row, items };
+                        }
                     }
-                    rt.mark_dirty();
+                    Some(crate::ui::team_panel::Hit::Member(worker)) => {
+                        rt.state.teams.remove(&worker);
+                    }
+                    None => {}
                 }
+                rt.mark_dirty();
                 return InputOutcome::Continue;
             }
             if let Some(d) = view.dividers.iter().find(|d| d.rect.contains(pos)) {
@@ -444,6 +461,18 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
 
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
             let up = ev.kind == MouseEventKind::ScrollUp;
+            if let Some((orch, tp)) = view.team_panel
+                && tp.contains(pos)
+            {
+                let max = crate::ui::team_panel::max_scroll(rt, orch, tp);
+                let step = scroll_lines as u16;
+                let cur = rt.team_scroll.min(max);
+                rt.team_scroll = if up { cur.saturating_sub(step) } else { (cur + step).min(max) };
+                if rt.team_scroll != cur {
+                    rt.mark_dirty();
+                }
+                return InputOutcome::Continue;
+            }
             if let Some(sb) = view.sidebar
                 && sb.contains(pos)
             {
@@ -790,16 +819,54 @@ fn run_menu_action(
                 }
             }
         }
-        // "new orchestrator": the built-in profile (materialized on first
-        // use) into a fresh tab, marked so the team panel opens with it.
+        // "new orchestrator": fresh one (command prompt), or a recently
+        // closed one relaunched with its settings — like session restore.
         MenuAction::StartOrchestrator => {
-            return run_menu_action(
-                rt,
-                MenuAction::StartProfile("orchestrator".to_string(), None),
-                x,
-                y,
-                area,
-            );
+            if rt.state.recent_orchestrators.is_empty() {
+                return run_menu_action(rt, MenuAction::OrchestratorCommandPrompt, x, y, area);
+            }
+            let mut items = vec![MenuItem {
+                label: "new…".to_string(),
+                action: MenuAction::OrchestratorCommandPrompt,
+            }];
+            items.extend(rt.state.recent_orchestrators.iter().enumerate().map(|(i, r)| MenuItem {
+                label: format!("↻ {}", crate::agents::truncate_clean(&r.name, 24)),
+                action: MenuAction::ResumeOrchestrator(i),
+            }));
+            rt.state.input_mode = InputMode::Menu { x, y, items };
+            Ok(())
+        }
+        // The user types what they launch (claude, claude-oleh, codex, …).
+        MenuAction::OrchestratorCommandPrompt => {
+            rt.state.input_mode = InputMode::Prompt {
+                kind: PromptKind::OrchestratorCommand,
+                buffer: "claude".to_string(),
+            };
+            Ok(())
+        }
+        MenuAction::ResumeOrchestrator(i) => {
+            let Some(rec) = rt.state.recent_orchestrators.get(i).cloned() else {
+                return InputOutcome::Continue;
+            };
+            // Resume the exact conversation when the hook reported one;
+            // otherwise a fresh claude under the same profile.
+            let command = rec
+                .ident
+                .as_deref()
+                .map(crate::agents::resume_command)
+                .unwrap_or_else(|| "claude".to_string());
+            match rt.start_orchestrator(&command, rec.config_dir.as_deref(), area) {
+                Ok(pane) => {
+                    for w in rec.team {
+                        let w = crate::state::ids::PaneId(w);
+                        if rt.panes.contains_key(&w) {
+                            rt.state.teams.insert(w, pane);
+                        }
+                    }
+                }
+                Err(e) => rt.add_plain_toast(format!("orchestrator: {e}"), 10),
+            }
+            Ok(())
         }
         MenuAction::NewSpacePicker => {
             // Already-open folders are not history — the sidebar has them.

@@ -233,8 +233,9 @@ impl Profile {
         let staged = self.stage_prompt_with(ws_cwd);
 
         // Claude adapter: the staged prompt rides in as system prompt.
+        // Prefix match: wrappers like "claude-oleh" are still claude.
         let base = command.split_whitespace().next().unwrap_or("");
-        if base.rsplit('/').next() == Some("claude")
+        if base.rsplit('/').next().is_some_and(|b| b.starts_with("claude"))
             && let Some(staged) = &staged
         {
             command.push_str(&format!(" --append-system-prompt \"$(cat '{}')\"", staged.display()));

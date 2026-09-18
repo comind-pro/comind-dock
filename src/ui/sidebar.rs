@@ -195,6 +195,12 @@ fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
         if !state.in_scope(wi) {
             continue;
         }
+        // A space that holds ONLY orchestrators (their home space) has
+        // nothing to say here — its chats live in the pinned block above.
+        let ws_panes: Vec<PaneId> = ws.tabs.iter().flat_map(|t| t.layout.panes()).collect();
+        if !ws_panes.is_empty() && ws_panes.iter().all(|p| state.orchestrators.contains(p)) {
+            continue;
+        }
         // A blank line before each space separates the groups so a long list
         // doesn't read as one wall of text.
         out.push(Row { line: Line::from(""), target: None });

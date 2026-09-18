@@ -375,6 +375,13 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<Inp
                                 return Ok(InputOutcome::Continue);
                             }
                             PromptKind::RenamePane(_) => unreachable!("handled above"),
+                            PromptKind::OrchestratorCommand => {
+                                rt.state.input_mode = InputMode::Terminal;
+                                if let Err(e) = rt.start_orchestrator(&name, None, area) {
+                                    rt.add_plain_toast(format!("orchestrator: {e}"), 10);
+                                }
+                                return Ok(InputOutcome::Continue);
+                            }
                             PromptKind::NewProfile(scope) => {
                                 rt.state.input_mode = InputMode::Terminal;
                                 let created = match &scope {

@@ -221,6 +221,8 @@ pub struct Runtime {
     pub last_view: Option<crate::ui::view::View>,
     /// Sidebar scroll offset in rows (mouse wheel over the sidebar).
     pub sidebar_scroll: u16,
+    /// Team-panel scroll offset (mouse wheel over the panel).
+    pub team_scroll: u16,
     pub drag: Option<MouseDrag>,
     pub last_click: Option<(std::time::Instant, u16, u16)>,
     tx: mpsc::UnboundedSender<AppEvent>,
@@ -484,6 +486,42 @@ impl Runtime {
         p.behavior = ident;
         self.dirty = true;
         Ok(())
+    }
+
+    /// Spawn an orchestrator running `command` into the "orchestrators"
+    /// space anchored at $HOME — coordinators are not bound to any project
+    /// workspace, so closing a project never takes them down. The typed
+    /// command (claude, claude-oleh, codex…) overrides the profile default;
+    /// `config_dir` pins a CLAUDE_CONFIG_DIR (relaunch keeps its profile).
+    pub fn start_orchestrator(
+        &mut self,
+        command: &str,
+        config_dir: Option<&str>,
+        area: Rect,
+    ) -> Result<PaneId, String> {
+        let home =
+            std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| "/".into());
+        let mut profile = crate::profile::load_any("orchestrator", &home)?;
+        profile.toml.command = command.to_string();
+        let (command, mut env) = profile.resolve_with(None);
+        crate::agents::inherit_claude_profile(&mut env, config_dir);
+        let pane = match self.state.workspaces.iter().position(|w| w.name == "orchestrators") {
+            Some(wi) => {
+                self.state.active_workspace = wi;
+                self.state.new_tab_in(wi, true)
+            }
+            None => self.state.new_workspace("orchestrators".to_string(), home, None),
+        };
+        self.state.orchestrators.insert(pane);
+        self.spawn_pane_env(
+            pane,
+            area.width.max(2) / 2,
+            area.height.max(2) / 2,
+            Some(crate::agents::hold_on_failure(&command)),
+            env,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(pane)
     }
 
     /// Write text into a pane's PTY, bracketed-paste-wrapped when the app
@@ -1123,6 +1161,7 @@ pub fn build(
         update_available: None,
         last_view: None,
         sidebar_scroll: 0,
+        team_scroll: 0,
         drag: None,
         last_click: None,
         tx,
@@ -1276,6 +1315,24 @@ fn anchor_holds(anchor: &std::path::Path, cwd: &std::path::Path) -> bool {
 /// last tab of the last space does NOT quit — a fresh root space opens so the
 /// runtime always has a terminal (quit stays on the tab-bar ✕ / prefix keys).
 pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
+    // A closing orchestrator leaves its settings behind so the "new
+    // orchestrator" menu can relaunch it (conversation, profile, team).
+    if rt.state.orchestrators.contains(&id) {
+        let rec = crate::state::RecentOrchestrator {
+            name: rt
+                .state
+                .pane_name(id)
+                .map(str::to_string)
+                .or_else(|| rt.titles.get(&id).cloned().filter(|t| !t.trim().is_empty()))
+                .unwrap_or_else(|| "orchestrator".to_string()),
+            ident: rt.agent_sessions.get(&id).cloned(),
+            config_dir: rt.panes.get(&id).and_then(|p| p.agent_config_dir.clone()),
+            team: rt.state.teams.iter().filter(|(_, o)| **o == id).map(|(w, _)| w.0).collect(),
+        };
+        rt.state.recent_orchestrators.retain(|r| r.ident != rec.ident);
+        rt.state.recent_orchestrators.insert(0, rec);
+        rt.state.recent_orchestrators.truncate(crate::state::RECENT_ORCHESTRATORS);
+    }
     if let Some(mut p) = rt.panes.remove(&id) {
         p.pty.kill();
     }
@@ -1478,6 +1535,7 @@ pub fn build_from_handoff(
         update_available: None,
         last_view: None,
         sidebar_scroll: 0,
+        team_scroll: 0,
         drag: None,
         last_click: None,
         tx: tx.clone(),

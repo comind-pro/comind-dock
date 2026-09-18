@@ -23,6 +23,8 @@ pub enum PromptKind {
     NewProfile(Option<std::path::PathBuf>),
     /// Custom name for a pane / agent session (empty clears it).
     RenamePane(ids::PaneId),
+    /// Command an orchestrator should run (claude, claude-oleh, codex…).
+    OrchestratorCommand,
 }
 
 /// One context-menu entry.
@@ -98,9 +100,14 @@ pub enum MenuAction {
     BehaviorPicker(ids::PaneId),
     /// Inject the behavior into the running session; None clears the mark.
     SetBehavior(ids::PaneId, Option<String>),
-    /// Spawn the built-in orchestrator profile into a new tab (marked, so
-    /// its team panel opens with it).
+    /// "new orchestrator": picker — a fresh one (command prompt) or a
+    /// recently closed one restored with its settings.
     StartOrchestrator,
+    /// Open the command prompt for a fresh orchestrator.
+    OrchestratorCommandPrompt,
+    /// Relaunch recent_orchestrators[i]: resume its conversation, reattach
+    /// surviving team panes.
+    ResumeOrchestrator(usize),
     /// Submenu: pick which orchestrator pane this pane reports to.
     OrchestratorPicker(ids::PaneId),
     /// Assign the worker to an orchestrator's team; None removes it.
@@ -213,6 +220,10 @@ pub struct AppState {
     /// `agent start` with an orchestrator profile).
     #[serde(default)]
     pub orchestrators: std::collections::HashSet<PaneId>,
+    /// Closed orchestrators, newest first (capped): the "new orchestrator"
+    /// menu relaunches one with its conversation, profile and team.
+    #[serde(default)]
+    pub recent_orchestrators: Vec<RecentOrchestrator>,
     /// Spaces the user closed, newest first — the "+ new space" menu reopens
     /// them. Capped at RECENT_SPACES.
     #[serde(default)]
@@ -223,6 +234,25 @@ pub struct AppState {
 
 /// How many closed spaces the "+ new space" menu remembers.
 pub const RECENT_SPACES: usize = 10;
+
+/// How many closed orchestrators the "new orchestrator" menu remembers.
+pub const RECENT_ORCHESTRATORS: usize = 5;
+
+/// A closed orchestrator's settings — enough to relaunch it: resume the
+/// conversation, keep the claude profile, reattach still-open team panes.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RecentOrchestrator {
+    pub name: String,
+    /// Agent resume ident ("claude:<session-id>") when the hook reported one.
+    #[serde(default)]
+    pub ident: Option<String>,
+    /// CLAUDE_CONFIG_DIR the orchestrator ran with.
+    #[serde(default)]
+    pub config_dir: Option<String>,
+    /// Worker pane ids at close time — reattached if the panes still live.
+    #[serde(default)]
+    pub team: Vec<u64>,
+}
 
 fn default_true() -> bool {
     true
@@ -240,6 +270,7 @@ impl AppState {
             pane_names: std::collections::HashMap::new(),
             teams: std::collections::HashMap::new(),
             orchestrators: std::collections::HashSet::new(),
+            recent_orchestrators: Vec::new(),
             recent_spaces: Vec::new(),
             workspaces: vec![ws],
             active_workspace: 0,

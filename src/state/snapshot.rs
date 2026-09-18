@@ -48,6 +48,9 @@ pub struct Snapshot {
     /// Closed spaces the "+ new space" menu reopens, newest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recent: Vec<RecentSnap>,
+    /// Closed orchestrators the "new orchestrator" menu relaunches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_orchestrators: Vec<crate::state::RecentOrchestrator>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -190,6 +193,7 @@ impl Snapshot {
     pub fn of(state: &AppState, panes: &std::collections::HashMap<PaneId, PaneMeta>) -> Self {
         Snapshot {
             active_workspace: state.active_workspace,
+            recent_orchestrators: state.recent_orchestrators.clone(),
             recent: state
                 .recent_spaces
                 .iter()
@@ -308,6 +312,9 @@ impl Snapshot {
             pane_names,
             teams,
             orchestrators,
+            // Stale worker pane ids inside are harmless: relaunch reattaches
+            // only panes that still exist.
+            recent_orchestrators: self.recent_orchestrators.clone(),
             recent_spaces: self
                 .recent
                 .iter()
