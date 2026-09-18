@@ -1,7 +1,8 @@
 //! Always-open team panel: the right column of an orchestrator's tab.
 //! Shows the TEAM — the panes assigned to this orchestrator — plus a
 //! "+ add" row that opens a picker of the other active agent panes.
-//! Clicking a member removes it; the wheel scrolls long teams.
+//! A member's name jumps to its pane, its ✓ mark removes it; the wheel
+//! scrolls long teams.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -19,8 +20,10 @@ pub const WIDTH: u16 = 28;
 pub enum Hit {
     /// The "+ add" row: open the candidate picker.
     Add,
-    /// A member row: remove this pane from the team.
-    Member(PaneId),
+    /// A member's name: jump to that pane.
+    Focus(PaneId),
+    /// A member's ✓ mark: remove it from the team.
+    Remove(PaneId),
 }
 
 /// This orchestrator's members, by pane id — render and hit() must agree.
@@ -98,7 +101,8 @@ pub fn render(rt: &Runtime, theme: &Theme, orch: PaneId, rect: Rect, frame: &mut
 }
 
 /// What sits under a click, honoring the scroll offset. A member's two
-/// rows (name + status) both count as that member.
+/// rows (name + status) both belong to that member: the ✓ mark removes,
+/// anywhere else on the rows focuses the pane.
 pub fn hit(rt: &Runtime, orch: PaneId, rect: Rect, x: u16, y: u16) -> Option<Hit> {
     let inner = Rect {
         x: rect.x + 1,
@@ -114,6 +118,7 @@ pub fn hit(rt: &Runtime, orch: PaneId, rect: Rect, x: u16, y: u16) -> Option<Hit
     if line == 0 {
         return Some(Hit::Add);
     }
+    let on_mark = line % 2 == 1 && x < inner.x + 2;
     let idx = ((line - 1) / 2) as usize;
-    members(rt, orch).get(idx).map(|p| Hit::Member(*p))
+    members(rt, orch).get(idx).map(|p| if on_mark { Hit::Remove(*p) } else { Hit::Focus(*p) })
 }

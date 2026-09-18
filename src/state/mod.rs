@@ -224,6 +224,10 @@ pub struct AppState {
     /// menu relaunches one with its conversation, profile and team.
     #[serde(default)]
     pub recent_orchestrators: Vec<RecentOrchestrator>,
+    /// Live orchestrator → its working folder (feeds the recents record
+    /// when the pane closes).
+    #[serde(default)]
+    pub orch_dirs: std::collections::HashMap<PaneId, String>,
     /// Spaces the user closed, newest first — the "+ new space" menu reopens
     /// them. Capped at RECENT_SPACES.
     #[serde(default)]
@@ -252,6 +256,10 @@ pub struct RecentOrchestrator {
     /// Worker pane ids at close time — reattached if the panes still live.
     #[serde(default)]
     pub team: Vec<u64>,
+    /// The orchestrator's working folder — relaunch reuses it, so its
+    /// notes and its cwd-bound claude history stay with it.
+    #[serde(default)]
+    pub dir: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -271,6 +279,7 @@ impl AppState {
             teams: std::collections::HashMap::new(),
             orchestrators: std::collections::HashSet::new(),
             recent_orchestrators: Vec::new(),
+            orch_dirs: std::collections::HashMap::new(),
             recent_spaces: Vec::new(),
             workspaces: vec![ws],
             active_workspace: 0,

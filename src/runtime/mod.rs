@@ -489,19 +489,30 @@ impl Runtime {
     }
 
     /// Spawn an orchestrator running `command` into the "orchestrators"
-    /// space anchored at $HOME — coordinators are not bound to any project
-    /// workspace, so closing a project never takes them down. The typed
-    /// command (claude, claude-oleh, codex…) overrides the profile default;
+    /// space. Every orchestrator gets its OWN working folder under cdock's
+    /// metadata (~/.config/comind-dock/orchestrators/orch-N/) — its cwd,
+    /// where its notes and cwd-bound claude history live; `dir` reuses one
+    /// (relaunch). Coordinators are not bound to any project workspace.
     /// `config_dir` pins a CLAUDE_CONFIG_DIR (relaunch keeps its profile).
     pub fn start_orchestrator(
         &mut self,
         command: &str,
         config_dir: Option<&str>,
+        dir: Option<&str>,
         area: Rect,
     ) -> Result<PaneId, String> {
-        let home =
-            std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| "/".into());
-        let mut profile = crate::profile::load_any("orchestrator", &home)?;
+        let root = crate::profile::orchestrators_dir().ok_or("cannot determine config dir")?;
+        let dir = match dir {
+            Some(d) => std::path::PathBuf::from(d),
+            // First free orch-N: relaunched ones keep their old folder, a
+            // fresh one never collides with it.
+            None => (1..)
+                .map(|n| root.join(format!("orch-{n}")))
+                .find(|d| !d.exists())
+                .expect("unbounded"),
+        };
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let mut profile = crate::profile::load_any("orchestrator", &dir)?;
         profile.toml.command = command.to_string();
         let (command, mut env) = profile.resolve_with(None);
         crate::agents::inherit_claude_profile(&mut env, config_dir);
@@ -510,15 +521,17 @@ impl Runtime {
                 self.state.active_workspace = wi;
                 self.state.new_tab_in(wi, true)
             }
-            None => self.state.new_workspace("orchestrators".to_string(), home, None),
+            None => self.state.new_workspace("orchestrators".to_string(), root, None),
         };
         self.state.orchestrators.insert(pane);
-        self.spawn_pane_env(
+        self.state.orch_dirs.insert(pane, dir.display().to_string());
+        self.spawn_pane_full(
             pane,
             area.width.max(2) / 2,
             area.height.max(2) / 2,
             Some(crate::agents::hold_on_failure(&command)),
             env,
+            Some(dir),
         )
         .map_err(|e| e.to_string())?;
         Ok(pane)
@@ -1328,6 +1341,7 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
             ident: rt.agent_sessions.get(&id).cloned(),
             config_dir: rt.panes.get(&id).and_then(|p| p.agent_config_dir.clone()),
             team: rt.state.teams.iter().filter(|(_, o)| **o == id).map(|(w, _)| w.0).collect(),
+            dir: rt.state.orch_dirs.get(&id).cloned(),
         };
         rt.state.recent_orchestrators.retain(|r| r.ident != rec.ident);
         rt.state.recent_orchestrators.insert(0, rec);
@@ -1342,6 +1356,7 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
     rt.state.teams.remove(&id);
     rt.state.teams.retain(|_, orch| *orch != id);
     rt.state.orchestrators.remove(&id);
+    rt.state.orch_dirs.remove(&id);
     rt.dirty = true;
     // Read before close_pane: closing the last pane of the last workspace
     // empties `state.workspaces`, and new_space_cwd() → focused_pane() →

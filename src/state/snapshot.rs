@@ -308,10 +308,18 @@ impl Snapshot {
             })
             .collect();
         let orchestrators = panes.iter().filter(|(_, m)| m.orch).map(|(id, _)| *id).collect();
+        // A restored orchestrator keeps feeding its folder into the recents
+        // record whenever it closes later.
+        let orch_dirs = panes
+            .iter()
+            .filter(|(_, m)| m.orch)
+            .filter_map(|(id, m)| m.cwd.as_ref().map(|c| (*id, c.display().to_string())))
+            .collect();
         let state = AppState {
             pane_names,
             teams,
             orchestrators,
+            orch_dirs,
             // Stale worker pane ids inside are harmless: relaunch reattaches
             // only panes that still exist.
             recent_orchestrators: self.recent_orchestrators.clone(),

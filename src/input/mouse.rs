@@ -254,7 +254,10 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                                 InputMode::Menu { x: ev.column, y: ev.row, items };
                         }
                     }
-                    Some(crate::ui::team_panel::Hit::Member(worker)) => {
+                    Some(crate::ui::team_panel::Hit::Focus(worker)) => {
+                        rt.state.focus_pane(worker);
+                    }
+                    Some(crate::ui::team_panel::Hit::Remove(worker)) => {
                         rt.state.teams.remove(&worker);
                     }
                     None => {}
@@ -855,7 +858,12 @@ fn run_menu_action(
                 .as_deref()
                 .map(crate::agents::resume_command)
                 .unwrap_or_else(|| "claude".to_string());
-            match rt.start_orchestrator(&command, rec.config_dir.as_deref(), area) {
+            match rt.start_orchestrator(
+                &command,
+                rec.config_dir.as_deref(),
+                rec.dir.as_deref(),
+                area,
+            ) {
                 Ok(pane) => {
                     for w in rec.team {
                         let w = crate::state::ids::PaneId(w);

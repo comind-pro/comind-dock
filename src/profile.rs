@@ -124,6 +124,13 @@ pub fn profiles_dir() -> Option<PathBuf> {
     crate::config::config_path(None).and_then(|p| p.parent().map(|d| d.join("agents")))
 }
 
+/// Per-orchestrator working folders: everything one orchestrator produces
+/// (plans, notes, drafts) lives under its own dir here — orchestrators are
+/// not bound to any project workspace.
+pub fn orchestrators_dir() -> Option<PathBuf> {
+    crate::config::config_path(None).and_then(|p| p.parent().map(|d| d.join("orchestrators")))
+}
+
 /// Per-workspace agent metadata: profiles scoped to one space, keyed by its
 /// folder (slug = absolute path with '/' → '%'), OUTSIDE the repo itself.
 pub fn ws_profiles_dir(cwd: &std::path::Path) -> Option<PathBuf> {
@@ -320,7 +327,9 @@ impl Profile {
                  Your team: `\"$CDOCK_BIN\" team list` — the panes the user assigned\n\
                  to you in the team panel next to this chat (your own pane id is\n\
                  $CDOCK_PANE_ID). The user can add or remove chats there at any\n\
-                 time — re-check `team list` each round. Work ONLY with your team;\n\
+                 time — re-check `team list` each round. Your cwd is YOUR working\n\
+                 folder: keep your plans, notes and drafts there, never in\n\
+                 project repos. Work ONLY with your team;\n\
                  other panes may belong to other orchestrators. The user prefers\n\
                  NOT to read the worker chats: read them yourself (`pane read`),\n\
                  keep them moving (`pane run`), and report back briefly only when\n\
