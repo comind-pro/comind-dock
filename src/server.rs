@@ -636,6 +636,7 @@ pub async fn run(
                     if !visible {
                         notify(&mut rt, &clients, &notice);
                     }
+                    nudge_orchestrator(&mut rt, &notice);
                 }
             }
             _ = autosave.tick() => {
@@ -677,6 +678,37 @@ fn spawn_and_reap(mut cmd: std::process::Command) {
         std::thread::spawn(move || {
             let _ = child.wait();
         });
+    }
+}
+
+/// A team member finished or blocked: wake its orchestrator by typing a
+/// short update into its chat — the orchestrator collects, reviews and
+/// assigns the next task WITHOUT the user relaying between panes. A busy
+/// claude queues the message; notices are already debounced (done = a
+/// confirmed ≥5s stretch of work), so this cannot storm.
+fn nudge_orchestrator(rt: &mut Runtime, notice: &runtime::Notice) {
+    let Some(&orch) = rt.state.teams.get(&notice.pane) else { return };
+    // Only into a marked orchestrator pane that still lives — anything
+    // else (a plain shell) would try to EXECUTE the pasted text.
+    if orch == notice.pane
+        || !rt.state.orchestrators.contains(&orch)
+        || !rt.panes.contains_key(&orch)
+    {
+        return;
+    }
+    let what = match notice.kind {
+        runtime::NoticeKind::Done => {
+            "finished — collect its result (task result / pane read), review the work, \
+             then assign the next task or report to the user"
+        }
+        runtime::NoticeKind::Blocked => {
+            "is blocked awaiting input — read its screen (pane read) and unblock it, \
+             or escalate to the user"
+        }
+    };
+    let msg = format!("[cdock] team update: %{} \"{}\" {what}.", notice.pane.0, notice.name);
+    if let Err(e) = rt.paste_write(orch, &msg, true) {
+        tracing::warn!(error = %e, "orchestrator nudge failed");
     }
 }
 

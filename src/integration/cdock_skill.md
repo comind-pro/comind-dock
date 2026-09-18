@@ -115,6 +115,10 @@ instruction; read a result BEFORE closing its pane (one slot, read-once);
 results cap at 256 KiB — summarize, don't dump; only touch panes in your
 team (`team list`) — others may belong to another orchestrator.
 
+Orchestrators are woken automatically: when a team member turns done or
+blocked, cdock types "[cdock] team update: …" into the orchestrator's
+chat — assign work, end your turn, and act on updates as they arrive.
+
 ## Rules
 
 - NEVER test cdock server features against the user's live session. Spin a
