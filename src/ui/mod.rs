@@ -4,6 +4,7 @@ pub mod pane_widget;
 pub mod procmon;
 pub mod sidebar;
 pub mod tabbar;
+pub mod team_panel;
 pub mod toast;
 pub mod view;
 
@@ -36,8 +37,30 @@ pub fn compute_view(rt: &Runtime, area: Rect) -> View {
         ..content_col
     };
 
+    // An orchestrator tab keeps its team panel always open: the right
+    // column comes out of the content area BEFORE panes are laid out.
+    let orch = rt
+        .state
+        .active_workspace()
+        .active_tab()
+        .layout
+        .panes()
+        .into_iter()
+        .find(|p| rt.state.orchestrators.contains(p));
+    let (team_panel, content) = match orch {
+        Some(o) if content.width > team_panel::WIDTH * 2 => {
+            let tp = Rect {
+                x: content.x + content.width - team_panel::WIDTH,
+                width: team_panel::WIDTH,
+                ..content
+            };
+            (Some((o, tp)), Rect { width: content.width - team_panel::WIDTH, ..content })
+        }
+        _ => (None, content),
+    };
+
     let (pane_rects, dividers) = rt.layout_panes(content);
-    View { tab_bar, sidebar, pane_rects, dividers, focused: rt.state.focused_pane() }
+    View { tab_bar, sidebar, pane_rects, dividers, focused: rt.state.focused_pane(), team_panel }
 }
 
 /// The pty size a pane would take in this view (content rect minus chrome).
@@ -58,6 +81,9 @@ pub fn render(view: &View, rt: &Runtime, frame: &mut Frame) {
     }
     if let Some(sb) = view.sidebar {
         sidebar::render(rt, &rt.theme, sb, frame);
+    }
+    if let Some((orch, tp)) = view.team_panel {
+        team_panel::render(rt, &rt.theme, orch, tp, frame);
     }
 
     // Each pane draws its own rounded border; the divider gap stays empty,
@@ -216,6 +242,7 @@ mod tests {
             pane_rects: vec![(PaneId(1), Rect::new(0, 1, w, h))],
             dividers: Vec::new(),
             focused: PaneId(1),
+            team_panel: None,
         };
         let wide = pane_sizes(&view(120, 40))[0].1;
         let narrow = pane_sizes(&view(80, 24))[0].1;

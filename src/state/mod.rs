@@ -98,6 +98,9 @@ pub enum MenuAction {
     BehaviorPicker(ids::PaneId),
     /// Inject the behavior into the running session; None clears the mark.
     SetBehavior(ids::PaneId, Option<String>),
+    /// Spawn the built-in orchestrator profile into a new tab (marked, so
+    /// its team panel opens with it).
+    StartOrchestrator,
     /// Submenu: pick which orchestrator pane this pane reports to.
     OrchestratorPicker(ids::PaneId),
     /// Assign the worker to an orchestrator's team; None removes it.
@@ -205,6 +208,11 @@ pub struct AppState {
     /// persisted per pane in the snapshot.
     #[serde(default)]
     pub teams: std::collections::HashMap<PaneId, PaneId>,
+    /// Panes running an orchestrator agent: their tab shows the always-open
+    /// team panel and the sidebar marks them ⌂. Set at spawn (menu item or
+    /// `agent start` with an orchestrator profile).
+    #[serde(default)]
+    pub orchestrators: std::collections::HashSet<PaneId>,
     /// Spaces the user closed, newest first — the "+ new space" menu reopens
     /// them. Capped at RECENT_SPACES.
     #[serde(default)]
@@ -231,6 +239,7 @@ impl AppState {
         Self {
             pane_names: std::collections::HashMap::new(),
             teams: std::collections::HashMap::new(),
+            orchestrators: std::collections::HashSet::new(),
             recent_spaces: Vec::new(),
             workspaces: vec![ws],
             active_workspace: 0,

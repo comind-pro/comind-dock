@@ -935,7 +935,8 @@ impl Runtime {
             }
             let name = self.state.pane_name(*id).map(str::to_string);
             let team = self.state.teams.get(id).map(|orch| orch.0);
-            if agent.is_some() || cwd.is_some() || name.is_some() || team.is_some() {
+            let orch = self.state.orchestrators.contains(id);
+            if agent.is_some() || cwd.is_some() || name.is_some() || team.is_some() || orch {
                 metas.insert(
                     *id,
                     crate::state::snapshot::PaneMeta {
@@ -946,6 +947,7 @@ impl Runtime {
                         behavior: p.behavior.clone(),
                         name,
                         team,
+                        orch,
                         saved_pane: None, // save-side: the layout leaf carries the id
                     },
                 );
@@ -1282,6 +1284,7 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
     rt.results.remove(&id);
     rt.state.teams.remove(&id);
     rt.state.teams.retain(|_, orch| *orch != id);
+    rt.state.orchestrators.remove(&id);
     rt.dirty = true;
     // Read before close_pane: closing the last pane of the last workspace
     // empties `state.workspaces`, and new_space_cwd() → focused_pane() →

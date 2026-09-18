@@ -230,6 +230,21 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 }
                 return InputOutcome::Continue;
             }
+            if let Some((orch, tp)) = view.team_panel
+                && tp.contains(pos)
+            {
+                if let Some((worker, member)) =
+                    crate::ui::team_panel::hit(rt, orch, tp, ev.column, ev.row)
+                {
+                    if member {
+                        rt.state.teams.remove(&worker);
+                    } else {
+                        rt.state.teams.insert(worker, orch);
+                    }
+                    rt.mark_dirty();
+                }
+                return InputOutcome::Continue;
+            }
             if let Some(d) = view.dividers.iter().find(|d| d.rect.contains(pos)) {
                 let last_pos = if d.dir == Dir::Right { ev.column } else { ev.row };
                 rt.drag = Some(MouseDrag::Divider {
@@ -744,6 +759,7 @@ fn run_menu_action(
                 ws_cwd.as_deref().unwrap_or(std::path::Path::new("/")),
             ) {
                 Ok(p) => {
+                    let orchestrator = p.toml.orchestrator;
                     let (command, mut env) = p.resolve_with(ws_cwd.as_deref());
                     // The new agent lives where its parent lives: the pane we
                     // split, else the focused one.
@@ -757,6 +773,9 @@ fn run_menu_action(
                         },
                         None => rt.state.new_tab(),
                     };
+                    if orchestrator {
+                        rt.state.orchestrators.insert(pane);
+                    }
                     rt.spawn_pane_env(
                         pane,
                         area.width.max(2) / 2,
@@ -770,6 +789,17 @@ fn run_menu_action(
                     Ok(())
                 }
             }
+        }
+        // "new orchestrator": the built-in profile (materialized on first
+        // use) into a fresh tab, marked so the team panel opens with it.
+        MenuAction::StartOrchestrator => {
+            return run_menu_action(
+                rt,
+                MenuAction::StartProfile("orchestrator".to_string(), None),
+                x,
+                y,
+                area,
+            );
         }
         MenuAction::NewSpacePicker => {
             // Already-open folders are not history — the sidebar has them.

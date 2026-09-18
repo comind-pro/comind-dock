@@ -33,6 +33,7 @@ pub fn pane_items(pane: PaneId) -> Vec<MenuItem> {
 pub fn app_items(update: Option<&str>) -> Vec<MenuItem> {
     let mut items: Vec<MenuItem> = [
         ("new agent…", MenuAction::AgentPicker(None)),
+        ("new orchestrator", MenuAction::StartOrchestrator),
         ("agents...", MenuAction::ProfileBrowser),
         ("skills...", MenuAction::SkillBrowser),
         ("settings", MenuAction::OpenSettings),

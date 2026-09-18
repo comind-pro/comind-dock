@@ -62,6 +62,10 @@ pub enum Req {
         /// Orchestrator pane the new pane joins as a team member.
         #[serde(default)]
         team: Option<u64>,
+        /// The new pane IS an orchestrator (team panel + ⌂ mark). The CLI
+        /// sets it from the profile's `orchestrator = true`.
+        #[serde(default)]
+        orchestrator: bool,
     },
     /// From the agent's SessionStart integration hook: which conversation
     /// runs in this pane (restore resumes exactly it).
@@ -375,7 +379,7 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                 Ok(err(format!("no such pane %{pane}")))
             }
         }
-        Req::AgentStart { command, split, workspace, env, team } => {
+        Req::AgentStart { command, split, workspace, env, team, orchestrator } => {
             let Some(wi) = resolve_ws(rt, workspace) else {
                 return Ok(err("no such workspace"));
             };
@@ -406,6 +410,9 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                 Ok(()) => {
                     if let Some(orch) = team.map(PaneId).filter(|o| rt.panes.contains_key(o)) {
                         rt.state.teams.insert(pane, orch);
+                    }
+                    if orchestrator {
+                        rt.state.orchestrators.insert(pane);
                     }
                     rt.mark_dirty();
                     Ok(json!({"ok": true, "pane": pane.0}))
@@ -731,7 +738,7 @@ pub const REFERENCE: &str = r#"[
   {"cmd":"run","pane":1,"command":"ls"},
   {"cmd":"read","pane":1,"lines":30},
   {"cmd":"focus","pane":1},
-  {"cmd":"agent-start","command":"claude","split":"right","workspace":3,"env":[["K","V"]],"team":5},
+  {"cmd":"agent-start","command":"claude","split":"right","workspace":3,"env":[["K","V"]],"team":5,"orchestrator":false},
   {"cmd":"report-agent-session","pane":1,"session_id":"uuid","agent":"claude"},
   {"cmd":"report-agent","pane":1,"state":"blocked","label":"awaiting review","ttl_ms":60000,"pid":4321},
   {"cmd":"report-metadata","pane":1,"title":"builder"},
@@ -832,6 +839,8 @@ fn pane_list(rt: &Runtime) -> Value {
                     }),
                     // Orchestrator pane this pane reports to (teams map).
                     "team": rt.state.teams.get(&id).map(|o| o.0),
+                    // This pane IS an orchestrator (team panel + ⌂ mark).
+                    "orchestrator": rt.state.orchestrators.contains(&id),
                     "focused": id == focused,
                 }));
             }
@@ -1218,7 +1227,7 @@ mod tests {
         assert!(matches!(req, Req::WaitAgentStatus { transition: false, .. }));
         let req: Req = serde_json::from_str(r#"{"cmd":"agent-start","command":"claude"}"#)
             .expect("agent-start without team parses");
-        assert!(matches!(req, Req::AgentStart { team: None, .. }));
+        assert!(matches!(req, Req::AgentStart { team: None, orchestrator: false, .. }));
         let req: Req = serde_json::from_str(r#"{"cmd":"task-done","pane":7,"result":"r"}"#)
             .expect("task-done without pid parses");
         assert!(matches!(req, Req::TaskDone { pid: None, .. }));

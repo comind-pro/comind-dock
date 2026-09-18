@@ -982,14 +982,17 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             Req::AgentExplain { pane: parse_pane(&pane)? }
         }
         Cmd::Agent { sub: AgentCmd::Start { command, profile, split, workspace, team } } => {
-            let (command, mut env) = match profile {
+            let (command, mut env, orchestrator) = match profile {
                 // Workspace-scoped agents (this cwd) win over global ones;
                 // "ws:"/"global:" prefixes pick explicitly.
                 Some(name) => {
                     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-                    profile::load_any(&name, &cwd)?.resolve_with(Some(&cwd))
+                    let p = profile::load_any(&name, &cwd)?;
+                    let orch = p.toml.orchestrator;
+                    let (command, env) = p.resolve_with(Some(&cwd));
+                    (command, env, orch)
                 }
-                None => (command.expect("clap: command or profile"), Vec::new()),
+                None => (command.expect("clap: command or profile"), Vec::new(), false),
             };
             // We run inside the caller's pane: its claude profile is ours.
             agents::inherit_claude_profile(
@@ -997,7 +1000,7 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(),
             );
             let team = team.as_deref().map(parse_pane).transpose()?;
-            Req::AgentStart { command, split, workspace, env, team }
+            Req::AgentStart { command, split, workspace, env, team, orchestrator }
         }
         Cmd::Plugin { sub } => {
             return match sub {

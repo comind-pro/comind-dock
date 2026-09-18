@@ -97,7 +97,10 @@ fn agent_rows(
     };
     // User-given name wins; then the agent's OSC title; then the bare agent name.
     // The name gets nearly the full sidebar width — its own row, not shared.
-    let name_budget = (width as usize).saturating_sub(indent.width() + dot.width() + 1).max(6);
+    let orch_mark = if state.orchestrators.contains(&pane) { "⌂ " } else { "" };
+    let name_budget = (width as usize)
+        .saturating_sub(indent.width() + dot.width() + orch_mark.width() + 1)
+        .max(6);
     let name = match state.pane_name(pane) {
         Some(n) => crate::agents::truncate_clean(n, name_budget),
         None if title.trim().is_empty() => agent.to_string(),
@@ -109,10 +112,13 @@ fn agent_rows(
     } else {
         Style::new().add_modifier(Modifier::BOLD)
     };
+    // Orchestrator panes carry a ⌂ so the coordinator chat stands out in
+    // the agent list.
     out.push(Row {
         line: Line::from(vec![
             Span::raw(indent.to_string()),
             Span::styled(dot, dot_style),
+            Span::styled(orch_mark, Style::new().fg(theme.accent)),
             Span::styled(name, name_style),
         ]),
         target: Some(Target::Pane(pane)),

@@ -317,8 +317,13 @@ impl Profile {
                 "\n## You are an orchestrator\n\n\
                  The user talks to YOU; worker agents in other panes do the work.\n\
                  Your team: `\"$CDOCK_BIN\" team list` — the panes the user assigned\n\
-                 to you (your own pane id is $CDOCK_PANE_ID). Work ONLY with your\n\
-                 team; other panes may belong to other orchestrators.\n\n\
+                 to you in the team panel next to this chat (your own pane id is\n\
+                 $CDOCK_PANE_ID). The user can add or remove chats there at any\n\
+                 time — re-check `team list` each round. Work ONLY with your team;\n\
+                 other panes may belong to other orchestrators. The user prefers\n\
+                 NOT to read the worker chats: read them yourself (`pane read`),\n\
+                 keep them moving (`pane run`), and report back briefly only when\n\
+                 something needs the user — blocked, finished, or off the rails.\n\n\
                  Delegation cycle:\n\
                  1. Spawn when the team lacks a role: `\"$CDOCK_BIN\" agent start\n\
                     --profile <name> --split right --team \"$CDOCK_PANE_ID\"` (the\n\
