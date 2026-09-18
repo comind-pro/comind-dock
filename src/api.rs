@@ -218,6 +218,12 @@ pub enum Req {
         worker: u64,
         orchestrator: Option<u64>,
     },
+    /// Set an orchestrator's reaction mode: report | auto | notify (what
+    /// the team panel's mode row does).
+    TeamMode {
+        orchestrator: u64,
+        mode: String,
+    },
 }
 
 pub enum WaitCond {
@@ -752,6 +758,18 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             rt.save_session();
             Ok(json!({"ok": true}))
         }
+        Req::TeamMode { orchestrator, mode } => {
+            let orch = PaneId(orchestrator);
+            if !rt.panes.contains_key(&orch) {
+                return Ok(err(format!("no such pane {orch}")));
+            }
+            let Some(mode) = crate::state::OrchMode::parse(&mode) else {
+                return Ok(err(format!("bad mode {mode:?} (report|auto|notify)")));
+            };
+            rt.state.orch_modes.insert(orch, mode);
+            rt.mark_dirty();
+            Ok(json!({"ok": true, "mode": mode.word()}))
+        }
     }
 }
 
@@ -794,6 +812,7 @@ pub const REFERENCE: &str = r#"[
   {"cmd":"wait-task-result","pane":1,"timeout_ms":600000},
   {"cmd":"team-list","orchestrator":5},
   {"cmd":"team-set","worker":1,"orchestrator":5},
+  {"cmd":"team-mode","orchestrator":5,"mode":"auto"},
   {"cmd":"subscribe","events":["agent-status","output"],"pane":1}
 ]"#;
 
@@ -869,6 +888,10 @@ fn pane_list(rt: &Runtime) -> Value {
                     "team": rt.state.teams.get(&id).map(|o| o.0),
                     // This pane IS an orchestrator (team panel + ⌂ mark).
                     "orchestrator": rt.state.orchestrators.contains(&id),
+                    // Its reaction mode (null for non-orchestrators).
+                    "mode": rt.state.orchestrators.contains(&id).then(|| {
+                        rt.state.orch_modes.get(&id).copied().unwrap_or_default().word()
+                    }),
                     "focused": id == focused,
                 }));
             }
@@ -1262,5 +1285,11 @@ mod tests {
         let req: Req = serde_json::from_str(r#"{"cmd":"team-set","worker":3,"orchestrator":null}"#)
             .expect("team-set clear parses");
         assert!(matches!(req, Req::TeamSet { worker: 3, orchestrator: None }));
+        let req: Req =
+            serde_json::from_str(r#"{"cmd":"team-mode","orchestrator":5,"mode":"auto"}"#)
+                .expect("team-mode parses");
+        assert!(matches!(req, Req::TeamMode { orchestrator: 5, .. }));
+        assert_eq!(crate::state::OrchMode::parse("report"), Some(crate::state::OrchMode::Report));
+        assert_eq!(crate::state::OrchMode::parse("bogus"), None);
     }
 }

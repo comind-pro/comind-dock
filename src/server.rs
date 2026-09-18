@@ -699,14 +699,20 @@ fn nudge_orchestrator(rt: &mut Runtime, notice: &runtime::Notice) {
     let what = match notice.kind {
         runtime::NoticeKind::Done => {
             "finished — collect its result (task result / pane read), review the work, \
-             then assign the next task or report to the user"
+             then act per your mode"
         }
         runtime::NoticeKind::Blocked => {
             "is blocked awaiting input — read its screen (pane read) and unblock it, \
              or escalate to the user"
         }
     };
-    let msg = format!("[cdock] team update: %{} \"{}\" {what}.", notice.pane.0, notice.name);
+    let mode = rt.state.orch_modes.get(&orch).copied().unwrap_or_default();
+    let msg = format!(
+        "[cdock] team update (mode: {}): %{} \"{}\" {what}.",
+        mode.word(),
+        notice.pane.0,
+        notice.name
+    );
     if let Err(e) = rt.paste_write(orch, &msg, true) {
         tracing::warn!(error = %e, "orchestrator nudge failed");
     }

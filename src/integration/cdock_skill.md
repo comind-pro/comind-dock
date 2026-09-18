@@ -116,8 +116,12 @@ results cap at 256 KiB — summarize, don't dump; only touch panes in your
 team (`team list`) — others may belong to another orchestrator.
 
 Orchestrators are woken automatically: when a team member turns done or
-blocked, cdock types "[cdock] team update: …" into the orchestrator's
-chat — assign work, end your turn, and act on updates as they arrive.
+blocked, cdock types "[cdock] team update (mode: …): …" into the
+orchestrator's chat — assign work, end your turn, and act on updates as
+they arrive. The mode inside the update is the orchestrator's CURRENT
+policy — report (one final report), auto (self-driving loop), notify
+(ask the user each step); switch it in the team panel or with
+`"$CDOCK_BIN" team mode <orch> report|auto|notify`.
 
 ## Rules
 

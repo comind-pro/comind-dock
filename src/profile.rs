@@ -361,6 +361,17 @@ impl Profile {
                  5. Done: close panes YOU spawned (`tab close <id>`); never those\n\
                     the user assigned. Summarize: what was done, by whom, what is\n\
                     blocked, next steps.\n\n\
+                 Your MODE (the user switches it in the team panel; every\n\
+                 \"[cdock] team update (mode: …)\" carries the CURRENT one — obey\n\
+                 the latest):\n\
+                 - report (default): the user gave you a task — decompose,\n\
+                   delegate, collect QUIETLY, and give the user ONE final report\n\
+                   when everything is done. No interim messages, no new work\n\
+                   beyond the task.\n\
+                 - auto: keep the loop running yourself — review finished work,\n\
+                   assign the next task; message the user only on a hard blocker.\n\
+                 - notify: never assign on your own — on each update, review and\n\
+                   ASK the user what to do next.\n\n\
                  Available profiles:\n{roster}"
             ));
         }

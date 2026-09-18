@@ -18,6 +18,8 @@ pub const WIDTH: u16 = 28;
 
 /// What a click inside the panel means.
 pub enum Hit {
+    /// The "mode: …" row: cycle report → auto → notify.
+    Mode,
     /// The "+ add" row: open the candidate picker.
     Add,
     /// A member's name: jump to that pane.
@@ -86,9 +88,9 @@ pub fn candidate_label(rt: &Runtime, id: PaneId) -> String {
     format!("{name} %{} · {agent}{profile} · {ws}", id.0)
 }
 
-/// Total text lines the panel body holds (the "+ add" row + 2 per member).
+/// Total text lines the panel body holds (mode + "+ add" + 2 per member).
 fn line_count(rt: &Runtime, orch: PaneId) -> u16 {
-    1 + members(rt, orch).len() as u16 * 2
+    2 + members(rt, orch).len() as u16 * 2
 }
 
 /// Highest useful scroll offset for the wheel handler.
@@ -97,8 +99,14 @@ pub fn max_scroll(rt: &Runtime, orch: PaneId, rect: Rect) -> u16 {
 }
 
 pub fn render(rt: &Runtime, theme: &Theme, orch: PaneId, rect: Rect, frame: &mut Frame) {
-    let mut lines: Vec<Line> =
-        vec![Line::from(Span::styled("+ add", Style::new().fg(theme.accent)))];
+    let mode = rt.state.orch_modes.get(&orch).copied().unwrap_or_default();
+    let mut lines: Vec<Line> = vec![
+        Line::from(vec![
+            Span::styled("mode: ", Style::new().fg(theme.muted)),
+            Span::styled(mode.word(), Style::new().fg(theme.accent)),
+        ]),
+        Line::from(Span::styled("+ add", Style::new().fg(theme.accent))),
+    ];
     let inner_w = rect.width.saturating_sub(2) as usize;
     for id in members(rt, orch) {
         let status = rt.panes.get(&id).map(|p| p.effective_status());
@@ -138,9 +146,12 @@ pub fn hit(rt: &Runtime, orch: PaneId, rect: Rect, x: u16, y: u16) -> Option<Hit
     let scroll = rt.team_scroll.min(max_scroll(rt, orch, rect));
     let line = y - inner.y + scroll;
     if line == 0 {
+        return Some(Hit::Mode);
+    }
+    if line == 1 {
         return Some(Hit::Add);
     }
-    let on_mark = line % 2 == 1 && x < inner.x + 2;
-    let idx = ((line - 1) / 2) as usize;
+    let on_mark = line.is_multiple_of(2) && x < inner.x + 2;
+    let idx = ((line - 2) / 2) as usize;
     members(rt, orch).get(idx).map(|p| if on_mark { Hit::Remove(*p) } else { Hit::Focus(*p) })
 }

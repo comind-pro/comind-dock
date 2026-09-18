@@ -504,6 +504,8 @@ enum TeamCmd {
     },
     /// Assign a worker pane to an orchestrator ("none" removes it).
     Set { worker: String, orchestrator: String },
+    /// Set an orchestrator's reaction mode: report | auto | notify.
+    Mode { orchestrator: String, mode: String },
 }
 
 /// Sessions are files in the state dir: session-<name>.json (+ sockets
@@ -1223,6 +1225,9 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                     .then(|| parse_pane(&orchestrator))
                     .transpose()?,
             },
+            TeamCmd::Mode { orchestrator, mode } => {
+                Req::TeamMode { orchestrator: parse_pane(&orchestrator)?, mode }
+            }
         },
         Cmd::Api { sub: ApiCmd::Snapshot } => Req::Snapshot,
         Cmd::Api { sub: ApiCmd::Reference | ApiCmd::Schema } => {

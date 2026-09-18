@@ -33,6 +33,8 @@ pub struct PaneMeta {
     pub team: Option<u64>,
     /// This pane runs an orchestrator agent (team panel + ⌂ mark).
     pub orch: bool,
+    /// The orchestrator's reaction mode (None = default).
+    pub orch_mode: Option<crate::state::OrchMode>,
     /// Pane id at SAVE time — keys the screens-<session>/pane-<id>.txt
     /// file; restore-side only (save derives it from the layout leaf).
     pub saved_pane: Option<u64>,
@@ -109,6 +111,9 @@ pub enum NodeSnap {
         /// This pane runs an orchestrator agent.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         orch: bool,
+        /// The orchestrator's reaction mode.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        orch_mode: Option<crate::state::OrchMode>,
         /// Pane id at save time — names the screen-history file.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pane: Option<u64>,
@@ -141,6 +146,7 @@ fn node_to_snap(node: &Node, panes: &std::collections::HashMap<PaneId, PaneMeta>
                 name: meta.name,
                 team: meta.team,
                 orch: meta.orch,
+                orch_mode: meta.orch_mode,
                 pane: Some(id.0),
             }
         }
@@ -158,7 +164,18 @@ fn node_to_snap(node: &Node, panes: &std::collections::HashMap<PaneId, PaneMeta>
 
 fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen, agents: &mut Vec<PaneSpawn>) -> Node {
     match snap {
-        NodeSnap::Leaf { agent, cwd, env, agent_bin, behavior, name, team, orch, pane } => {
+        NodeSnap::Leaf {
+            agent,
+            cwd,
+            env,
+            agent_bin,
+            behavior,
+            name,
+            team,
+            orch,
+            orch_mode,
+            pane,
+        } => {
             let id = ids.pane();
             agents.push((
                 id,
@@ -171,6 +188,7 @@ fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen, agents: &mut Vec<PaneSpawn>) -
                     name: name.clone(),
                     team: *team,
                     orch: *orch,
+                    orch_mode: *orch_mode,
                     saved_pane: *pane,
                 },
             ));
@@ -315,11 +333,14 @@ impl Snapshot {
             .filter(|(_, m)| m.orch)
             .filter_map(|(id, m)| m.cwd.as_ref().map(|c| (*id, c.display().to_string())))
             .collect();
+        let orch_modes =
+            panes.iter().filter_map(|(id, m)| m.orch_mode.map(|mode| (*id, mode))).collect();
         let state = AppState {
             pane_names,
             teams,
             orchestrators,
             orch_dirs,
+            orch_modes,
             // Stale worker pane ids inside are harmless: relaunch reattaches
             // only panes that still exist.
             recent_orchestrators: self.recent_orchestrators.clone(),
@@ -619,6 +640,7 @@ mod tests {
                 name: Some("kafka refactor".into()),
                 team: None,
                 orch: false,
+                orch_mode: None,
                 saved_pane: None,
             },
         )]);
@@ -678,7 +700,14 @@ mod tests {
         let (orch, worker) = (panes[0], panes[1]);
         let metas = std::collections::HashMap::from([
             (worker, PaneMeta { team: Some(orch.0), ..Default::default() }),
-            (orch, PaneMeta { orch: true, ..Default::default() }),
+            (
+                orch,
+                PaneMeta {
+                    orch: true,
+                    orch_mode: Some(crate::state::OrchMode::Auto),
+                    ..Default::default()
+                },
+            ),
         ]);
         let snap = Snapshot::of(&s, &metas);
         let json = serde_json::to_string(&snap).unwrap();
@@ -690,6 +719,11 @@ mod tests {
         assert_eq!(restored.teams.len(), 1, "only the assigned pane joins a team");
         assert!(restored.orchestrators.contains(&new_orch), "orchestrator mark survives");
         assert_eq!(restored.orchestrators.len(), 1);
+        assert_eq!(
+            restored.orch_modes.get(&new_orch),
+            Some(&crate::state::OrchMode::Auto),
+            "the mode survives the round trip"
+        );
     }
 
     /// A degenerate (empty-tabs) workspace between a parent and its worktree

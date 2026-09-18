@@ -230,6 +230,10 @@ pub struct AppState {
     /// when the pane closes).
     #[serde(default)]
     pub orch_dirs: std::collections::HashMap<PaneId, String>,
+    /// Orchestrator reaction mode; a missing entry means the default
+    /// (report). Switched from the team panel or `team mode`.
+    #[serde(default)]
+    pub orch_modes: std::collections::HashMap<PaneId, OrchMode>,
     /// Spaces the user closed, newest first — the "+ new space" menu reopens
     /// them. Capped at RECENT_SPACES.
     #[serde(default)]
@@ -243,6 +247,49 @@ pub const RECENT_SPACES: usize = 10;
 
 /// How many closed orchestrators the "new orchestrator" menu remembers.
 pub const RECENT_ORCHESTRATORS: usize = 5;
+
+/// How an orchestrator reacts to team updates. The server nudges it the
+/// same way in every mode — the mode rides inside the nudge text and the
+/// orchestrator's prompt tells it how to behave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OrchMode {
+    /// One task in — one final report out; no self-invented work.
+    #[default]
+    Report,
+    /// Keeps the loop running itself; pings the user only on hard blockers.
+    Auto,
+    /// Never assigns on its own — asks the user at every step.
+    Notify,
+}
+
+impl OrchMode {
+    pub fn word(self) -> &'static str {
+        match self {
+            OrchMode::Report => "report",
+            OrchMode::Auto => "auto",
+            OrchMode::Notify => "notify",
+        }
+    }
+
+    /// Panel click cycles report → auto → notify → report.
+    pub fn next(self) -> Self {
+        match self {
+            OrchMode::Report => OrchMode::Auto,
+            OrchMode::Auto => OrchMode::Notify,
+            OrchMode::Notify => OrchMode::Report,
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "report" => Some(OrchMode::Report),
+            "auto" => Some(OrchMode::Auto),
+            "notify" => Some(OrchMode::Notify),
+            _ => None,
+        }
+    }
+}
 
 /// A closed orchestrator's settings — enough to relaunch it: resume the
 /// conversation, keep the claude profile, reattach still-open team panes.
@@ -262,6 +309,9 @@ pub struct RecentOrchestrator {
     /// notes and its cwd-bound claude history stay with it.
     #[serde(default)]
     pub dir: Option<String>,
+    /// Reaction mode at close time — relaunch restores it.
+    #[serde(default)]
+    pub mode: Option<OrchMode>,
 }
 
 fn default_true() -> bool {
@@ -282,6 +332,7 @@ impl AppState {
             orchestrators: std::collections::HashSet::new(),
             recent_orchestrators: Vec::new(),
             orch_dirs: std::collections::HashMap::new(),
+            orch_modes: std::collections::HashMap::new(),
             recent_spaces: Vec::new(),
             workspaces: vec![ws],
             active_workspace: 0,

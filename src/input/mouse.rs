@@ -234,6 +234,12 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 && tp.contains(pos)
             {
                 match crate::ui::team_panel::hit(rt, orch, tp, ev.column, ev.row) {
+                    Some(crate::ui::team_panel::Hit::Mode) => {
+                        let next =
+                            rt.state.orch_modes.get(&orch).copied().unwrap_or_default().next();
+                        rt.state.orch_modes.insert(orch, next);
+                        rt.add_plain_toast(format!("orchestrator mode: {}", next.word()), 6);
+                    }
                     Some(crate::ui::team_panel::Hit::Add) => {
                         // Picker of the other active agent panes.
                         let items: Vec<MenuItem> = crate::ui::team_panel::candidates(rt, orch)
@@ -866,6 +872,9 @@ fn run_menu_action(
                         if rt.panes.contains_key(&w) {
                             rt.state.teams.insert(w, pane);
                         }
+                    }
+                    if let Some(mode) = rec.mode {
+                        rt.state.orch_modes.insert(pane, mode);
                     }
                 }
                 Err(e) => rt.add_plain_toast(format!("orchestrator: {e}"), 10),
