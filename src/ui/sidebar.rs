@@ -151,14 +151,45 @@ fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
             target: Some(Target::AppMenu),
         },
         Row { line: Line::from(""), target: None },
-        Row {
+    ];
+
+    // Orchestrators pinned on top: their own block, a divider separates it
+    // from the spaces below. They are skipped in the per-space listing.
+    let mut orchs: Vec<PaneId> = state
+        .orchestrators
+        .iter()
+        .copied()
+        .filter(|p| state.locate_pane(*p).is_some_and(|(wi, _)| state.in_scope(wi)))
+        .collect();
+    orchs.sort_by_key(|p| p.0);
+    if !orchs.is_empty() {
+        out.push(Row {
             line: Line::from(Span::styled(
-                " spaces",
+                " orchestrators",
                 Style::new().fg(theme.muted).add_modifier(Modifier::BOLD),
             )),
             target: None,
-        },
-    ];
+        });
+        for pane in &orchs {
+            agent_rows(rt, theme, *pane, "   ", width, &mut out);
+        }
+        out.push(Row { line: Line::from(""), target: None });
+        out.push(Row {
+            line: Line::from(Span::styled(
+                "─".repeat(width as usize),
+                Style::new().fg(theme.muted),
+            )),
+            target: None,
+        });
+    }
+
+    out.push(Row {
+        line: Line::from(Span::styled(
+            " spaces",
+            Style::new().fg(theme.muted).add_modifier(Modifier::BOLD),
+        )),
+        target: None,
+    });
 
     for (wi, ws) in state.workspaces.iter().enumerate() {
         if !state.in_scope(wi) {
@@ -201,6 +232,9 @@ fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
         let agent_indent = format!("{indent}   ");
         for tab in &ws.tabs {
             for pane in tab.layout.panes() {
+                if state.orchestrators.contains(&pane) {
+                    continue; // pinned in the top block
+                }
                 agent_rows(rt, theme, pane, &agent_indent, width, &mut out);
             }
         }
