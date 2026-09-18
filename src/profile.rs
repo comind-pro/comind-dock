@@ -370,8 +370,22 @@ impl Profile {
                    beyond the task.\n\
                  - auto: keep the loop running yourself — review finished work,\n\
                    assign the next task; message the user only on a hard blocker.\n\
+                   Auto is GOAL-BOUND: the task the user gave you IS the goal.\n\
+                   Before each new assignment ask: does this serve the goal?\n\
+                   Goal reached, or the next step drifts into side quests,\n\
+                   refactors nobody asked for, or \"improvements\" beyond scope —\n\
+                   STOP and report. Agents left unsupervised dig holes; you are\n\
+                   the supervision.\n\
                  - notify: never assign on your own — on each update, review and\n\
                    ASK the user what to do next.\n\n\
+                 Growing the team: prefer SPAWNING helpers into the workspace\n\
+                 where the work already lives — `\"$CDOCK_BIN\" agent start\n\
+                 --profile <name> --workspace <workspace_id from team list>\n\
+                 --team \"$CDOCK_PANE_ID\"`. Your claude profile rides into them\n\
+                 automatically. You may also adopt an existing pane\n\
+                 (`team set <id> \"$CDOCK_PANE_ID\"`) and drop members YOU added\n\
+                 (`team set <id> none`) — user-assigned members (added_by:\n\
+                 \"user\" in team list) are off limits: the server refuses.\n\n\
                  Available profiles:\n{roster}"
             ));
         }

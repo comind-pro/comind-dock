@@ -261,6 +261,7 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                     }
                     Some(crate::ui::team_panel::Hit::Remove(worker)) => {
                         rt.state.teams.remove(&worker);
+                        rt.state.orch_added.remove(&worker);
                     }
                     None => {}
                 }
@@ -1291,13 +1292,17 @@ fn run_menu_action(
             Ok(())
         }
         MenuAction::SetTeam(worker, orchestrator) => {
+            // UI paths are the USER acting: membership set here is
+            // user-assigned — the orchestrator cannot remove it.
             match orchestrator {
                 Some(o) => {
                     rt.state.teams.insert(worker, o);
+                    rt.state.orch_added.remove(&worker);
                     rt.add_plain_toast(format!("%{} → team %{}", worker.0, o.0), 8);
                 }
                 None => {
                     rt.state.teams.remove(&worker);
+                    rt.state.orch_added.remove(&worker);
                 }
             }
             rt.mark_dirty();

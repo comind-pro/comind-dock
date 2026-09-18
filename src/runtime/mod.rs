@@ -1001,6 +1001,7 @@ impl Runtime {
             }
             let name = self.state.pane_name(*id).map(str::to_string);
             let team = self.state.teams.get(id).map(|orch| orch.0);
+            let team_own = self.state.orch_added.contains(id);
             let orch = self.state.orchestrators.contains(id);
             let orch_mode = self.state.orch_modes.get(id).copied();
             if agent.is_some() || cwd.is_some() || name.is_some() || team.is_some() || orch {
@@ -1014,6 +1015,7 @@ impl Runtime {
                         behavior: p.behavior.clone(),
                         name,
                         team,
+                        team_own,
                         orch,
                         orch_mode,
                         saved_pane: None, // save-side: the layout leaf carries the id
@@ -1376,6 +1378,9 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
     rt.state.orchestrators.remove(&id);
     rt.state.orch_dirs.remove(&id);
     rt.state.orch_modes.remove(&id);
+    // Ownership marks live only as long as the membership itself.
+    let crate::state::AppState { teams, orch_added, .. } = &mut rt.state;
+    orch_added.retain(|w| teams.contains_key(w));
     rt.dirty = true;
     // Read before close_pane: closing the last pane of the last workspace
     // empties `state.workspaces`, and new_space_cwd() → focused_pane() →

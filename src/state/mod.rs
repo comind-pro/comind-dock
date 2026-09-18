@@ -234,6 +234,11 @@ pub struct AppState {
     /// (report). Switched from the team panel or `team mode`.
     #[serde(default)]
     pub orch_modes: std::collections::HashMap<PaneId, OrchMode>,
+    /// Workers the ORCHESTRATOR itself added (CLI team set / --team).
+    /// Absent = user-assigned: the server refuses CLI removal of those —
+    /// an orchestrator may only drop members it added itself.
+    #[serde(default)]
+    pub orch_added: std::collections::HashSet<PaneId>,
     /// Spaces the user closed, newest first — the "+ new space" menu reopens
     /// them. Capped at RECENT_SPACES.
     #[serde(default)]
@@ -333,6 +338,7 @@ impl AppState {
             recent_orchestrators: Vec::new(),
             orch_dirs: std::collections::HashMap::new(),
             orch_modes: std::collections::HashMap::new(),
+            orch_added: std::collections::HashSet::new(),
             recent_spaces: Vec::new(),
             workspaces: vec![ws],
             active_workspace: 0,

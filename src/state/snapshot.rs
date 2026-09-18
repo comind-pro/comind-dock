@@ -31,6 +31,8 @@ pub struct PaneMeta {
     /// SAVED pane id of this pane's orchestrator (teams map) — restore
     /// remaps it to the freshly allocated id.
     pub team: Option<u64>,
+    /// The orchestrator itself added this worker (it may remove it too).
+    pub team_own: bool,
     /// This pane runs an orchestrator agent (team panel + ⌂ mark).
     pub orch: bool,
     /// The orchestrator's reaction mode (None = default).
@@ -108,6 +110,9 @@ pub enum NodeSnap {
         /// Saved pane id of this pane's orchestrator (teams map).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         team: Option<u64>,
+        /// The orchestrator itself added this worker.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        team_own: bool,
         /// This pane runs an orchestrator agent.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         orch: bool,
@@ -145,6 +150,7 @@ fn node_to_snap(node: &Node, panes: &std::collections::HashMap<PaneId, PaneMeta>
                 behavior: meta.behavior,
                 name: meta.name,
                 team: meta.team,
+                team_own: meta.team_own,
                 orch: meta.orch,
                 orch_mode: meta.orch_mode,
                 pane: Some(id.0),
@@ -172,6 +178,7 @@ fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen, agents: &mut Vec<PaneSpawn>) -
             behavior,
             name,
             team,
+            team_own,
             orch,
             orch_mode,
             pane,
@@ -187,6 +194,7 @@ fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen, agents: &mut Vec<PaneSpawn>) -
                     behavior: behavior.clone(),
                     name: name.clone(),
                     team: *team,
+                    team_own: *team_own,
                     orch: *orch,
                     orch_mode: *orch_mode,
                     saved_pane: *pane,
@@ -335,12 +343,14 @@ impl Snapshot {
             .collect();
         let orch_modes =
             panes.iter().filter_map(|(id, m)| m.orch_mode.map(|mode| (*id, mode))).collect();
+        let orch_added = panes.iter().filter(|(_, m)| m.team_own).map(|(id, _)| *id).collect();
         let state = AppState {
             pane_names,
             teams,
             orchestrators,
             orch_dirs,
             orch_modes,
+            orch_added,
             // Stale worker pane ids inside are harmless: relaunch reattaches
             // only panes that still exist.
             recent_orchestrators: self.recent_orchestrators.clone(),
@@ -639,6 +649,7 @@ mod tests {
                 behavior: Some("ws:researcher".into()),
                 name: Some("kafka refactor".into()),
                 team: None,
+                team_own: false,
                 orch: false,
                 orch_mode: None,
                 saved_pane: None,

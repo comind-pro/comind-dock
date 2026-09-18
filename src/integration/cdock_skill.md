@@ -119,9 +119,17 @@ Orchestrators are woken automatically: when a team member turns done or
 blocked, cdock types "[cdock] team update (mode: …): …" into the
 orchestrator's chat — assign work, end your turn, and act on updates as
 they arrive. The mode inside the update is the orchestrator's CURRENT
-policy — report (one final report), auto (self-driving loop), notify
+policy — report (one final report), auto (goal-bound self-driving loop:
+stop when the user's task is done, never invent side quests), notify
 (ask the user each step); switch it in the team panel or with
 `"$CDOCK_BIN" team mode <orch> report|auto|notify`.
+
+An orchestrator may grow its own team: spawn helpers into an existing
+workspace (`agent start --profile <p> --workspace <id> --team
+$CDOCK_PANE_ID` — ids in team list; your claude profile is inherited)
+or adopt panes via `team set`. It may remove only members IT added —
+`team list` marks each row `added_by: user|orchestrator`, and the server
+refuses CLI removal of user-assigned ones.
 
 ## Rules
 

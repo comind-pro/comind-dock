@@ -416,6 +416,8 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                 Ok(()) => {
                     if let Some(orch) = team.map(PaneId).filter(|o| rt.panes.contains_key(o)) {
                         rt.state.teams.insert(pane, orch);
+                        // Spawned by the orchestrator — it may remove it too.
+                        rt.state.orch_added.insert(pane);
                     }
                     if orchestrator {
                         rt.state.orchestrators.insert(pane);
@@ -729,14 +731,27 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                         "agent": p.and_then(|p| p.agent),
                         "status": p.map(|p| p.effective_status().word()),
                         "workspace": ws.map(|w| w.name.clone()),
+                        // For `agent start --workspace <id>` — spawn helpers
+                        // into the space where the work already lives.
+                        "workspace_id": ws.map(|w| w.id.0),
                         // The project folder the worker operates in — read
                         // it directly instead of scraping the pane screen.
                         "cwd": ws.map(|w| w.cwd.display().to_string()),
+                        // "user" members are off limits for CLI removal.
+                        "added_by": if rt.state.orch_added.contains(&id) {
+                            "orchestrator"
+                        } else {
+                            "user"
+                        },
                     })
                 })
                 .collect();
             Ok(json!({"ok": true, "teams": teams}))
         }
+        // CLI team-set is the ORCHESTRATOR's path (the user works in the
+        // panel/menu, which mutate state directly): additions are marked as
+        // orchestrator-owned, and only owned members may be removed here —
+        // user-assigned ones are off limits to the agent.
         Req::TeamSet { worker, orchestrator } => {
             let worker = PaneId(worker);
             if !rt.panes.contains_key(&worker) {
@@ -749,9 +764,18 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                         return Ok(err(format!("no such pane {orch}")));
                     }
                     rt.state.teams.insert(worker, orch);
+                    rt.state.orch_added.insert(worker);
                 }
                 None => {
+                    if rt.state.teams.contains_key(&worker)
+                        && !rt.state.orch_added.contains(&worker)
+                    {
+                        return Ok(err(format!(
+                            "{worker} is user-assigned — only the user can remove it"
+                        )));
+                    }
                     rt.state.teams.remove(&worker);
+                    rt.state.orch_added.remove(&worker);
                 }
             }
             rt.mark_dirty();
