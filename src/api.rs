@@ -910,6 +910,10 @@ fn pane_list(rt: &Runtime) -> Value {
                     }),
                     // Orchestrator pane this pane reports to (teams map).
                     "team": rt.state.teams.get(&id).map(|o| o.0),
+                    // cdock role overrides: the profile the pane launched
+                    // with, and a behavior attached to the live session.
+                    "profile": p.agent_profile,
+                    "behavior": p.behavior,
                     // This pane IS an orchestrator (team panel + ⌂ mark).
                     "orchestrator": rt.state.orchestrators.contains(&id),
                     // Its reaction mode (null for non-orchestrators).

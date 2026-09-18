@@ -86,6 +86,16 @@ fn agent_rows(
         .and_then(crate::agents::profile_label_from_dir)
         .map(|l| format!(" @{l}"))
         .unwrap_or_default();
+    // A cdock role overrides this pane: launched from a profile, or a
+    // behavior attached to the live session. ✦ marks it; the detail row
+    // names it (bare name — "ws:" scope stripped).
+    let role = p
+        .behavior
+        .as_deref()
+        .map(|b| b.split_once(':').map_or(b, |(_, n)| n))
+        .or(p.agent_profile.as_deref())
+        .map(|r| format!(" · ✦{r}"))
+        .unwrap_or_default();
     // Team membership: a worker names its orchestrator, an orchestrator
     // shows how many workers report to it.
     let team = match state.teams.get(&pane) {
@@ -98,8 +108,9 @@ fn agent_rows(
     // User-given name wins; then the agent's OSC title; then the bare agent name.
     // The name gets nearly the full sidebar width — its own row, not shared.
     let orch_mark = if state.orchestrators.contains(&pane) { "⌂ " } else { "" };
+    let role_mark = if role.is_empty() { "" } else { "✦ " };
     let name_budget = (width as usize)
-        .saturating_sub(indent.width() + dot.width() + orch_mark.width() + 1)
+        .saturating_sub(indent.width() + dot.width() + orch_mark.width() + role_mark.width() + 1)
         .max(6);
     let name = match state.pane_name(pane) {
         Some(n) => crate::agents::truncate_clean(n, name_budget),
@@ -119,13 +130,14 @@ fn agent_rows(
             Span::raw(indent.to_string()),
             Span::styled(dot, dot_style),
             Span::styled(orch_mark, Style::new().fg(theme.accent)),
+            Span::styled(role_mark, Style::new().fg(theme.accent)),
             Span::styled(name, name_style),
         ]),
         target: Some(Target::Pane(pane)),
     });
     out.push(Row {
         line: Line::from(Span::styled(
-            format!("{indent}  {status} · {agent}{profile}{team}"),
+            format!("{indent}  {status} · {agent}{profile}{role}{team}"),
             Style::new().fg(theme.muted),
         )),
         target: Some(Target::Pane(pane)),

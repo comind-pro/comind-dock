@@ -1131,7 +1131,7 @@ fn run_menu_action(
         }
         MenuAction::AgentOptions(pane) => {
             let behavior = rt.panes.get(&pane).and_then(|p| p.behavior.clone());
-            let items = vec![
+            let mut items = vec![
                 MenuItem {
                     label: match behavior {
                         Some(b) => format!(
@@ -1153,6 +1153,17 @@ fn run_menu_action(
                 MenuItem { label: "focus".to_string(), action: MenuAction::FocusPane(pane) },
                 MenuItem { label: "close pane".to_string(), action: MenuAction::ClosePane(pane) },
             ];
+            // Launched from a cdock profile: name it and open its actions
+            // (edit role, toggle skills) right from the pane's settings.
+            if let Some(name) = rt.panes.get(&pane).and_then(|p| p.agent_profile.clone()) {
+                items.insert(
+                    1,
+                    MenuItem {
+                        label: format!("✦ profile: {name}…"),
+                        action: MenuAction::ProfileMenu(name),
+                    },
+                );
+            }
             rt.state.input_mode = InputMode::Menu { x, y, items };
             Ok(())
         }

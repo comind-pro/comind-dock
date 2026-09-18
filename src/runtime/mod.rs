@@ -52,6 +52,9 @@ pub struct PaneRuntime {
     pub agent_pid: Option<u32>,
     /// CLAUDE_CONFIG_DIR of the agent process — which profile it runs as.
     pub agent_config_dir: Option<String>,
+    /// CDOCK_AGENT_PROFILE of the agent process — the cdock profile the
+    /// pane was launched with (role + skills). UI shows it as an override.
+    pub agent_profile: Option<String>,
     /// Exe path of the agent process — resume by absolute path survives a
     /// server started with a PATH that can't find the launcher.
     pub agent_bin: Option<String>,
@@ -392,6 +395,7 @@ impl Runtime {
                 agent: crate::agents::detect("", &program),
                 agent_pid: None,
                 agent_config_dir: None,
+                agent_profile: None,
                 agent_bin: None,
                 reported: None,
                 unseen: None,
@@ -740,6 +744,12 @@ impl Runtime {
                 p.agent_config_dir = dir;
                 self.dirty = true;
             }
+            let prof = agent_pid
+                .and_then(|pid| crate::platform::process_env_var(pid, "CDOCK_AGENT_PROFILE"));
+            if p.agent_profile != prof {
+                p.agent_profile = prof;
+                self.dirty = true;
+            }
             // An agent that stays gone releases its conversation: without
             // this, a pane the user turned back into a shell resurrects
             // claude on restore, and the picker hides the conversation.
@@ -993,11 +1003,8 @@ impl Runtime {
                 .as_ref()
                 .map(|d| vec![("CLAUDE_CONFIG_DIR".to_string(), d.clone())])
                 .unwrap_or_default();
-            if let Some(name) = p
-                .agent_pid
-                .and_then(|pid| crate::platform::process_env_var(pid, "CDOCK_AGENT_PROFILE"))
-            {
-                env.push(("CDOCK_AGENT_PROFILE".to_string(), name));
+            if let Some(name) = &p.agent_profile {
+                env.push(("CDOCK_AGENT_PROFILE".to_string(), name.clone()));
             }
             let name = self.state.pane_name(*id).map(str::to_string);
             let team = self.state.teams.get(id).map(|orch| orch.0);
@@ -1598,6 +1605,7 @@ pub fn build_from_handoff(
                         agent: crate::agents::detect("", &hp.program),
                         agent_pid: None,
                         agent_config_dir: None,
+                        agent_profile: None,
                         agent_bin: None,
                         reported: None,
                         unseen: None,

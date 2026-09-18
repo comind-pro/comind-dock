@@ -378,6 +378,13 @@ impl Profile {
                    the supervision.\n\
                  - notify: never assign on your own — on each update, review and\n\
                    ASK the user what to do next.\n\n\
+                 Roles and skills are YOURS to author: scaffold a role with\n\
+                 `\"$CDOCK_BIN\" profile new <name> --ws` (write its agent.md;\n\
+                 profile.toml takes command/env/skills), register know-how with\n\
+                 `skill new <name>` / `skill add`, toggle a profile's skills in\n\
+                 profile.toml, and attach a role to a RUNNING pane with\n\
+                 `agent behavior <id> ws:<name>`. Panes with a role show ✦ in\n\
+                 the sidebar — the user sees what you set up.\n\n\
                  Growing the team: prefer SPAWNING helpers into the workspace\n\
                  where the work already lives — `\"$CDOCK_BIN\" agent start\n\
                  --profile <name> --workspace <workspace_id from team list>\n\
