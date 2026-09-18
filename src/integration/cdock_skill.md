@@ -99,7 +99,9 @@ no screen-scraping. Each pane holds ONE result slot, consumed on read.
 "$CDOCK_BIN" agent start --profile orchestrator             # built-in coordinator role
 # (users start one from the sidebar menu: "new orchestrator" — its tab keeps
 #  an always-open team panel where they click chats in and out of the team)
-"$CDOCK_BIN" team list                                      # panes assigned to YOU (via panel or team set)
+"$CDOCK_BIN" team list    # your workers WITH context: name, agent, status,
+                          # workspace and its project folder (cwd) — read the
+                          # folder directly; no snapshot/pane-read sweep needed
 "$CDOCK_BIN" team set 7 "$CDOCK_PANE_ID"                    # adopt pane 7 into your team
 "$CDOCK_BIN" agent start --profile reviewer --split right --team "$CDOCK_PANE_ID"
 "$CDOCK_BIN" pane run 7 "full task prompt…"                 # paste + Enter, multiline-safe

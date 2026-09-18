@@ -699,8 +699,36 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                 .map(|(w, o)| (w.0, o.0))
                 .collect();
             rows.sort_unstable();
-            let teams: Vec<Value> =
-                rows.iter().map(|(w, o)| json!({"worker": w, "orchestrator": o})).collect();
+            // Full worker context in one call — the orchestrator should not
+            // need an api-snapshot + pane-read sweep just to learn who works
+            // on what and where.
+            let teams: Vec<Value> = rows
+                .iter()
+                .map(|(w, o)| {
+                    let id = PaneId(*w);
+                    let p = rt.panes.get(&id);
+                    let ws =
+                        rt.state.locate_pane(id).and_then(|(wi, _)| rt.state.workspaces.get(wi));
+                    let name = rt
+                        .state
+                        .pane_name(id)
+                        .map(str::to_string)
+                        .or_else(|| rt.titles.get(&id).cloned().filter(|t| !t.trim().is_empty()))
+                        .or_else(|| p.map(|p| p.program.clone()))
+                        .unwrap_or_default();
+                    json!({
+                        "worker": w,
+                        "orchestrator": o,
+                        "name": name,
+                        "agent": p.and_then(|p| p.agent),
+                        "status": p.map(|p| p.effective_status().word()),
+                        "workspace": ws.map(|w| w.name.clone()),
+                        // The project folder the worker operates in — read
+                        // it directly instead of scraping the pane screen.
+                        "cwd": ws.map(|w| w.cwd.display().to_string()),
+                    })
+                })
+                .collect();
             Ok(json!({"ok": true, "teams": teams}))
         }
         Req::TeamSet { worker, orchestrator } => {
