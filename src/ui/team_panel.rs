@@ -113,7 +113,12 @@ pub fn render(rt: &Runtime, theme: &Theme, orch: PaneId, rect: Rect, frame: &mut
         let suffix = format!(" %{}", id.0);
         let budget = inner_w.saturating_sub(2 + suffix.len()).max(4);
         let name = crate::agents::truncate_clean(&pane_label(rt, id), budget);
-        let word = status.map(|s| s.word()).unwrap_or("?");
+        // The user is in that pane right now — grey for the orchestrator.
+        let word = if rt.user_grip.contains_key(&id) {
+            "⊘ user"
+        } else {
+            status.map(|s| s.word()).unwrap_or("?")
+        };
         lines.push(Line::from(vec![
             Span::styled("✓ ", Style::new().fg(theme.accent)),
             Span::raw(name),

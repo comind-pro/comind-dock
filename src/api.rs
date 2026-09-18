@@ -355,6 +355,9 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             Ok(err("handled by the server loop"))
         }
         Req::SendText { pane, text, paste } => {
+            if let Some(e) = user_grip_err(rt, pane) {
+                return Ok(e);
+            }
             if paste {
                 Ok(match rt.paste_write(PaneId(pane), &text, false) {
                     Ok(()) => json!({"ok": true}),
@@ -366,10 +369,15 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
         }
         // Always paste-wrapped: a multiline command pasted into an agent TUI
         // must land as one block, with Enter after the paste closes.
-        Req::Run { pane, command } => Ok(match rt.paste_write(PaneId(pane), &command, true) {
-            Ok(()) => json!({"ok": true}),
-            Err(e) => err(e),
-        }),
+        Req::Run { pane, command } => {
+            if let Some(e) = user_grip_err(rt, pane) {
+                return Ok(e);
+            }
+            Ok(match rt.paste_write(PaneId(pane), &command, true) {
+                Ok(()) => json!({"ok": true}),
+                Err(e) => err(e),
+            })
+        }
         Req::Read { pane, lines } => match rt.panes.get(&PaneId(pane)) {
             Some(p) => {
                 let text = p.emu.bottom_text(lines.unwrap_or(30)).join("\n");
@@ -431,10 +439,15 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                 }
             }
         }
-        Req::AgentBehavior { pane, behavior } => match rt.apply_behavior(PaneId(pane), behavior) {
-            Ok(()) => Ok(json!({"ok": true})),
-            Err(e) => Ok(err(e)),
-        },
+        Req::AgentBehavior { pane, behavior } => {
+            if let Some(e) = user_grip_err(rt, pane) {
+                return Ok(e);
+            }
+            match rt.apply_behavior(PaneId(pane), behavior) {
+                Ok(()) => Ok(json!({"ok": true})),
+                Err(e) => Ok(err(e)),
+            }
+        }
         Req::ReportAgentSession { pane, session_id, agent, pid } => {
             let pane = PaneId(pane);
             let Some(p) = rt.panes.get(&pane) else {
@@ -743,6 +756,9 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                         } else {
                             "user"
                         },
+                        // The user is driving this pane right now — writes
+                        // into it are refused until the handback update.
+                        "user_active": rt.user_grip.contains_key(&id),
                     })
                 })
                 .collect();
@@ -870,6 +886,15 @@ fn wait(
     let ms = timeout_ms.unwrap_or(24 * 3600 * 1000).min(24 * 3600 * 1000);
     let deadline = Some(Instant::now() + Duration::from_millis(ms));
     Err(PendingWait { pane, cond, deadline })
+}
+
+/// The user is driving this team pane right now (it is their focused
+/// pane): automation must not type into it — it gets a clean error and a
+/// handback update later instead.
+fn user_grip_err(rt: &Runtime, pane: u64) -> Option<Value> {
+    let id = PaneId(pane);
+    (rt.state.teams.contains_key(&id) && rt.user_grip.contains_key(&id))
+        .then(|| err(format!("the user is driving pane {id} — wait for the handback update")))
 }
 
 fn write_pty(rt: &mut Runtime, pane: u64, bytes: &[u8]) -> Value {

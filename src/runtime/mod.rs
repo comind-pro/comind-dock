@@ -216,6 +216,9 @@ pub struct Runtime {
     // ponytail: in-memory only, no queue — lost on server restart/handoff;
     // persist alongside agent_sessions if orchestration must survive one.
     pub results: HashMap<PaneId, String>,
+    /// Team panes the user currently drives (focused): (since, typed).
+    /// Ephemeral — see poll_user_grip.
+    pub user_grip: HashMap<PaneId, (std::time::Instant, bool)>,
     /// In-app notification toasts (top-right overlay, click jumps to pane).
     pub toasts: Vec<Toast>,
     /// A newer release tag found by the background check ("update ready").
@@ -261,11 +264,45 @@ impl Runtime {
     /// Encode a key for the focused pane's modes and write it to its PTY.
     pub fn send_key(&mut self, key: &crossterm::event::KeyEvent) {
         let focused = self.state.focused_pane();
+        // The user typed into a gripped team pane: the handback update will
+        // tell the orchestrator the conversation actually changed.
+        if let Some(grip) = self.user_grip.get_mut(&focused) {
+            grip.1 = true;
+        }
         if let Some(p) = self.panes.get_mut(&focused)
             && let Some(bytes) = input::encode::encode_key(key, p.emu.term.mode())
         {
             p.pty.write(&bytes);
         }
+    }
+
+    /// Track the user "gripping" team panes: while a team worker is the
+    /// focused pane of an attached client, the orchestrator must not type
+    /// into it (api refuses). When the user moves on after a real stay
+    /// (≥5s — tab-cycling doesn't count), the returned handbacks tell each
+    /// orchestrator to review the pane before continuing; the bool says
+    /// whether the user actually typed.
+    pub fn poll_user_grip(&mut self, clients_attached: bool) -> Vec<(PaneId, bool)> {
+        let focused = self.state.focused_pane();
+        if clients_attached && self.state.teams.contains_key(&focused) {
+            self.user_grip.entry(focused).or_insert_with(|| (std::time::Instant::now(), false));
+        }
+        let ended: Vec<PaneId> = self
+            .user_grip
+            .keys()
+            .copied()
+            .filter(|id| !clients_attached || *id != focused || !self.state.teams.contains_key(id))
+            .collect();
+        let mut handbacks = Vec::new();
+        for id in ended {
+            if let Some((since, typed)) = self.user_grip.remove(&id)
+                && since.elapsed() >= Duration::from_secs(5)
+                && self.panes.contains_key(&id)
+            {
+                handbacks.push((id, typed));
+            }
+        }
+        handbacks
     }
 
     /// Kill a pane's child; PtyExit drives the state change (single close path).
@@ -1196,6 +1233,7 @@ pub fn build(
         persist: true,
         agent_sessions: HashMap::new(),
         results: HashMap::new(),
+        user_grip: HashMap::new(),
         toasts: Vec::new(),
         update_available: None,
         last_view: None,
@@ -1380,6 +1418,7 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
     rt.titles.remove(&id);
     rt.agent_sessions.remove(&id);
     rt.results.remove(&id);
+    rt.user_grip.remove(&id);
     rt.state.teams.remove(&id);
     rt.state.teams.retain(|_, orch| *orch != id);
     rt.state.orchestrators.remove(&id);
@@ -1577,6 +1616,7 @@ pub fn build_from_handoff(
         branches: HashMap::new(),
         agent_sessions: h.agent_sessions.into_iter().collect(),
         results: HashMap::new(),
+        user_grip: HashMap::new(),
         toasts: Vec::new(),
         update_available: None,
         last_view: None,
