@@ -893,6 +893,7 @@ fn run_menu_action(
                 &command,
                 rec.config_dir.as_deref(),
                 rec.dir.as_deref(),
+                None,
                 area,
             ) {
                 Ok(pane) => {

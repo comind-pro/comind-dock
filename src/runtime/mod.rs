@@ -547,6 +547,9 @@ impl Runtime {
         command: &str,
         config_dir: Option<&str>,
         dir: Option<&str>,
+        // In-place switch: the new pane splits THIS one and takes its slot
+        // once the old pane closes — layout and tab stay put.
+        replace: Option<PaneId>,
         area: Rect,
     ) -> Result<PaneId, String> {
         let root = crate::profile::orchestrators_dir().ok_or("cannot determine config dir")?;
@@ -583,12 +586,18 @@ impl Runtime {
         // codex/cline/… read their role from cwd files, not the command line.
         crate::profile::write_role_files(&dir, &typed, profile.prompt_text_with(None).as_deref());
         crate::agents::inherit_claude_profile(&mut env, config_dir);
-        let pane = match self.state.workspaces.iter().position(|w| w.name == "orchestrators") {
-            Some(wi) => {
-                self.state.active_workspace = wi;
-                self.state.new_tab_in(wi, true)
-            }
-            None => self.state.new_workspace("orchestrators".to_string(), root, None),
+        let pane = match replace {
+            Some(old) => self
+                .state
+                .split_pane(old, crate::state::layout::Dir::Right)
+                .ok_or("pane to replace is gone")?,
+            None => match self.state.workspaces.iter().position(|w| w.name == "orchestrators") {
+                Some(wi) => {
+                    self.state.active_workspace = wi;
+                    self.state.new_tab_in(wi, true)
+                }
+                None => self.state.new_workspace("orchestrators".to_string(), root, None),
+            },
         };
         self.state.orchestrators.insert(pane);
         self.state.orch_dirs.insert(pane, dir.display().to_string());
@@ -654,7 +663,8 @@ impl Runtime {
         let members: Vec<PaneId> =
             self.state.teams.iter().filter(|(_, o)| **o == old).map(|(w, _)| *w).collect();
         let config_dir = self.panes.get(&old).and_then(|p| p.agent_config_dir.clone());
-        let new = self.start_orchestrator(&launch, config_dir.as_deref(), Some(&dir), area)?;
+        let new =
+            self.start_orchestrator(&launch, config_dir.as_deref(), Some(&dir), Some(old), area)?;
         // The KEY stays the typed command, not the composed resume line.
         self.state.orch_cmds.insert(new, typed.to_string());
         if let Some(m) = mode {
@@ -664,6 +674,20 @@ impl Runtime {
             self.state.teams.insert(w, new);
         }
         self.kill_pane(old);
+        // Wake the incoming agent once its CLI has booted: reconcile and
+        // resume instead of sitting at an empty prompt.
+        self.inject_later(
+            new,
+            format!(
+                "[cdock] you were just switched in as this team's orchestrator (command: \
+                 {typed}, {} session). Read STATE.md in your cwd, then run \
+                 \"$CDOCK_BIN\" team list: collect workers with has_result, check silent \
+                 or blocked ones, reconcile with what you knew before, and continue \
+                 toward the goal per your mode.",
+                if resume { "resumed" } else { "fresh" },
+            ),
+            Duration::from_secs(6),
+        );
         Ok(new)
     }
 
@@ -692,6 +716,16 @@ impl Runtime {
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
             let _ = tx.send(AppEvent::SubmitEnter(pane, tail));
+        });
+    }
+
+    /// Paste `msg` into a pane after `delay` (see AppEvent::Inject) —
+    /// used when the pane's CLI needs time to boot first.
+    pub fn inject_later(&self, pane: PaneId, msg: String, delay: Duration) {
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let _ = tx.send(AppEvent::Inject(pane, msg));
         });
     }
 

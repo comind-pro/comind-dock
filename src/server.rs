@@ -407,6 +407,11 @@ pub async fn run(
                                 rt.verify_submit_later(pane, tail, Duration::from_millis(1200));
                             }
                         }
+                        AppEvent::Inject(pane, msg) => {
+                            if rt.paste_write(pane, &msg, false).is_ok() {
+                                rt.submit_later(pane, Duration::from_millis(150), &msg);
+                            }
+                        }
                         AppEvent::VerifySubmit(pane, tail) => {
                             if let Some(p) = rt.panes.get(&pane) {
                                 // Whitespace-normalized: screen wraps split
