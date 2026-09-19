@@ -156,6 +156,12 @@ pub async fn run(
         crate::refresh_claude_hooks();
     }
 
+    // Backfill workspace corners for teams that predate the notes/<ws>/
+    // convention (idempotent — existing notes are never touched).
+    for (worker, orch) in rt.state.teams.clone() {
+        rt.ensure_ws_notes(orch, worker);
+    }
+
     let mut clients: HashMap<ClientId, Client> = HashMap::new();
     let mut next_client: ClientId = 1;
     // Automation API: parked wait-* requests resolve on the agent poll;
