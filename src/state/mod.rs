@@ -25,6 +25,8 @@ pub enum PromptKind {
     RenamePane(ids::PaneId),
     /// Command an orchestrator should run (claude, claude-oleh, codex…).
     OrchestratorCommand,
+    /// New agent command for an EXISTING orchestrator (in-place switch).
+    OrchestratorSwitch(ids::PaneId),
 }
 
 /// One context-menu entry.
@@ -108,6 +110,9 @@ pub enum MenuAction {
     /// Relaunch recent_orchestrators[i]: resume its conversation, reattach
     /// surviving team panes.
     ResumeOrchestrator(usize),
+    /// Replace an orchestrator's agent in place: (pane, command, resume
+    /// the command's stored session?).
+    SwitchOrchestrator(ids::PaneId, String, bool),
     /// Submenu: pick which orchestrator pane this pane reports to.
     OrchestratorPicker(ids::PaneId),
     /// Assign the worker to an orchestrator's team; None removes it.

@@ -620,6 +620,64 @@ impl Runtime {
         });
     }
 
+    /// Switch an orchestrator to another agent CLI IN PLACE: same working
+    /// folder (STATE.md memory), same mode, same team — a fresh pane runs
+    /// the new command, the old one closes. The outgoing agent's session
+    /// ident is remembered in the folder (.cdock-agents.json), so
+    /// switching BACK offers a restore of that conversation.
+    pub fn switch_orchestrator(
+        &mut self,
+        old: PaneId,
+        typed: &str,
+        resume: bool,
+        area: Rect,
+    ) -> Result<PaneId, String> {
+        if !self.state.orchestrators.contains(&old) {
+            return Err(format!("{old} is not an orchestrator pane"));
+        }
+        let dir = self.state.orch_dirs.get(&old).cloned().ok_or("orchestrator has no folder")?;
+        let dir_path = std::path::PathBuf::from(&dir);
+        // Remember the OUTGOING agent's conversation before replacing it.
+        let mut store = orch_agent_store(&dir_path);
+        if let (Some(cur), Some(ident)) =
+            (self.state.orch_cmds.get(&old), self.agent_sessions.get(&old))
+        {
+            store.insert(cur.clone(), ident.clone());
+        }
+        save_orch_agent_store(&dir_path, &store);
+        let launch = if resume {
+            store.get(typed).map(|i| crate::agents::resume_command(i)).unwrap_or(typed.into())
+        } else {
+            typed.to_string()
+        };
+        let mode = self.state.orch_modes.get(&old).copied();
+        let members: Vec<PaneId> =
+            self.state.teams.iter().filter(|(_, o)| **o == old).map(|(w, _)| *w).collect();
+        let config_dir = self.panes.get(&old).and_then(|p| p.agent_config_dir.clone());
+        let new = self.start_orchestrator(&launch, config_dir.as_deref(), Some(&dir), area)?;
+        // The KEY stays the typed command, not the composed resume line.
+        self.state.orch_cmds.insert(new, typed.to_string());
+        if let Some(m) = mode {
+            self.state.orch_modes.insert(new, m);
+        }
+        for w in members {
+            self.state.teams.insert(w, new);
+        }
+        self.kill_pane(old);
+        Ok(new)
+    }
+
+    /// The stored session ident for `cmd` in this orchestrator's folder —
+    /// None when never seen or (for claude) the transcript is gone.
+    pub fn orch_stored_session(&self, pane: PaneId, cmd: &str) -> Option<String> {
+        let dir = self.state.orch_dirs.get(&pane)?;
+        let ident = orch_agent_store(std::path::Path::new(dir)).get(cmd)?.clone();
+        match ident.split_once(':') {
+            Some(("claude", id)) if !crate::agents::claude_session_exists(id) => None,
+            _ => Some(ident),
+        }
+    }
+
     /// Queue a lone Enter for a pane, `delay` after now — used right after
     /// an injected paste so the submit arrives as its own keystroke burst
     /// (see AppEvent::SubmitEnter). `msg` is the injected text: its
@@ -1477,6 +1535,16 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
         rt.state.recent_orchestrators.retain(|r| r.ident != rec.ident);
         rt.state.recent_orchestrators.insert(0, rec);
         rt.state.recent_orchestrators.truncate(crate::state::RECENT_ORCHESTRATORS);
+        // The folder's agent-session store remembers this conversation too,
+        // so a later agent SWITCH back can restore it.
+        if let (Some(dir), Some(cmd), Some(ident)) =
+            (rt.state.orch_dirs.get(&id), rt.state.orch_cmds.get(&id), rt.agent_sessions.get(&id))
+        {
+            let dir = std::path::PathBuf::from(dir);
+            let mut store = orch_agent_store(&dir);
+            store.insert(cmd.clone(), ident.clone());
+            save_orch_agent_store(&dir, &store);
+        }
     }
     // A closing TEAM WORKER tells its orchestrator — otherwise the next
     // pane read hits "no such pane" with no explanation. Its last result
@@ -1934,6 +2002,22 @@ pub fn handle_input(
     Ok(InputOutcome::Continue)
 }
 
+/// Per-orchestrator agent sessions, kept as a file IN its working folder
+/// (command → resume ident): survives restarts, handoffs and pane
+/// replacement — switching back to an agent offers its old conversation.
+fn orch_agent_store(dir: &std::path::Path) -> HashMap<String, String> {
+    std::fs::read_to_string(dir.join(".cdock-agents.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn save_orch_agent_store(dir: &std::path::Path, store: &HashMap<String, String>) {
+    if let Ok(text) = serde_json::to_string_pretty(store) {
+        let _ = std::fs::write(dir.join(".cdock-agents.json"), text);
+    }
+}
+
 /// One grip tick, pure for tests: watch the focused team pane (typed =
 /// false until send_key flips it), end watches on panes the user left,
 /// and return handbacks ONLY for panes the user actually typed into —
@@ -2026,6 +2110,22 @@ mod tests {
         let mut grip = HashMap::from([(PaneId(5), false)]);
         assert!(grip_step(&mut grip, PaneId(5), true, |_| false, |_| true).is_empty());
         assert!(grip.is_empty());
+    }
+
+    /// The folder-local agent-session store round-trips and tolerates a
+    /// missing file — switching agents must never lose a session ident.
+    #[test]
+    fn orch_agent_store_round_trip() {
+        let dir = std::env::temp_dir().join(format!("cdock-agstore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(super::orch_agent_store(&dir).is_empty(), "missing file = empty store");
+        let mut store = HashMap::new();
+        store.insert("claude".to_string(), "claude:uuid-1".to_string());
+        store.insert("codex".to_string(), "codex:sid-2".to_string());
+        super::save_orch_agent_store(&dir, &store);
+        assert_eq!(super::orch_agent_store(&dir), store);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The mode cycle is a closed loop over all three modes.

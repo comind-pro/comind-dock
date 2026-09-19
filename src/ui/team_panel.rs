@@ -20,6 +20,8 @@ pub const WIDTH: u16 = 28;
 pub enum Hit {
     /// The "mode: …" row: cycle report → auto → notify.
     Mode,
+    /// The "agent: …" row: prompt for another command (in-place switch).
+    Agent,
     /// The "+ add" row: open the candidate picker.
     Add,
     /// A member's name: jump to that pane.
@@ -88,9 +90,10 @@ pub fn candidate_label(rt: &Runtime, id: PaneId) -> String {
     format!("{name} %{} · {agent}{profile} · {ws}", id.0)
 }
 
-/// Total text lines the panel body holds (mode + "+ add" + 2 per member).
+/// Total text lines the panel body holds (mode + agent + "+ add" + 2 per
+/// member).
 fn line_count(rt: &Runtime, orch: PaneId) -> u16 {
-    2 + members(rt, orch).len() as u16 * 2
+    3 + members(rt, orch).len() as u16 * 2
 }
 
 /// Highest useful scroll offset for the wheel handler.
@@ -100,10 +103,25 @@ pub fn max_scroll(rt: &Runtime, orch: PaneId, rect: Rect) -> u16 {
 
 pub fn render(rt: &Runtime, theme: &Theme, orch: PaneId, rect: Rect, frame: &mut Frame) {
     let mode = rt.state.orch_modes.get(&orch).copied().unwrap_or_default();
+    // Which CLI drives this orchestrator; click swaps it in place.
+    let agent = rt
+        .state
+        .orch_cmds
+        .get(&orch)
+        .cloned()
+        .or_else(|| rt.panes.get(&orch).and_then(|p| p.agent.map(str::to_string)))
+        .unwrap_or_else(|| "?".to_string());
     let mut lines: Vec<Line> = vec![
         Line::from(vec![
             Span::styled("mode: ", Style::new().fg(theme.muted)),
             Span::styled(mode.word(), Style::new().fg(theme.accent)),
+        ]),
+        Line::from(vec![
+            Span::styled("agent: ", Style::new().fg(theme.muted)),
+            Span::styled(
+                crate::agents::truncate_clean(&agent, WIDTH as usize - 10),
+                Style::new().fg(theme.accent),
+            ),
         ]),
         Line::from(Span::styled("+ add", Style::new().fg(theme.accent))),
     ];
@@ -151,13 +169,13 @@ pub fn hit(rt: &Runtime, orch: PaneId, rect: Rect, x: u16, y: u16) -> Option<Hit
     }
     let scroll = rt.team_scroll.min(max_scroll(rt, orch, rect));
     let line = y - inner.y + scroll;
-    if line == 0 {
-        return Some(Hit::Mode);
+    match line {
+        0 => return Some(Hit::Mode),
+        1 => return Some(Hit::Agent),
+        2 => return Some(Hit::Add),
+        _ => {}
     }
-    if line == 1 {
-        return Some(Hit::Add);
-    }
-    let on_mark = line.is_multiple_of(2) && x < inner.x + 2;
-    let idx = ((line - 2) / 2) as usize;
+    let on_mark = !line.is_multiple_of(2) && x < inner.x + 2;
+    let idx = ((line - 3) / 2) as usize;
     members(rt, orch).get(idx).map(|p| if on_mark { Hit::Remove(*p) } else { Hit::Focus(*p) })
 }

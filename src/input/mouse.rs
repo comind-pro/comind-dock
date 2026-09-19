@@ -240,6 +240,19 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                         rt.state.orch_modes.insert(orch, next);
                         rt.add_plain_toast(format!("orchestrator mode: {}", next.word()), 6);
                     }
+                    Some(crate::ui::team_panel::Hit::Agent) => {
+                        // Seed with the current command — edit or retype.
+                        let buffer = rt
+                            .state
+                            .orch_cmds
+                            .get(&orch)
+                            .cloned()
+                            .unwrap_or_else(|| "claude".to_string());
+                        rt.state.input_mode = InputMode::Prompt {
+                            kind: PromptKind::OrchestratorSwitch(orch),
+                            buffer,
+                        };
+                    }
                     Some(crate::ui::team_panel::Hit::Add) => {
                         // Picker of the other active agent panes.
                         let items: Vec<MenuItem> = crate::ui::team_panel::candidates(rt, orch)
@@ -824,6 +837,13 @@ fn run_menu_action(
                     Ok(())
                 }
             }
+        }
+        MenuAction::SwitchOrchestrator(pane, cmd, resume) => {
+            match rt.switch_orchestrator(pane, &cmd, resume, area) {
+                Ok(_) => {}
+                Err(e) => rt.add_plain_toast(format!("switch: {e}"), 10),
+            }
+            Ok(())
         }
         // "new orchestrator": fresh one (command prompt), or a recently
         // closed one relaunched with its settings — like session restore.

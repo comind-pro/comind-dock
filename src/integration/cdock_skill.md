@@ -124,6 +124,11 @@ your team (`team list`) — others may belong to another orchestrator.
 LOOKING is unrestricted: `pane list` / `api snapshot` / `pane read` any
 pane whenever context helps.
 
+An orchestrator's AGENT can be swapped in place from the team panel
+("agent:" row → type codex/claude/…): same folder, memory, mode and
+team; each agent's session ident is remembered in the folder, so
+switching back offers restoring that conversation.
+
 Orchestrator memory lives in its working folder (cdock memory, above the
 CLI's own): STATE.md is the index — goal, team, statuses, links into
 notes/ — updated continuously; a heavy context is handled by updating
