@@ -407,11 +407,6 @@ pub async fn run(
                                 rt.verify_submit_later(pane, tail, Duration::from_millis(1200));
                             }
                         }
-                        AppEvent::Inject(pane, msg) => {
-                            if rt.paste_write(pane, &msg, false).is_ok() {
-                                rt.submit_later(pane, Duration::from_millis(150), &msg);
-                            }
-                        }
                         AppEvent::VerifySubmit(pane, tail) => {
                             if let Some(p) = rt.panes.get(&pane) {
                                 // Whitespace-normalized: screen wraps split
@@ -675,6 +670,7 @@ pub async fn run(
                     nudge_handback(&mut rt, pane);
                 }
                 nudge_stalls(&mut rt);
+                deliver_boot_briefs(&mut rt);
             }
             _ = autosave.tick() => {
                 if !clients.is_empty() || !opts.exit_when_no_clients {
@@ -819,6 +815,31 @@ fn nudge_stalls(rt: &mut Runtime) {
         if rt.paste_write(orch, &msg, false).is_ok() {
             rt.submit_later(orch, Duration::from_millis(150), &msg);
             rt.stall_nudged.insert(pane);
+        }
+    }
+}
+
+/// Deliver pending bootstrap briefs to switched-in orchestrators the
+/// moment their CLI settles (agent detected + idle prompt) — no fixed
+/// boot delay to race. The deadline is the last resort for CLIs the
+/// detection can't see.
+fn deliver_boot_briefs(rt: &mut Runtime) {
+    let pending: Vec<crate::state::ids::PaneId> = rt.boot_briefs.keys().copied().collect();
+    for pane in pending {
+        let Some(p) = rt.panes.get(&pane) else {
+            rt.boot_briefs.remove(&pane);
+            continue;
+        };
+        let settled = p.agent.is_some() && p.last_shown == crate::detect::Status::Idle;
+        let overdue =
+            rt.boot_briefs.get(&pane).is_some_and(|(_, d)| std::time::Instant::now() >= *d);
+        if !(settled || overdue) {
+            continue;
+        }
+        if let Some((msg, _)) = rt.boot_briefs.remove(&pane)
+            && rt.paste_write(pane, &msg, false).is_ok()
+        {
+            rt.submit_later(pane, Duration::from_millis(150), &msg);
         }
     }
 }

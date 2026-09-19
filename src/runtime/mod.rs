@@ -227,6 +227,13 @@ pub struct Runtime {
     /// Team workers already stall-nudged this idle stretch — re-armed when
     /// they work again (or report). One warning per stall, not a drumbeat.
     pub stall_nudged: HashSet<PaneId>,
+    /// Bootstrap briefs waiting for a switched-in orchestrator's CLI to
+    /// finish booting: delivered when its agent is detected and settles at
+    /// the prompt (idle), or at the deadline as a last resort.
+    pub boot_briefs: HashMap<PaneId, (String, std::time::Instant)>,
+    /// Panes being replaced by an agent SWITCH — their exit must not spam
+    /// the "↻ recent orchestrators" list with intermediate heads.
+    pub switching: HashSet<PaneId>,
     /// In-app notification toasts (top-right overlay, click jumps to pane).
     pub toasts: Vec<Toast>,
     /// A newer release tag found by the background check ("update ready").
@@ -673,21 +680,21 @@ impl Runtime {
         for w in members {
             self.state.teams.insert(w, new);
         }
+        // A switch is a head swap, not a close — no "↻ recents" entry.
+        self.switching.insert(old);
         self.kill_pane(old);
-        // Wake the incoming agent once its CLI has booted: reconcile and
-        // resume instead of sitting at an empty prompt.
-        self.inject_later(
-            new,
-            format!(
-                "[cdock] you were just switched in as this team's orchestrator (command: \
-                 {typed}, {} session). Read STATE.md in your cwd, then run \
-                 \"$CDOCK_BIN\" team list: collect workers with has_result, check silent \
-                 or blocked ones, reconcile with what you knew before, and continue \
-                 toward the goal per your mode.",
-                if resume { "resumed" } else { "fresh" },
-            ),
-            Duration::from_secs(6),
+        // Wake the incoming agent once its CLI actually SETTLES (detected
+        // + idle prompt) — a fixed delay raced slow boots; 30s deadline is
+        // the last resort for undetectable CLIs.
+        let brief = format!(
+            "[cdock] you were just switched in as this team's orchestrator (command: \
+             {typed}, {} session). Read STATE.md in your cwd, then run \
+             \"$CDOCK_BIN\" team list: collect workers with has_result, check silent \
+             or blocked ones, reconcile with what you knew before, and continue \
+             toward the goal per your mode.",
+            if resume { "resumed" } else { "fresh" },
         );
+        self.boot_briefs.insert(new, (brief, std::time::Instant::now() + Duration::from_secs(30)));
         Ok(new)
     }
 
@@ -716,16 +723,6 @@ impl Runtime {
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
             let _ = tx.send(AppEvent::SubmitEnter(pane, tail));
-        });
-    }
-
-    /// Paste `msg` into a pane after `delay` (see AppEvent::Inject) —
-    /// used when the pane's CLI needs time to boot first.
-    pub fn inject_later(&self, pane: PaneId, msg: String, delay: Duration) {
-        let tx = self.tx.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(delay).await;
-            let _ = tx.send(AppEvent::Inject(pane, msg));
         });
     }
 
@@ -1384,6 +1381,8 @@ pub fn build(
         results: HashMap::new(),
         user_grip: HashMap::new(),
         stall_nudged: HashSet::new(),
+        boot_briefs: HashMap::new(),
+        switching: HashSet::new(),
         toasts: Vec::new(),
         update_available: None,
         last_view: None,
@@ -1544,7 +1543,11 @@ fn anchor_holds(anchor: &std::path::Path, cwd: &std::path::Path) -> bool {
 pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
     // A closing orchestrator leaves its settings behind so the "new
     // orchestrator" menu can relaunch it (conversation, profile, team).
-    if rt.state.orchestrators.contains(&id) {
+    // Not on an agent SWITCH: the folder lives on under a new head, and
+    // intermediate heads would bury the real entries (their sessions are
+    // already in the folder's .cdock-agents.json).
+    let switched = rt.switching.remove(&id);
+    if !switched && rt.state.orchestrators.contains(&id) {
         let rec = crate::state::RecentOrchestrator {
             name: rt
                 .state
@@ -1608,6 +1611,7 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
     rt.agent_sessions.remove(&id);
     rt.user_grip.remove(&id);
     rt.stall_nudged.remove(&id);
+    rt.boot_briefs.remove(&id);
     rt.state.teams.remove(&id);
     rt.state.teams.retain(|_, orch| *orch != id);
     rt.state.orchestrators.remove(&id);
@@ -1812,6 +1816,8 @@ pub fn build_from_handoff(
         results: h.results.into_iter().collect(),
         user_grip: HashMap::new(),
         stall_nudged: HashSet::new(),
+        boot_briefs: HashMap::new(),
+        switching: HashSet::new(),
         toasts: Vec::new(),
         update_available: None,
         last_view: None,

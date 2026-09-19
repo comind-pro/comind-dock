@@ -22,10 +22,6 @@ pub enum AppEvent {
     /// on the pane's screen bottom (input box), the Enter was swallowed —
     /// press it once more.
     VerifySubmit(PaneId, String),
-    /// Paste-inject a message into a pane (with the late-Enter dance) at
-    /// a scheduled moment — e.g. the bootstrap brief for a freshly
-    /// switched-in orchestrator, delayed until its CLI has booted.
-    Inject(PaneId, String),
 }
 
 /// PTY output travels on its own BOUNDED channel: when the main loop falls
