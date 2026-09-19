@@ -214,7 +214,7 @@ dependencies = [
 
 [[package]]
 name = "cdock"
-version = "0.8.15"
+version = "0.8.16"
 dependencies = [
  "alacritty_terminal",
  "clap",
