@@ -227,6 +227,11 @@ pub struct Runtime {
     /// Team workers already stall-nudged this idle stretch — re-armed when
     /// they work again (or report). One warning per stall, not a drumbeat.
     pub stall_nudged: HashSet<PaneId>,
+    /// Workers whose LAST reported result has been collected and no new
+    /// assignment followed: the task is DONE — the stall watchdog must not
+    /// alarm about a finished pane sitting quiet. Cleared by the next
+    /// `pane run` into it (new assignment) or a fresh `task done`.
+    pub collected: HashSet<PaneId>,
     /// Bootstrap briefs waiting for a switched-in orchestrator's CLI to
     /// finish booting: delivered when its agent is detected and settles at
     /// the prompt (idle), or at the deadline as a last resort.
@@ -471,6 +476,12 @@ impl Runtime {
     /// label follows this one, and two names for the same thing is the bug
     /// we are fixing.
     pub fn rename_pane(&mut self, pane: PaneId, name: String) {
+        self.rename_pane_opts(pane, name, true);
+    }
+
+    /// `sync: false` keeps the name sidebar-only — no `/rename` is typed
+    /// into the agent's conversation.
+    pub fn rename_pane_opts(&mut self, pane: PaneId, name: String, sync: bool) {
         let name = name.trim().to_string();
         self.state.rename_pane(pane, name.clone());
         if let Some(ident) = self.agent_sessions.get(&pane) {
@@ -485,7 +496,9 @@ impl Runtime {
             self.state.reset_tab_name(tab);
         }
         self.dirty = true;
-        self.rename_conversation(pane, &name);
+        if sync {
+            self.rename_conversation(pane, &name);
+        }
     }
 
     /// Carry the name into the agent's OWN conversation, so `/resume` lists
@@ -1381,6 +1394,7 @@ pub fn build(
         results: HashMap::new(),
         user_grip: HashMap::new(),
         stall_nudged: HashSet::new(),
+        collected: HashSet::new(),
         boot_briefs: HashMap::new(),
         switching: HashSet::new(),
         toasts: Vec::new(),
@@ -1612,6 +1626,7 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
     rt.user_grip.remove(&id);
     rt.stall_nudged.remove(&id);
     rt.boot_briefs.remove(&id);
+    rt.collected.remove(&id);
     rt.state.teams.remove(&id);
     rt.state.teams.retain(|_, orch| *orch != id);
     rt.state.orchestrators.remove(&id);
@@ -1703,6 +1718,9 @@ pub struct Handoff {
     pub agent_sessions: Vec<(PaneId, String)>,
     /// Uncollected task results — an update must not eat a worker's report.
     pub results: Vec<(PaneId, String)>,
+    /// Workers whose task is collected/done — an update must not re-arm
+    /// stall alarms on finished panes.
+    pub collected: Vec<PaneId>,
     pub panes: Vec<HandoffPane>,
 }
 
@@ -1734,6 +1752,7 @@ impl Default for Handoff {
             titles: Vec::new(),
             agent_sessions: Vec::new(),
             results: Vec::new(),
+            collected: Vec::new(),
             panes: Vec::new(),
         }
     }
@@ -1782,6 +1801,7 @@ pub fn capture_handoff(rt: &Runtime, area: Rect) -> Handoff {
         titles: rt.titles.iter().map(|(k, v)| (*k, v.clone())).collect(),
         agent_sessions: rt.agent_sessions.iter().map(|(k, v)| (*k, v.clone())).collect(),
         results: rt.results.iter().map(|(k, v)| (*k, v.clone())).collect(),
+        collected: rt.collected.iter().copied().collect(),
         panes,
     }
 }
@@ -1814,6 +1834,7 @@ pub fn build_from_handoff(
         branches: HashMap::new(),
         agent_sessions: h.agent_sessions.into_iter().collect(),
         results: h.results.into_iter().collect(),
+        collected: h.collected.into_iter().collect(),
         user_grip: HashMap::new(),
         stall_nudged: HashSet::new(),
         boot_briefs: HashMap::new(),

@@ -137,7 +137,7 @@ fn agent_rows(
     });
     out.push(Row {
         line: Line::from(Span::styled(
-            format!("{indent}  {status} · {agent}{profile}{role}{team}"),
+            format!("{indent}  %{} {status} · {agent}{profile}{role}{team}", pane.0),
             Style::new().fg(theme.muted),
         )),
         target: Some(Target::Pane(pane)),

@@ -103,10 +103,18 @@ pub enum Req {
         title: Option<String>,
     },
     /// User-given pane name (empty clears it): wins over the agent's own
-    /// OSC title in the sidebar and notifications.
+    /// OSC title in the sidebar and notifications. By default an idle
+    /// claude pane also gets `/rename` typed into it so the CONVERSATION
+    /// carries the same name; `local` keeps it sidebar-only.
     RenamePane {
         pane: u64,
         name: String,
+        #[serde(default)]
+        local: bool,
+    },
+    /// Close one pane (kill its process; the layout collapses around it).
+    PaneClose {
+        pane: u64,
     },
     /// Re-read detection manifests from disk (bundled + overrides).
     /// Handled directly by the server loop, which owns the manifest set.
@@ -386,6 +394,9 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             }
             Ok(match rt.paste_write(PaneId(pane), &command, false) {
                 Ok(()) => {
+                    // A new assignment: the finished-task shield comes off
+                    // and the stall watchdog watches again.
+                    rt.collected.remove(&PaneId(pane));
                     rt.submit_later(PaneId(pane), Duration::from_millis(150), &command);
                     json!({"ok": true})
                 }
@@ -508,12 +519,20 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             rt.mark_dirty();
             Ok(json!({"ok": true}))
         }
-        Req::RenamePane { pane, name } => {
+        Req::PaneClose { pane } => {
             let pane = PaneId(pane);
             if !rt.panes.contains_key(&pane) {
                 return Ok(err(format!("no such pane {pane}")));
             }
-            rt.rename_pane(pane, name);
+            rt.kill_pane(pane); // PtyExit drives the close (single path)
+            Ok(json!({"ok": true}))
+        }
+        Req::RenamePane { pane, name, local } => {
+            let pane = PaneId(pane);
+            if !rt.panes.contains_key(&pane) {
+                return Ok(err(format!("no such pane {pane}")));
+            }
+            rt.rename_pane_opts(pane, name, !local);
             rt.save_session();
             Ok(json!({"ok": true}))
         }
@@ -712,8 +731,9 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             }
             rt.results.insert(pane, result);
             // A report ends any stall watch — the next quiet stretch may
-            // warn again.
+            // warn again — and reopens the task lifecycle.
             rt.stall_nudged.remove(&pane);
+            rt.collected.remove(&pane);
             // The REAL task-completion signal: a reported result wakes the
             // orchestrator (status-"done" transitions are turn noise — an
             // agent's Stop hook fires after EVERY turn — and do not nudge).
@@ -736,13 +756,19 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             Ok(json!({"ok": true}))
         }
         Req::TaskResult { pane } => match rt.results.remove(&PaneId(pane)) {
-            Some(result) => Ok(json!({"ok": true, "pane": pane, "result": result})),
+            Some(result) => {
+                // Collected = the task is DONE until the next assignment;
+                // the stall watchdog leaves this pane alone.
+                rt.collected.insert(PaneId(pane));
+                Ok(json!({"ok": true, "pane": pane, "result": result}))
+            }
             None => Ok(err(format!("no result for pane %{pane}"))),
         },
         Req::WaitTaskResult { pane, timeout_ms } => {
             // A result already parked resolves instantly — even one that
             // outlived its pane.
             if let Some(result) = rt.results.remove(&PaneId(pane)) {
+                rt.collected.insert(PaneId(pane));
                 return Ok(json!({"ok": true, "pane": pane, "result": result}));
             }
             wait(rt, pane, WaitCond::TaskResult, timeout_ms)
@@ -802,6 +828,31 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                         "has_result": rt.results.contains_key(&id),
                         // Seconds since the pane last printed anything.
                         "quiet_secs": p.map(|p| p.last_output.elapsed().as_secs()),
+                        // Task lifecycle, independent of the agent's screen:
+                        // reported = a result waits; collected = the task is
+                        // DONE (quiet is normal); assigned = in flight.
+                        "task_state": if rt.results.contains_key(&id) {
+                            "reported"
+                        } else if rt.collected.contains(&id) {
+                            "collected"
+                        } else {
+                            "assigned"
+                        },
+                        // Where `status` comes from — hook reports beat
+                        // screen manifests beat the 3s-activity fallback
+                        // (the least trustworthy).
+                        "status_source": p.map(|p| {
+                            if p.reported
+                                .as_ref()
+                                .is_some_and(|r| r.until > std::time::Instant::now())
+                            {
+                                "hook"
+                            } else if p.status != crate::detect::Status::Unknown {
+                                "screen"
+                            } else {
+                                "activity"
+                            }
+                        }),
                     })
                 })
                 .collect();
@@ -871,7 +922,8 @@ pub const REFERENCE: &str = r#"[
   {"cmd":"report-agent-session","pane":1,"session_id":"uuid","agent":"claude"},
   {"cmd":"report-agent","pane":1,"state":"blocked","label":"awaiting review","ttl_ms":60000,"pid":4321},
   {"cmd":"report-metadata","pane":1,"title":"builder"},
-  {"cmd":"rename-pane","pane":1,"name":"kafka refactor"},
+  {"cmd":"rename-pane","pane":1,"name":"kafka refactor","local":false},
+  {"cmd":"pane-close","pane":1},
   {"cmd":"reload-manifests"},
   {"cmd":"agent-explain","pane":1},
   {"cmd":"agent-behavior","pane":1,"behavior":"global:researcher"},
@@ -1086,6 +1138,7 @@ pub fn check_waiters(rt: &mut Runtime, waiters: &mut Vec<(PendingWait, Replier)>
             // the same tick still gets delivered.
             WaitCond::TaskResult => {
                 if let Some(result) = rt.results.remove(&pane) {
+                    rt.collected.insert(pane);
                     Some(json!({"ok": true, "pane": pane.0, "result": result}))
                 } else if !rt.panes.contains_key(&pane) {
                     Some(err("pane closed"))
@@ -1358,10 +1411,18 @@ fn request_inner(req: &Req, timeout: Option<Duration>) -> std::io::Result<Value>
     // ConnectionRefused kind survives so the retry loop can tell "never
     // sent" (safe to retry anything) from "line dropped mid-flight".
     let stream = std::os::unix::net::UnixStream::connect(&sock).map_err(|e| {
-        std::io::Error::new(
-            std::io::ErrorKind::ConnectionRefused,
-            format!("no cdock server on {sock:?} ({e}); start `cdock` first"),
-        )
+        // The advice must match the cause: a sandboxed caller (codex) gets
+        // EPERM with the server running fine — "start cdock" misleads.
+        let hint = match e.kind() {
+            std::io::ErrorKind::PermissionDenied => {
+                format!("no access to {sock:?} ({e}) — a sandbox may be blocking the socket; retry with escalated permissions")
+            }
+            std::io::ErrorKind::NotFound => {
+                format!("no cdock server ({sock:?} does not exist); start `cdock` first")
+            }
+            _ => format!("cdock server on {sock:?} not answering ({e})"),
+        };
+        std::io::Error::new(std::io::ErrorKind::ConnectionRefused, hint)
     })?;
     stream.set_read_timeout(timeout)?;
     stream.set_write_timeout(timeout)?;
@@ -1464,6 +1525,9 @@ mod tests {
         let req: Req = serde_json::from_str(r#"{"cmd":"task-done","pane":7,"result":"r"}"#)
             .expect("task-done without pid parses");
         assert!(matches!(req, Req::TaskDone { pid: None, .. }));
+        let req: Req = serde_json::from_str(r#"{"cmd":"rename-pane","pane":1,"name":"x"}"#)
+            .expect("rename-pane without local parses");
+        assert!(matches!(req, Req::RenamePane { local: false, .. }));
         let req: Req = serde_json::from_str(r#"{"cmd":"team-set","worker":3,"orchestrator":null}"#)
             .expect("team-set clear parses");
         assert!(matches!(req, Req::TeamSet { worker: 3, orchestrator: None }));

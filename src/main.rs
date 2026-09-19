@@ -321,6 +321,13 @@ enum PaneCmd {
         pane: String,
         #[arg(default_value = "")]
         name: String,
+        /// Sidebar-only: skip typing /rename into the agent's conversation.
+        #[arg(long)]
+        local: bool,
+    },
+    /// Close a pane (kill its process; the layout collapses around it).
+    Close {
+        pane: String,
     },
 }
 
@@ -984,7 +991,10 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             PaneCmd::ReportAgent { pane, state, label, ttl_ms, pid } => {
                 Req::ReportAgent { pane: parse_pane(&pane)?, state, label, ttl_ms, pid }
             }
-            PaneCmd::Rename { pane, name } => Req::RenamePane { pane: parse_pane(&pane)?, name },
+            PaneCmd::Rename { pane, name, local } => {
+                Req::RenamePane { pane: parse_pane(&pane)?, name, local }
+            }
+            PaneCmd::Close { pane } => Req::PaneClose { pane: parse_pane(&pane)? },
             PaneCmd::ReportMetadata { pane, title } => {
                 Req::ReportMetadata { pane: parse_pane(&pane)?, title: Some(title) }
             }
@@ -1252,6 +1262,11 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 };
                 let result = match (result, file) {
                     (Some(r), _) => r,
+                    // "-" = stdin: long or structured reports without shell
+                    // quoting hazards.
+                    (None, Some(f)) if f == std::path::Path::new("-") => {
+                        std::io::read_to_string(std::io::stdin()).map_err(|e| e.to_string())?
+                    }
                     (None, Some(f)) => std::fs::read_to_string(&f).map_err(|e| e.to_string())?,
                     (None, None) => return Err("result text or --file required".to_string()),
                 };

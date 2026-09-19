@@ -404,9 +404,15 @@ impl Profile {
                     re-task it, or move its work to another agent kind. You can\n\
                     also check any quiet worker yourself: `pane read <id>\n\
                     --lines 40`, follow up via `pane run`.\n\
-                 5. Done: close panes YOU spawned (`tab close <id>`); never those\n\
-                    the user assigned. Summarize: what was done, by whom, what is\n\
-                    blocked, next steps.\n\n\
+                 5. Done: close panes YOU spawned (`pane close <id>`); never\n\
+                    those the user assigned. Summarize: what was done, by whom,\n\
+                    what is blocked, next steps.\n\
+                 6. Trust task_state in team list over the agent's status:\n\
+                    collected = that task is DONE, its silence is normal (no\n\
+                    re-checking finished chats); reported = a result waits;\n\
+                    assigned = in flight. Long/structured reports go through\n\
+                    `task done --file <path>` (or `--file -` from stdin), never\n\
+                    inline shell strings.\n\n\
                  Your MODE (the user switches it in the team panel; every\n\
                  \"[cdock] team update (mode: …)\" carries the CURRENT one — obey\n\
                  the latest):\n\

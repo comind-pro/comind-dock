@@ -111,6 +111,8 @@ no screen-scraping. Each pane holds ONE result slot, consumed on read.
 "$CDOCK_BIN" wait task-result 7 --timeout 600000            # → {"ok":true,"result":"…"}
 "$CDOCK_BIN" task result 7                                  # non-blocking fetch (also consumes)
 "$CDOCK_BIN" task done "what I did and found"               # from INSIDE the worker pane
+"$CDOCK_BIN" task done --file report.md                     # long/structured report ( --file - = stdin )
+"$CDOCK_BIN" pane close 7                                   # close a pane you spawned
 "$CDOCK_BIN" pane key 7 esc                                 # answer a TUI prompt (enter|esc|y|n|1..9|up|down)
 "$CDOCK_BIN" pane read 7 --plain --lines 20                 # raw text, no JSON envelope
 "$CDOCK_BIN" agent start --profile reviewer --wait-ready    # returns once it sits at its prompt
@@ -122,7 +124,12 @@ the socket); read a result BEFORE closing its pane (one slot, read-once);
 results cap at 256 KiB — summarize, don't dump; only WRITE into panes in
 your team (`team list`) — others may belong to another orchestrator.
 LOOKING is unrestricted: `pane list` / `api snapshot` / `pane read` any
-pane whenever context helps.
+pane whenever context helps. Team list's `task_state` outranks the
+agent's screen status: collected = done (silence is normal), reported =
+result waiting, assigned = in flight; `status_source` says whether
+`status` came from a hook, the screen, or the 3s-activity fallback.
+`pane rename` also types /rename into an idle claude so the
+conversation carries the same label — `--local` keeps it sidebar-only.
 
 An orchestrator's AGENT can be swapped in place from the team panel
 ("agent:" row → type codex/claude/…): same folder, memory, mode and

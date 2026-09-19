@@ -790,6 +790,9 @@ fn nudge_stalls(rt: &mut Runtime) {
             || status == crate::detect::Status::Blocked
             // …a parked result already nudged its own collection…
             || rt.results.contains_key(&pane)
+            // …a COLLECTED task is finished — quiet is its normal state
+            // until the next assignment…
+            || rt.collected.contains(&pane)
             // …and a pane the user is editing is theirs, not stalled.
             || rt.user_grip.get(&pane) == Some(&true)
         {
