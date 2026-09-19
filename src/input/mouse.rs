@@ -1338,6 +1338,7 @@ fn run_menu_action(
                 Some(o) => {
                     rt.state.teams.insert(worker, o);
                     rt.state.orch_added.remove(&worker);
+                    rt.ensure_ws_notes(o, worker);
                     rt.add_plain_toast(format!("%{} → team %{}", worker.0, o.0), 8);
                 }
                 None => {

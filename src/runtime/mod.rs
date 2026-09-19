@@ -594,7 +594,9 @@ impl Runtime {
                 "# Orchestrator state\n\n\
                  <!-- cdock memory: maintained by the orchestrator, newest truth wins\n\
                  over any conversation. Keep: goal, mode, team roster with one-line\n\
-                 statuses, decisions, next steps. Link details: [notes](notes/). -->\n\n\
+                 statuses, decisions, next steps. Details live under notes/<workspace>/\n\
+                 as dated files (YYYY-MM-DD-<topic>.md); each workspace corner has its\n\
+                 own SETTINGS.md with per-project preferences. -->\n\n\
                  ## Goal\n\n(none yet)\n\n## Team\n\n(none yet)\n\n## Log\n\n",
             );
             let _ = std::fs::create_dir_all(dir.join("notes"));
@@ -709,6 +711,21 @@ impl Runtime {
         );
         self.boot_briefs.insert(new, (brief, std::time::Instant::now() + Duration::from_secs(30)));
         Ok(new)
+    }
+
+    /// A worker joined `orch`'s team: make sure the orchestrator's memory
+    /// has a notes/<workspace>/ corner for the worker's workspace.
+    pub fn ensure_ws_notes(&self, orch: PaneId, worker: PaneId) {
+        let Some(dir) = self.state.orch_dirs.get(&orch) else { return };
+        let Some(ws) = self
+            .state
+            .locate_pane(worker)
+            .and_then(|(wi, _)| self.state.workspaces.get(wi))
+            .map(|w| w.name.clone())
+        else {
+            return;
+        };
+        ensure_ws_notes_at(std::path::Path::new(dir), &ws);
     }
 
     /// The stored session ident for `cmd` in this orchestrator's folder —
@@ -2063,6 +2080,36 @@ pub fn handle_input(
     Ok(InputOutcome::Continue)
 }
 
+/// Seed `notes/<ws>/` in an orchestrator's folder when a worker from that
+/// workspace joins its team: a README teaching the dated-notes convention
+/// and a SETTINGS.md for per-workspace preferences. Create-if-missing —
+/// the structure itself carries the convention, no prompt tokens spent.
+fn ensure_ws_notes_at(dir: &std::path::Path, ws_name: &str) {
+    let slug: String =
+        ws_name.chars().map(|c| if c == '/' || c.is_whitespace() { '-' } else { c }).collect();
+    let ws_dir = dir.join("notes").join(&slug);
+    if ws_dir.exists() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(&ws_dir);
+    let _ = std::fs::write(
+        ws_dir.join("README.md"),
+        format!(
+            "# notes/{slug}\n\nDated notes for the \"{ws_name}\" workspace: one file per \
+             topic, named YYYY-MM-DD-<topic>.md.\n\nSETTINGS.md next to this file holds \
+             per-workspace preferences (build/test commands, branch rules, quirks) — \
+             read it before working here, keep it current.\n"
+        ),
+    );
+    let _ = std::fs::write(
+        ws_dir.join("SETTINGS.md"),
+        format!(
+            "# {ws_name} — settings\n\n(build/test commands, branch rules, review \
+             expectations, quirks — maintained by the orchestrator)\n"
+        ),
+    );
+}
+
 /// Per-orchestrator agent sessions, kept as a file IN its working folder
 /// (command → resume ident): survives restarts, handoffs and pane
 /// replacement — switching back to an agent offers its old conversation.
@@ -2171,6 +2218,30 @@ mod tests {
         let mut grip = HashMap::from([(PaneId(5), false)]);
         assert!(grip_step(&mut grip, PaneId(5), true, |_| false, |_| true).is_empty());
         assert!(grip.is_empty());
+    }
+
+    /// Workspace corners are seeded once (README + SETTINGS.md) and never
+    /// overwritten — the orchestrator's own notes must survive re-adds.
+    #[test]
+    fn ws_notes_seeded_once() {
+        let dir = std::env::temp_dir().join(format!("cdock-wsnotes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        super::ensure_ws_notes_at(&dir, "my proj/x");
+        let ws = dir.join("notes").join("my-proj-x");
+        assert!(ws.join("README.md").exists());
+        assert!(
+            std::fs::read_to_string(ws.join("SETTINGS.md")).unwrap().contains("my proj/x"),
+            "settings stub names the workspace"
+        );
+        std::fs::write(ws.join("SETTINGS.md"), "customized").unwrap();
+        super::ensure_ws_notes_at(&dir, "my proj/x");
+        assert_eq!(
+            std::fs::read_to_string(ws.join("SETTINGS.md")).unwrap(),
+            "customized",
+            "re-adding a worker never clobbers the corner"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The folder-local agent-session store round-trips and tolerates a

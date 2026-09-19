@@ -451,6 +451,7 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                         rt.state.teams.insert(pane, orch);
                         // Spawned by the orchestrator — it may remove it too.
                         rt.state.orch_added.insert(pane);
+                        rt.ensure_ws_notes(orch, pane);
                     }
                     if orchestrator {
                         rt.state.orchestrators.insert(pane);
@@ -875,6 +876,7 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                     }
                     rt.state.teams.insert(worker, orch);
                     rt.state.orch_added.insert(worker);
+                    rt.ensure_ws_notes(orch, worker);
                 }
                 None => {
                     if rt.state.teams.contains_key(&worker)
