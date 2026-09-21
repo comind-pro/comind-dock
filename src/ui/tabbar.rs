@@ -53,31 +53,105 @@ fn tab_label(rt: &Runtime, state: &AppState, ti: usize) -> String {
     tab.name.clone()
 }
 
+/// Which contiguous run of tabs fits into `budget` columns, always
+/// containing `active` and growing outward from it (right first). Returns
+/// (start, end, overflow) — overflow = some tabs are hidden and the bar
+/// needs ‹ › affordances.
+fn window(widths: &[usize], active: usize, mut budget: usize) -> (usize, usize, bool) {
+    let total: usize = widths.iter().sum();
+    if total <= budget || widths.is_empty() {
+        return (0, widths.len().saturating_sub(1), false);
+    }
+    budget = budget.saturating_sub(ARROW_WIDTH * 2);
+    let (mut s, mut e) = (active, active);
+    let mut used = widths[active].min(budget);
+    loop {
+        let mut grew = false;
+        if e + 1 < widths.len() && used + widths[e + 1] <= budget {
+            e += 1;
+            used += widths[e];
+            grew = true;
+        }
+        if s > 0 && used + widths[s - 1] <= budget {
+            s -= 1;
+            used += widths[s];
+            grew = true;
+        }
+        if !grew {
+            break;
+        }
+    }
+    (s, e, true)
+}
+
+/// Display width of one " ‹ " / " › " overflow affordance.
+const ARROW_WIDTH: usize = 3;
+
 /// One source of truth for the bar — render draws it, hit() clicks it.
-fn segments(rt: &Runtime) -> Vec<Segment> {
+/// `width`: the bar's total columns; tabs that don't fit scroll out of a
+/// window anchored on the ACTIVE tab, with clickable ‹ › (activate the
+/// neighbor tab — the window follows) and `+` always visible.
+fn segments(rt: &Runtime, width: u16) -> Vec<Segment> {
+    use unicode_width::UnicodeWidthStr as _;
     let state = &rt.state;
     let ws = state.active_workspace();
-    let mut out = if state.sidebar_visible {
-        vec![Segment { text: " ".into(), hit: None, active: false }]
+    let lead = if state.sidebar_visible {
+        Segment { text: " ".into(), hit: None, active: false }
     } else {
-        vec![Segment { text: " ≡  ".into(), hit: Some(Hit::ShowSidebar), active: false }]
+        Segment { text: " ≡  ".into(), hit: Some(Hit::ShowSidebar), active: false }
     };
-    for ti in 0..ws.tabs.len() {
-        let active = ti == ws.active_tab;
-        let zoomed = active && ws.tabs[ti].zoomed.is_some();
+    let plus = Segment { text: "  +  ".into(), hit: Some(Hit::NewTab), active: false };
+    let tab_segs: Vec<(Segment, Segment)> = (0..ws.tabs.len())
+        .map(|ti| {
+            let active = ti == ws.active_tab;
+            let zoomed = active && ws.tabs[ti].zoomed.is_some();
+            (
+                Segment {
+                    text: format!(
+                        "  {}{} ✕ ",
+                        tab_label(rt, state, ti),
+                        if zoomed { " [Z]" } else { "" }
+                    ),
+                    hit: Some(Hit::Tab(ti)),
+                    active,
+                },
+                Segment { text: " ".into(), hit: None, active: false },
+            )
+        })
+        .collect();
+    let widths: Vec<usize> =
+        tab_segs.iter().map(|(a, b)| a.text.width() + b.text.width()).collect();
+    let budget =
+        (width as usize).saturating_sub(lead.text.width() + plus.text.width() + CLOSE_WIDTH);
+    let (start, end, overflow) = window(&widths, ws.active_tab, budget);
+
+    let mut out = vec![lead];
+    if overflow && start > 0 {
         out.push(Segment {
-            text: format!("  {}{} ✕ ", tab_label(rt, state, ti), if zoomed { " [Z]" } else { "" }),
-            hit: Some(Hit::Tab(ti)),
-            active,
+            text: " ‹ ".into(),
+            hit: Some(Hit::Tab(ws.active_tab.saturating_sub(1))),
+            active: false,
         });
-        out.push(Segment { text: " ".into(), hit: None, active: false });
     }
-    out.push(Segment { text: "  +  ".into(), hit: Some(Hit::NewTab), active: false });
+    for (i, (tab, gap)) in tab_segs.into_iter().enumerate() {
+        if i >= start && i <= end {
+            out.push(tab);
+            out.push(gap);
+        }
+    }
+    if overflow && end + 1 < widths.len() {
+        out.push(Segment {
+            text: " › ".into(),
+            hit: Some(Hit::Tab((ws.active_tab + 1).min(widths.len() - 1))),
+            active: false,
+        });
+    }
+    out.push(plus);
     out
 }
 
 pub fn render(rt: &Runtime, theme: &Theme, area: Rect, frame: &mut Frame) {
-    let mut spans: Vec<Span> = segments(rt)
+    let mut spans: Vec<Span> = segments(rt, area.width)
         .into_iter()
         .map(|s| {
             let style = if s.active {
@@ -113,16 +187,20 @@ pub fn hit(rt: &Runtime, x: u16, width: u16) -> Option<Hit> {
     // the right edge shows a tab, and quitting the dock from a mis-hit there
     // would kill every agent.
     use unicode_width::UnicodeWidthStr as _;
-    let used: usize = segments(rt).iter().map(|s| s.text.width()).sum();
+    let used: usize = segments(rt, width).iter().map(|s| s.text.width()).sum();
     if used + CLOSE_WIDTH <= width as usize && x >= width.saturating_sub(CLOSE_WIDTH as u16) {
         return Some(Hit::CloseApp);
     }
     let mut cursor: u16 = 0;
-    for s in segments(rt) {
+    for s in segments(rt, width) {
         let w = s.text.width() as u16;
         if x >= cursor && x < cursor + w {
-            // The trailing " ✕ " of a tab closes it.
+            // The trailing " ✕ " of a tab closes it — but only real tab
+            // segments carry one: the ‹ › affordances also resolve to
+            // Hit::Tab and are 3 columns wide, so without this check any
+            // arrow click would CLOSE the neighbor instead of showing it.
             if let Some(Hit::Tab(ti)) = s.hit
+                && s.text.ends_with("✕ ")
                 && x >= cursor + w.saturating_sub(3)
             {
                 return Some(Hit::CloseTab(ti));
@@ -166,7 +244,7 @@ fn segment_rect(
 /// as render() and hit(), so the highlight matches the click.
 pub fn drop_rect(rt: &Runtime, target: TabDrop, bar: Rect) -> Option<Rect> {
     let ws = rt.state.active_workspace();
-    segment_rect(&segments(rt), &ws.tabs, target, bar)
+    segment_rect(&segments(rt, bar.width), &ws.tabs, target, bar)
 }
 
 #[cfg(test)]
@@ -174,6 +252,29 @@ mod tests {
     use super::*;
     use crate::state::ids::{PaneId, TabId};
     use crate::state::workspace::Tab;
+
+    /// The window always contains the active tab, grows outward while it
+    /// fits, and reports overflow only when tabs are actually hidden.
+    #[test]
+    fn tab_window_fits_and_anchors_on_active() {
+        // Everything fits: no overflow, whole range.
+        assert_eq!(window(&[5, 5, 5], 1, 20), (0, 2, false));
+        // Nothing fits together: at least the active tab survives.
+        let w = vec![10, 10, 10, 10, 10, 10, 10];
+        let (s, e, over) = window(&w, 3, 26); // 26 - arrows 6 = 20 → two tabs
+        assert!(over);
+        assert!(s <= 3 && 3 <= e, "active stays visible");
+        assert_eq!(e - s, 1, "exactly the two tabs that fit");
+        // Active at the far end: window hugs that end.
+        let (s, e, over) = window(&w, 6, 26);
+        assert!(over);
+        assert_eq!((s, e), (5, 6));
+        // Active first: window hugs the start.
+        let (s, e, _) = window(&w, 0, 26);
+        assert_eq!((s, e), (0, 1));
+        // Empty tab list does not panic.
+        assert_eq!(window(&[], 0, 10), (0, 0, false));
+    }
 
     #[test]
     fn segment_rect_matches_and_clamps() {
