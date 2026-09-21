@@ -38,6 +38,49 @@ pub fn members(rt: &Runtime, orch: PaneId) -> Vec<PaneId> {
     out
 }
 
+/// One text line of the panel body — the SINGLE source render and hit()
+/// share, so grouping headers can never desync clicks from pixels.
+enum Row {
+    Mode,
+    Agent,
+    Add,
+    /// Workspace group header (not clickable).
+    Ws(String),
+    /// A member's name line (✓ mark = remove, rest = focus).
+    Name(PaneId),
+    /// A member's status line (focus).
+    Status(PaneId),
+}
+
+fn ws_name_of(rt: &Runtime, id: PaneId) -> String {
+    rt.state
+        .locate_pane(id)
+        .and_then(|(wi, _)| rt.state.workspaces.get(wi))
+        .map(|w| w.name.clone())
+        .unwrap_or_else(|| "?".to_string())
+}
+
+/// The panel body, members grouped by workspace (stable: ws name, then
+/// pane id) with one header line per group.
+fn rows(rt: &Runtime, orch: PaneId) -> Vec<Row> {
+    let mut out = vec![Row::Mode, Row::Agent, Row::Add];
+    let mut ms: Vec<(String, PaneId)> =
+        members(rt, orch).into_iter().map(|id| (ws_name_of(rt, id), id)).collect();
+    ms.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.0.cmp(&b.1.0)));
+    let mut last: Option<&str> = None;
+    let mut headed: Vec<Row> = Vec::new();
+    for (ws, id) in &ms {
+        if last != Some(ws.as_str()) {
+            headed.push(Row::Ws(ws.clone()));
+            last = Some(ws.as_str());
+        }
+        headed.push(Row::Name(*id));
+        headed.push(Row::Status(*id));
+    }
+    out.extend(headed);
+    out
+}
+
 /// Active agent panes NOT yet on this team — what "+ add" offers.
 pub fn candidates(rt: &Runtime, orch: PaneId) -> Vec<PaneId> {
     let mut out: Vec<PaneId> = Vec::new();
@@ -93,7 +136,7 @@ pub fn candidate_label(rt: &Runtime, id: PaneId) -> String {
 /// Total text lines the panel body holds (mode + agent + "+ add" + 2 per
 /// member).
 fn line_count(rt: &Runtime, orch: PaneId) -> u16 {
-    3 + members(rt, orch).len() as u16 * 2
+    rows(rt, orch).len() as u16
 }
 
 /// Highest useful scroll offset for the wheel handler.
@@ -111,39 +154,50 @@ pub fn render(rt: &Runtime, theme: &Theme, orch: PaneId, rect: Rect, frame: &mut
         .cloned()
         .or_else(|| rt.panes.get(&orch).and_then(|p| p.agent.map(str::to_string)))
         .unwrap_or_else(|| "?".to_string());
-    let mut lines: Vec<Line> = vec![
-        Line::from(vec![
-            Span::styled("mode: ", Style::new().fg(theme.muted)),
-            Span::styled(mode.word(), Style::new().fg(theme.accent)),
-        ]),
-        Line::from(vec![
-            Span::styled("agent: ", Style::new().fg(theme.muted)),
-            Span::styled(
-                crate::agents::truncate_clean(&agent, WIDTH as usize - 10),
-                Style::new().fg(theme.accent),
-            ),
-        ]),
-        Line::from(Span::styled("+ add", Style::new().fg(theme.accent))),
-    ];
     let inner_w = rect.width.saturating_sub(2) as usize;
-    for id in members(rt, orch) {
-        let status = rt.panes.get(&id).map(|p| p.effective_status());
-        let suffix = format!(" %{}", id.0);
-        let budget = inner_w.saturating_sub(2 + suffix.len()).max(4);
-        let name = crate::agents::truncate_clean(&pane_label(rt, id), budget);
-        // The user is EDITING that pane right now — grey for the
-        // orchestrator (just viewing shows the normal status).
-        let word = if rt.user_grip.get(&id) == Some(&true) {
-            "⊘ user"
-        } else {
-            status.map(|s| s.word()).unwrap_or("?")
-        };
-        lines.push(Line::from(vec![
-            Span::styled("✓ ", Style::new().fg(theme.accent)),
-            Span::raw(name),
-            Span::styled(suffix, Style::new().fg(theme.muted)),
-        ]));
-        lines.push(Line::from(Span::styled(format!("    {word}"), Style::new().fg(theme.muted))));
+    let mut lines: Vec<Line> = Vec::new();
+    for row in rows(rt, orch) {
+        lines.push(match row {
+            Row::Mode => Line::from(vec![
+                Span::styled("mode: ", Style::new().fg(theme.muted)),
+                Span::styled(mode.word(), Style::new().fg(theme.accent)),
+            ]),
+            Row::Agent => Line::from(vec![
+                Span::styled("agent: ", Style::new().fg(theme.muted)),
+                Span::styled(
+                    crate::agents::truncate_clean(&agent, WIDTH as usize - 10),
+                    Style::new().fg(theme.accent),
+                ),
+            ]),
+            Row::Add => Line::from(Span::styled("+ add", Style::new().fg(theme.accent))),
+            Row::Ws(ws) => Line::from(Span::styled(
+                format!("{}:", crate::agents::truncate_clean(&ws, inner_w.saturating_sub(1))),
+                Style::new().fg(theme.muted).add_modifier(Modifier::BOLD),
+            )),
+            Row::Name(id) => {
+                let suffix = format!(" %{}", id.0);
+                let budget = inner_w.saturating_sub(3 + suffix.len()).max(4);
+                let name = crate::agents::truncate_clean(&pane_label(rt, id), budget);
+                Line::from(vec![
+                    Span::styled(" ✓ ", Style::new().fg(theme.accent)),
+                    Span::raw(name),
+                    Span::styled(suffix, Style::new().fg(theme.muted)),
+                ])
+            }
+            Row::Status(id) => {
+                // The user is EDITING that pane right now — grey for the
+                // orchestrator (just viewing shows the normal status).
+                let word = if rt.user_grip.get(&id) == Some(&true) {
+                    "⊘ user".to_string()
+                } else {
+                    rt.panes
+                        .get(&id)
+                        .map(|p| p.effective_status().word().to_string())
+                        .unwrap_or_else(|| "?".to_string())
+                };
+                Line::from(Span::styled(format!("     {word}"), Style::new().fg(theme.muted)))
+            }
+        });
     }
     let scroll = rt.team_scroll.min(max_scroll(rt, orch, rect));
     let block = Block::new()
@@ -168,14 +222,13 @@ pub fn hit(rt: &Runtime, orch: PaneId, rect: Rect, x: u16, y: u16) -> Option<Hit
         return None;
     }
     let scroll = rt.team_scroll.min(max_scroll(rt, orch, rect));
-    let line = y - inner.y + scroll;
-    match line {
-        0 => return Some(Hit::Mode),
-        1 => return Some(Hit::Agent),
-        2 => return Some(Hit::Add),
-        _ => {}
+    let line = (y - inner.y + scroll) as usize;
+    match rows(rt, orch).into_iter().nth(line)? {
+        Row::Mode => Some(Hit::Mode),
+        Row::Agent => Some(Hit::Agent),
+        Row::Add => Some(Hit::Add),
+        Row::Ws(_) => None,
+        Row::Name(id) if x < inner.x + 3 => Some(Hit::Remove(id)),
+        Row::Name(id) | Row::Status(id) => Some(Hit::Focus(id)),
     }
-    let on_mark = !line.is_multiple_of(2) && x < inner.x + 2;
-    let idx = ((line - 3) / 2) as usize;
-    members(rt, orch).get(idx).map(|p| if on_mark { Hit::Remove(*p) } else { Hit::Focus(*p) })
 }
