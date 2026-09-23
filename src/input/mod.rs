@@ -383,6 +383,41 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<Inp
                                 }
                                 return Ok(InputOutcome::Continue);
                             }
+                            PromptKind::OrchestratorFolderCommand(dir) => {
+                                rt.state.input_mode = InputMode::Terminal;
+                                if crate::runtime::Runtime::folder_stored_session(&dir, &name)
+                                    .is_some()
+                                {
+                                    let items = vec![
+                                        crate::state::MenuItem {
+                                            label: format!("restore {name} session"),
+                                            action:
+                                                crate::state::MenuAction::OpenOrchestratorFolder(
+                                                    dir.clone(),
+                                                    name.clone(),
+                                                    true,
+                                                ),
+                                        },
+                                        crate::state::MenuItem {
+                                            label: format!("start fresh {name}"),
+                                            action:
+                                                crate::state::MenuAction::OpenOrchestratorFolder(
+                                                    dir, name, false,
+                                                ),
+                                        },
+                                    ];
+                                    rt.state.input_mode = InputMode::Menu {
+                                        x: area.width / 3,
+                                        y: area.height / 3,
+                                        items,
+                                    };
+                                } else if let Err(e) =
+                                    rt.open_orchestrator_folder(&dir, &name, false, area)
+                                {
+                                    rt.add_plain_toast(format!("orchestrator: {e}"), 10);
+                                }
+                                return Ok(InputOutcome::Continue);
+                            }
                             PromptKind::OrchestratorSwitch(pane) => {
                                 rt.state.input_mode = InputMode::Terminal;
                                 // A stored session for this command → let the

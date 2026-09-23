@@ -96,6 +96,7 @@ pub fn render_prompt(
         PromptKind::RenamePane(_) => " rename agent (empty = agent's own title) ",
         PromptKind::OrchestratorCommand => " new orchestrator: command to run ",
         PromptKind::OrchestratorSwitch(_) => " switch orchestrator agent: command ",
+        PromptKind::OrchestratorFolderCommand(_) => " continue orchestrator with agent: command ",
     };
     render_input_box(title, buffer, theme, area, frame);
 }

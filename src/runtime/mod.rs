@@ -733,6 +733,116 @@ impl Runtime {
         ensure_ws_notes_at(std::path::Path::new(dir), &ws);
     }
 
+    /// Orchestrator folders NOT running right now, most recently active
+    /// first, with a human label: "orch-2 · arka, pumpfun · codex, claude ·
+    /// 3d ago" (workspaces = its notes/<ws>/ corners, agents = the ones
+    /// with remembered sessions, age = STATE.md last write).
+    pub fn orchestrator_folders(&self) -> Vec<(std::path::PathBuf, String)> {
+        let Some(root) = crate::profile::orchestrators_dir() else { return Vec::new() };
+        let live: HashSet<&String> = self.state.orch_dirs.values().collect();
+        let Ok(rd) = std::fs::read_dir(&root) else { return Vec::new() };
+        let mut out: Vec<(std::time::SystemTime, std::path::PathBuf, String)> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir() && !live.contains(&p.display().to_string()))
+            .map(|dir| {
+                let name = dir.file_name().map(|n| n.to_string_lossy().into_owned());
+                let mut parts = vec![name.unwrap_or_default()];
+                let mut ws: Vec<String> = std::fs::read_dir(dir.join("notes"))
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter(|e| e.path().is_dir())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect();
+                ws.sort();
+                if !ws.is_empty() {
+                    parts.push(crate::agents::truncate_clean(&ws.join(", "), 30));
+                }
+                let mut agents: Vec<String> = orch_agent_store(&dir).into_keys().collect();
+                agents.sort();
+                if !agents.is_empty() {
+                    parts.push(agents.join(", "));
+                }
+                let mtime = std::fs::metadata(dir.join("STATE.md"))
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::UNIX_EPOCH);
+                if let Ok(age) = mtime.elapsed() {
+                    let h = age.as_secs() / 3600;
+                    parts.push(if h < 24 {
+                        format!("{h}h ago")
+                    } else {
+                        format!("{}d ago", h / 24)
+                    });
+                }
+                (mtime, dir, format!("↻ {}", parts.join(" · ")))
+            })
+            .collect();
+        out.sort_by_key(|o| std::cmp::Reverse(o.0));
+        out.into_iter().map(|(_, d, l)| (d, l)).collect()
+    }
+
+    /// Stored, still-resumable session of `cmd` in an orchestrator folder.
+    pub fn folder_stored_session(dir: &std::path::Path, cmd: &str) -> Option<String> {
+        let ident = orch_agent_store(dir).get(cmd)?.clone();
+        match ident.split_once(':') {
+            Some(("claude", id)) if !crate::agents::claude_session_exists(id) => None,
+            _ => Some(ident),
+        }
+    }
+
+    /// Continue a stopped orchestrator FOLDER with the agent the user
+    /// picked: resume that agent's stored conversation or start it fresh.
+    /// Mode, claude profile and surviving team members come back from the
+    /// folder's last recents record; the new head is briefed to read
+    /// STATE.md once its CLI settles.
+    pub fn open_orchestrator_folder(
+        &mut self,
+        dir: &std::path::Path,
+        typed: &str,
+        resume: bool,
+        area: Rect,
+    ) -> Result<PaneId, String> {
+        let dir_s = dir.display().to_string();
+        let launch = if resume {
+            Self::folder_stored_session(dir, typed)
+                .map(|i| crate::agents::resume_command(&i))
+                .unwrap_or_else(|| typed.to_string())
+        } else {
+            typed.to_string()
+        };
+        let rec = self
+            .state
+            .recent_orchestrators
+            .iter()
+            .find(|r| r.dir.as_deref() == Some(dir_s.as_str()))
+            .cloned();
+        let config_dir = rec.as_ref().and_then(|r| r.config_dir.clone());
+        let pane =
+            self.start_orchestrator(&launch, config_dir.as_deref(), Some(&dir_s), None, area)?;
+        self.state.orch_cmds.insert(pane, typed.to_string());
+        if let Some(r) = rec {
+            if let Some(m) = r.mode {
+                self.state.orch_modes.insert(pane, m);
+            }
+            for w in r.team {
+                let w = PaneId(w);
+                if self.panes.contains_key(&w) && !self.state.teams.contains_key(&w) {
+                    self.state.teams.insert(w, pane);
+                }
+            }
+        }
+        let brief = format!(
+            "[cdock] you are this orchestrator again (command: {typed}, {} session). \
+             Read STATE.md in your cwd, then run \"$CDOCK_BIN\" team list: collect workers \
+             with has_result, check silent or blocked ones, reconcile with what you knew \
+             before, and continue toward the goal per your mode.",
+            if resume { "resumed" } else { "fresh" },
+        );
+        self.boot_briefs.insert(pane, (brief, std::time::Instant::now() + Duration::from_secs(30)));
+        Ok(pane)
+    }
+
     /// The stored session ident for `cmd` in this orchestrator's folder —
     /// None when never seen or (for claude) the transcript is gone.
     pub fn orch_stored_session(&self, pane: PaneId, cmd: &str) -> Option<String> {
@@ -2370,30 +2480,21 @@ mod tests {
         assert!(super::find_launcher("definitely-not-a-binary-cdock-xyz").is_none());
     }
 
-    /// Recent-orchestrator rows name command, folder, workspaces and mode;
-    /// workspaces fall back to the folder's notes/<ws>/ corners.
+    /// Stored folder sessions: a remembered codex ident is offered; an
+    /// unknown command is not.
     #[test]
-    fn recent_orchestrator_label_is_informative() {
-        let dir =
-            std::env::temp_dir().join(format!("cdock-reclabel-{}/orch-2", std::process::id()));
+    fn folder_stored_session_lookup() {
+        let dir = std::env::temp_dir().join(format!("cdock-fss-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("notes/arka")).unwrap();
-        std::fs::create_dir_all(dir.join("notes/pumpfun")).unwrap();
-        let rec = crate::state::RecentOrchestrator {
-            name: "orchestrator".into(),
-            ident: None,
-            config_dir: None,
-            team: vec![],
-            dir: Some(dir.display().to_string()),
-            mode: Some(crate::state::OrchMode::Auto),
-            command: Some("codex".into()),
-            workspaces: vec![],
-        };
-        let l = rec.menu_label();
-        for part in ["orchestrator", "codex", "orch-2", "arka, pumpfun", "auto"] {
-            assert!(l.contains(part), "{part:?} missing in {l:?}");
-        }
-        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = HashMap::from([("codex".to_string(), "codex:sid-9".to_string())]);
+        super::save_orch_agent_store(&dir, &store);
+        assert_eq!(
+            super::Runtime::folder_stored_session(&dir, "codex").as_deref(),
+            Some("codex:sid-9")
+        );
+        assert!(super::Runtime::folder_stored_session(&dir, "agy").is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The mode cycle is a closed loop over all three modes.

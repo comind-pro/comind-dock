@@ -27,6 +27,8 @@ pub enum PromptKind {
     OrchestratorCommand,
     /// New agent command for an EXISTING orchestrator (in-place switch).
     OrchestratorSwitch(ids::PaneId),
+    /// Agent command to continue a stopped orchestrator FOLDER with.
+    OrchestratorFolderCommand(std::path::PathBuf),
 }
 
 /// One context-menu entry.
@@ -107,9 +109,12 @@ pub enum MenuAction {
     StartOrchestrator,
     /// Open the command prompt for a fresh orchestrator.
     OrchestratorCommandPrompt,
-    /// Relaunch recent_orchestrators[i]: resume its conversation, reattach
-    /// surviving team panes.
-    ResumeOrchestrator(usize),
+    /// An orchestrator FOLDER picked from "new orchestrator": ask which
+    /// agent should continue it.
+    OrchestratorFolder(std::path::PathBuf),
+    /// Continue an orchestrator folder with (command, resume its stored
+    /// session for that command?).
+    OpenOrchestratorFolder(std::path::PathBuf, String, bool),
     /// Replace an orchestrator's agent in place: (pane, command, resume
     /// the command's stored session?).
     SwitchOrchestrator(ids::PaneId, String, bool),
@@ -335,40 +340,6 @@ pub struct RecentOrchestrator {
     /// "orchestrator" entries are tellable apart.
     #[serde(default)]
     pub workspaces: Vec<String>,
-}
-
-impl RecentOrchestrator {
-    /// "↻ name · command · orch-N · ws1, ws2 · mode" — everything needed to
-    /// pick the right one. Workspaces fall back to the folder's notes/<ws>/
-    /// corners (entries recorded before workspaces were tracked).
-    pub fn menu_label(&self) -> String {
-        let mut parts = vec![crate::agents::truncate_clean(&self.name, 22)];
-        if let Some(c) = &self.command {
-            parts.push(c.clone());
-        }
-        let dir = self.dir.as_deref().map(std::path::Path::new);
-        if let Some(d) = dir.and_then(|d| d.file_name()) {
-            parts.push(d.to_string_lossy().into_owned());
-        }
-        let mut ws = self.workspaces.clone();
-        if ws.is_empty()
-            && let Some(Ok(rd)) = dir.map(|d| std::fs::read_dir(d.join("notes")))
-        {
-            ws = rd
-                .flatten()
-                .filter(|e| e.path().is_dir())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect();
-            ws.sort();
-        }
-        if !ws.is_empty() {
-            parts.push(crate::agents::truncate_clean(&ws.join(", "), 32));
-        }
-        if let Some(m) = self.mode {
-            parts.push(m.word().to_string());
-        }
-        format!("↻ {}", parts.join(" · "))
-    }
 }
 
 fn default_true() -> bool {

@@ -848,27 +848,20 @@ fn run_menu_action(
         // "new orchestrator": fresh one (command prompt), or a recently
         // closed one relaunched with its settings — like session restore.
         MenuAction::StartOrchestrator => {
-            if rt.state.recent_orchestrators.is_empty() {
+            // Stopped orchestrator FOLDERS are the identity — pick one to
+            // continue (any agent), or start a new one.
+            let folders = rt.orchestrator_folders();
+            if folders.is_empty() {
                 return run_menu_action(rt, MenuAction::OrchestratorCommandPrompt, x, y, area);
             }
             let mut items = vec![MenuItem {
                 label: "new…".to_string(),
                 action: MenuAction::OrchestratorCommandPrompt,
             }];
-            // Newest first; one row per working folder (older records of
-            // the same folder are earlier heads of the same orchestrator).
-            let mut seen = std::collections::HashSet::new();
-            items.extend(
-                rt.state
-                    .recent_orchestrators
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, r)| r.dir.as_ref().is_none_or(|d| seen.insert(d.clone())))
-                    .map(|(i, r)| MenuItem {
-                        label: r.menu_label(),
-                        action: MenuAction::ResumeOrchestrator(i),
-                    }),
-            );
+            items.extend(folders.into_iter().map(|(dir, label)| MenuItem {
+                label,
+                action: MenuAction::OrchestratorFolder(dir),
+            }));
             rt.state.input_mode = InputMode::Menu { x, y, items };
             Ok(())
         }
@@ -880,44 +873,23 @@ fn run_menu_action(
             };
             Ok(())
         }
-        MenuAction::ResumeOrchestrator(i) => {
-            let Some(rec) = rt.state.recent_orchestrators.get(i).cloned() else {
-                return InputOutcome::Continue;
-            };
-            // Resume the exact conversation when the hook reported one AND
-            // its transcript still exists — resuming a deleted claude
-            // session dies with "No conversation found" and strands a bare
-            // shell. Otherwise relaunch WHAT ran there fresh; it recovers
-            // from STATE.md in its working folder.
-            let command = rec
-                .ident
-                .as_deref()
-                .filter(|ident| match ident.split_once(':') {
-                    Some(("claude", id)) => crate::agents::claude_session_exists(id),
-                    _ => true, // codex/cline transcripts aren't checkable here
-                })
-                .map(crate::agents::resume_command)
-                .or_else(|| rec.command.clone())
+        MenuAction::OrchestratorFolder(dir) => {
+            // Seed with the command it last ran, when the folder knows it.
+            let dir_s = dir.display().to_string();
+            let buffer = rt
+                .state
+                .recent_orchestrators
+                .iter()
+                .find(|r| r.dir.as_deref() == Some(dir_s.as_str()))
+                .and_then(|r| r.command.clone())
                 .unwrap_or_else(|| "claude".to_string());
-            match rt.start_orchestrator(
-                &command,
-                rec.config_dir.as_deref(),
-                rec.dir.as_deref(),
-                None,
-                area,
-            ) {
-                Ok(pane) => {
-                    for w in rec.team {
-                        let w = crate::state::ids::PaneId(w);
-                        if rt.panes.contains_key(&w) {
-                            rt.state.teams.insert(w, pane);
-                        }
-                    }
-                    if let Some(mode) = rec.mode {
-                        rt.state.orch_modes.insert(pane, mode);
-                    }
-                }
-                Err(e) => rt.add_plain_toast(format!("orchestrator: {e}"), 10),
+            rt.state.input_mode =
+                InputMode::Prompt { kind: PromptKind::OrchestratorFolderCommand(dir), buffer };
+            Ok(())
+        }
+        MenuAction::OpenOrchestratorFolder(dir, cmd, resume) => {
+            if let Err(e) = rt.open_orchestrator_folder(&dir, &cmd, resume, area) {
+                rt.add_plain_toast(format!("orchestrator: {e}"), 10);
             }
             Ok(())
         }
