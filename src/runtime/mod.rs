@@ -1433,14 +1433,17 @@ pub fn build(
         // an instant exit cascades into killing the tab and the space.
         let resume = meta.agent.as_deref().map(|a| {
             let mut cmd = crate::agents::resume_command(a);
-            // /bin/sh has no shell-rc PATH: prefer the recorded absolute
-            // binary when it still exists (agent updates replace the path —
-            // then the bare name + inherited PATH is the fallback).
-            if let Some(bin) = meta
-                .agent_bin
-                .as_deref()
-                .filter(|b| std::path::Path::new(b).is_file() && !b.contains('\''))
-                && let Some(rest) = cmd.split_once(' ').map(|(_, r)| r.to_string())
+            // PATH first: a CLI update installs a NEW binary there while the
+            // recorded absolute path keeps existing — preferring the path
+            // would pin every resumed pane to the stale version forever.
+            // The recorded binary is the FALLBACK for servers whose PATH
+            // can't find the launcher.
+            if let Some((word, rest)) = cmd.split_once(' ')
+                && !binary_on_path(word)
+                && let Some(bin) = meta
+                    .agent_bin
+                    .as_deref()
+                    .filter(|b| std::path::Path::new(b).is_file() && !b.contains('\''))
             {
                 // Quote-hostile paths fall back to the bare name + PATH.
                 cmd = format!("'{bin}' {rest}");
@@ -2126,6 +2129,14 @@ fn save_orch_agent_store(dir: &std::path::Path, store: &HashMap<String, String>)
     }
 }
 
+/// Is `name` resolvable through the server's PATH? Decides whether a
+/// resumed agent runs the (possibly freshly updated) PATH binary or the
+/// absolute path recorded at save time.
+fn binary_on_path(name: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else { return false };
+    std::env::split_paths(&paths).any(|d| d.join(name).is_file())
+}
+
 /// One grip tick, pure for tests: watch the focused team pane (typed =
 /// false until send_key flips it), end watches on panes the user left,
 /// and return handbacks ONLY for panes the user actually typed into —
@@ -2258,6 +2269,14 @@ mod tests {
         super::save_orch_agent_store(&dir, &store);
         assert_eq!(super::orch_agent_store(&dir), store);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// PATH resolution drives the resume-binary choice: a name every unix
+    /// has resolves, garbage doesn't.
+    #[test]
+    fn binary_on_path_resolves_real_names() {
+        assert!(super::binary_on_path("sh"));
+        assert!(!super::binary_on_path("definitely-not-a-binary-cdock-xyz"));
     }
 
     /// The mode cycle is a closed loop over all three modes.
