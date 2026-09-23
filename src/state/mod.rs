@@ -331,6 +331,44 @@ pub struct RecentOrchestrator {
     /// a resumable session id starts THIS, not a hardcoded claude.
     #[serde(default)]
     pub command: Option<String>,
+    /// Workspaces its team spanned at close time — the menu shows them so
+    /// "orchestrator" entries are tellable apart.
+    #[serde(default)]
+    pub workspaces: Vec<String>,
+}
+
+impl RecentOrchestrator {
+    /// "↻ name · command · orch-N · ws1, ws2 · mode" — everything needed to
+    /// pick the right one. Workspaces fall back to the folder's notes/<ws>/
+    /// corners (entries recorded before workspaces were tracked).
+    pub fn menu_label(&self) -> String {
+        let mut parts = vec![crate::agents::truncate_clean(&self.name, 22)];
+        if let Some(c) = &self.command {
+            parts.push(c.clone());
+        }
+        let dir = self.dir.as_deref().map(std::path::Path::new);
+        if let Some(d) = dir.and_then(|d| d.file_name()) {
+            parts.push(d.to_string_lossy().into_owned());
+        }
+        let mut ws = self.workspaces.clone();
+        if ws.is_empty()
+            && let Some(Ok(rd)) = dir.map(|d| std::fs::read_dir(d.join("notes")))
+        {
+            ws = rd
+                .flatten()
+                .filter(|e| e.path().is_dir())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            ws.sort();
+        }
+        if !ws.is_empty() {
+            parts.push(crate::agents::truncate_clean(&ws.join(", "), 32));
+        }
+        if let Some(m) = self.mode {
+            parts.push(m.word().to_string());
+        }
+        format!("↻ {}", parts.join(" · "))
+    }
 }
 
 fn default_true() -> bool {

@@ -855,10 +855,20 @@ fn run_menu_action(
                 label: "new…".to_string(),
                 action: MenuAction::OrchestratorCommandPrompt,
             }];
-            items.extend(rt.state.recent_orchestrators.iter().enumerate().map(|(i, r)| MenuItem {
-                label: format!("↻ {}", crate::agents::truncate_clean(&r.name, 24)),
-                action: MenuAction::ResumeOrchestrator(i),
-            }));
+            // Newest first; one row per working folder (older records of
+            // the same folder are earlier heads of the same orchestrator).
+            let mut seen = std::collections::HashSet::new();
+            items.extend(
+                rt.state
+                    .recent_orchestrators
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| r.dir.as_ref().is_none_or(|d| seen.insert(d.clone())))
+                    .map(|(i, r)| MenuItem {
+                        label: r.menu_label(),
+                        action: MenuAction::ResumeOrchestrator(i),
+                    }),
+            );
             rt.state.input_mode = InputMode::Menu { x, y, items };
             Ok(())
         }

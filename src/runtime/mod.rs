@@ -1631,6 +1631,23 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
             team: rt.state.teams.iter().filter(|(_, o)| **o == id).map(|(w, _)| w.0).collect(),
             dir: rt.state.orch_dirs.get(&id).cloned(),
             mode: rt.state.orch_modes.get(&id).copied(),
+            workspaces: {
+                let mut ws: Vec<String> = rt
+                    .state
+                    .teams
+                    .iter()
+                    .filter(|(_, o)| **o == id)
+                    .filter_map(|(w, _)| {
+                        rt.state
+                            .locate_pane(*w)
+                            .and_then(|(wi, _)| rt.state.workspaces.get(wi))
+                            .map(|w| w.name.clone())
+                    })
+                    .collect();
+                ws.sort();
+                ws.dedup();
+                ws
+            },
             // Cold restore empties orch_cmds — the detected agent word
             // (codex, cline…) is the honest fallback then.
             command: rt
@@ -1640,7 +1657,11 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
                 .cloned()
                 .or_else(|| rt.panes.get(&id).and_then(|p| p.agent.map(str::to_string))),
         };
-        rt.state.recent_orchestrators.retain(|r| r.ident != rec.ident);
+        // One entry per identity: same conversation OR same working folder
+        // (a folder IS the orchestrator — its heads come and go).
+        rt.state
+            .recent_orchestrators
+            .retain(|r| r.ident != rec.ident && (rec.dir.is_none() || r.dir != rec.dir));
         rt.state.recent_orchestrators.insert(0, rec);
         rt.state.recent_orchestrators.truncate(crate::state::RECENT_ORCHESTRATORS);
         // The folder's agent-session store remembers this conversation too,
@@ -2347,6 +2368,32 @@ mod tests {
         assert!(!super::binary_on_path("definitely-not-a-binary-cdock-xyz"));
         assert!(super::find_launcher("sh").is_some_and(|p| p.is_file()));
         assert!(super::find_launcher("definitely-not-a-binary-cdock-xyz").is_none());
+    }
+
+    /// Recent-orchestrator rows name command, folder, workspaces and mode;
+    /// workspaces fall back to the folder's notes/<ws>/ corners.
+    #[test]
+    fn recent_orchestrator_label_is_informative() {
+        let dir =
+            std::env::temp_dir().join(format!("cdock-reclabel-{}/orch-2", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("notes/arka")).unwrap();
+        std::fs::create_dir_all(dir.join("notes/pumpfun")).unwrap();
+        let rec = crate::state::RecentOrchestrator {
+            name: "orchestrator".into(),
+            ident: None,
+            config_dir: None,
+            team: vec![],
+            dir: Some(dir.display().to_string()),
+            mode: Some(crate::state::OrchMode::Auto),
+            command: Some("codex".into()),
+            workspaces: vec![],
+        };
+        let l = rec.menu_label();
+        for part in ["orchestrator", "codex", "orch-2", "arka, pumpfun", "auto"] {
+            assert!(l.contains(part), "{part:?} missing in {l:?}");
+        }
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
     /// The mode cycle is a closed loop over all three modes.
