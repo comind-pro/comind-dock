@@ -1432,7 +1432,17 @@ pub fn build(
         // A failed resume must degrade into a shell, not close the pane —
         // an instant exit cascades into killing the tab and the space.
         let resume = meta.agent.as_deref().map(|a| {
-            let mut cmd = crate::agents::resume_command(a);
+            // A claude session whose transcript is gone (CLI update, cleanup)
+            // makes `--resume <id>` print "No conversation found" and exit —
+            // the pane degrades to a bare shell and loses its agent. Start
+            // fresh instead: memory lives in files (STATE.md for
+            // orchestrators), not in the dead conversation.
+            let mut cmd = match a.split_once(':') {
+                Some(("claude", id)) if !crate::agents::claude_session_exists(id) => {
+                    "claude".to_string()
+                }
+                _ => crate::agents::resume_command(a),
+            };
             // PATH first: a CLI update installs a NEW binary there while the
             // recorded absolute path keeps existing — preferring the path
             // would pin every resumed pane to the stale version forever.
@@ -1455,6 +1465,18 @@ pub fn build(
                 && let Some(ident) = meta.behavior.as_deref()
                 && let Some(cwd) = meta.cwd.as_deref()
                 && let Ok(profile) = crate::profile::load_behavior(ident, cwd)
+                && let Some(staged) = profile.stage_prompt()
+                && !staged.display().to_string().contains('\'')
+            {
+                cmd.push_str(&format!(" --append-system-prompt \"$(cat '{}')\"", staged.display()));
+            }
+            // An orchestrator pane gets its role back as system prompt —
+            // resumed or fresh, it must come back AS the orchestrator.
+            if a.starts_with("claude")
+                && meta.orch
+                && meta.behavior.is_none()
+                && let Some(cwd) = meta.cwd.as_deref()
+                && let Ok(profile) = crate::profile::load_any("orchestrator", cwd)
                 && let Some(staged) = profile.stage_prompt()
                 && !staged.display().to_string().contains('\'')
             {

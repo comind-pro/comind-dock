@@ -183,6 +183,31 @@ fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
             target: None,
         });
         for pane in &orchs {
+            // An orchestrator whose agent exited (shell left behind) must
+            // still be FINDABLE — its space is hidden, this is the only way
+            // back to it. Restart via the team panel's "agent:" row.
+            if rt.panes.get(pane).is_some_and(|p| p.agent.is_none()) {
+                let name = crate::agents::truncate_clean(
+                    state.pane_name(*pane).unwrap_or("orchestrator"),
+                    (width as usize).saturating_sub(8).max(6),
+                );
+                out.push(Row {
+                    line: Line::from(vec![
+                        Span::raw("   "),
+                        Span::styled("⌂ ", Style::new().fg(theme.accent)),
+                        Span::styled(name, Style::new().add_modifier(Modifier::BOLD)),
+                    ]),
+                    target: Some(Target::Pane(*pane)),
+                });
+                out.push(Row {
+                    line: Line::from(Span::styled(
+                        format!("     %{} agent stopped · restart: team → agent:", pane.0),
+                        Style::new().fg(theme.muted),
+                    )),
+                    target: Some(Target::Pane(*pane)),
+                });
+                continue;
+            }
             agent_rows(rt, theme, *pane, "   ", width, &mut out);
         }
         out.push(Row { line: Line::from(""), target: None });
