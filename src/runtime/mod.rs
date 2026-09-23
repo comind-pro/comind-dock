@@ -55,6 +55,10 @@ pub struct PaneRuntime {
     /// CDOCK_AGENT_PROFILE of the agent process — the cdock profile the
     /// pane was launched with (role + skills). UI shows it as an override.
     pub agent_profile: Option<String>,
+    /// The agent PROCESS was actually seen in this pane at least once. A
+    /// restore whose resume never came up must keep the conversation ident
+    /// (recoverable) — only an agent that ran and then left releases it.
+    pub agent_seen: bool,
     /// The user typed here without submitting yet (heuristic: last real
     /// keystroke wasn't Enter/Esc/Ctrl-C). `pane run` refuses such panes —
     /// an injected prompt would splice into the half-typed message.
@@ -452,6 +456,7 @@ impl Runtime {
                 agent_config_dir: None,
                 agent_profile: None,
                 user_input_pending: false,
+                agent_seen: false,
                 agent_bin: None,
                 reported: None,
                 unseen: None,
@@ -963,7 +968,10 @@ impl Runtime {
             // this, a pane the user turned back into a shell resurrects
             // claude on restore, and the picker hides the conversation.
             // Grace of a few polls tolerates transient process-scan misses.
-            if p.agent.is_none() && self.agent_sessions.contains_key(&id) {
+            if agent_pid.is_some() {
+                p.agent_seen = true;
+            }
+            if p.agent.is_none() && p.agent_seen && self.agent_sessions.contains_key(&id) {
                 p.agent_gone_polls = p.agent_gone_polls.saturating_add(1);
                 if p.agent_gone_polls >= 6 {
                     self.agent_sessions.remove(&id);
@@ -1448,15 +1456,22 @@ pub fn build(
             // would pin every resumed pane to the stale version forever.
             // The recorded binary is the FALLBACK for servers whose PATH
             // can't find the launcher.
-            if let Some((word, rest)) = cmd.split_once(' ')
-                && !binary_on_path(word)
-                && let Some(bin) = meta
-                    .agent_bin
-                    .as_deref()
-                    .filter(|b| std::path::Path::new(b).is_file() && !b.contains('\''))
+            if let Some((word, rest)) =
+                cmd.split_once(' ').map(|(w, r)| (w.to_string(), r.to_string()))
+                && !binary_on_path(&word)
             {
+                // Not on the server's PATH: the user's launcher (login
+                // PATH) beats the recorded — possibly stale — exe.
+                let bin = find_launcher(&word)
+                    .map(|p| p.display().to_string())
+                    .or_else(|| {
+                        meta.agent_bin.clone().filter(|b| std::path::Path::new(b).is_file())
+                    })
+                    .filter(|b| !b.contains('\''));
                 // Quote-hostile paths fall back to the bare name + PATH.
-                cmd = format!("'{bin}' {rest}");
+                if let Some(bin) = bin {
+                    cmd = format!("'{bin}' {rest}");
+                }
             }
             // An attached behavior rides back in as system prompt (claude
             // adapter only — other CLIs got it as a chat message live and
@@ -1911,6 +1926,7 @@ pub fn build_from_handoff(
                         agent_config_dir: None,
                         agent_profile: None,
                         user_input_pending: false,
+                        agent_seen: false,
                         agent_bin: None,
                         reported: None,
                         unseen: None,
@@ -2151,12 +2167,42 @@ fn save_orch_agent_store(dir: &std::path::Path, store: &HashMap<String, String>)
     }
 }
 
-/// Is `name` resolvable through the server's PATH? Decides whether a
-/// resumed agent runs the (possibly freshly updated) PATH binary or the
-/// absolute path recorded at save time.
+/// The user's login-shell PATH, captured once. The server usually starts
+/// WITHOUT the user's shell rc (launchd, a bare parent), so its own PATH
+/// misses ~/.local/bin and friends — exactly where agent launchers live.
+fn login_path() -> &'static Option<std::ffi::OsString> {
+    static CACHE: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        let out = std::process::Command::new(shell)
+            .args(["-ilc", "printf %s \"$PATH\""])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (!s.is_empty()).then(|| s.into())
+    })
+}
+
+/// The CURRENT launcher for `name`: first on the server's PATH, then on the
+/// user's login-shell PATH. Launchers (~/.local/bin/codex → current/…)
+/// follow CLI updates; the absolute exe recorded at save time is a
+/// versioned file that goes stale — and an outdated codex opens on an
+/// "Update available" prompt instead of the conversation.
+fn find_launcher(name: &str) -> Option<std::path::PathBuf> {
+    let env = std::env::var_os("PATH");
+    [env.as_ref(), login_path().as_ref()]
+        .into_iter()
+        .flatten()
+        .flat_map(std::env::split_paths)
+        .map(|d| d.join(name))
+        .find(|p| p.is_file())
+}
+
 fn binary_on_path(name: &str) -> bool {
-    let Some(paths) = std::env::var_os("PATH") else { return false };
-    std::env::split_paths(&paths).any(|d| d.join(name).is_file())
+    std::env::var_os("PATH")
+        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
 }
 
 /// One grip tick, pure for tests: watch the focused team pane (typed =
@@ -2299,6 +2345,8 @@ mod tests {
     fn binary_on_path_resolves_real_names() {
         assert!(super::binary_on_path("sh"));
         assert!(!super::binary_on_path("definitely-not-a-binary-cdock-xyz"));
+        assert!(super::find_launcher("sh").is_some_and(|p| p.is_file()));
+        assert!(super::find_launcher("definitely-not-a-binary-cdock-xyz").is_none());
     }
 
     /// The mode cycle is a closed loop over all three modes.
