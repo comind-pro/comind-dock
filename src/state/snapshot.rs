@@ -336,10 +336,19 @@ impl Snapshot {
         let orchestrators = panes.iter().filter(|(_, m)| m.orch).map(|(id, _)| *id).collect();
         // A restored orchestrator keeps feeding its folder into the recents
         // record whenever it closes later.
+        // Only a real orchestrator folder counts: the pane's cwd drifts
+        // (an orchestrator that `cd`s into a repo would otherwise get its
+        // STATE.md / notes/ corners seeded INTO that repo after a restart).
+        let root = crate::profile::orchestrators_dir();
         let orch_dirs = panes
             .iter()
             .filter(|(_, m)| m.orch)
-            .filter_map(|(id, m)| m.cwd.as_ref().map(|c| (*id, c.display().to_string())))
+            .filter_map(|(id, m)| {
+                m.cwd
+                    .as_ref()
+                    .filter(|c| root.as_ref().is_some_and(|r| c.starts_with(r)))
+                    .map(|c| (*id, c.display().to_string()))
+            })
             .collect();
         let orch_modes =
             panes.iter().filter_map(|(id, m)| m.orch_mode.map(|mode| (*id, mode))).collect();
