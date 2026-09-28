@@ -41,6 +41,15 @@ pub enum Req {
     Run {
         pane: u64,
         command: String,
+        /// Informational message, not a task: leaves the pane's
+        /// task_state alone (no stall watch re-armed).
+        #[serde(default)]
+        notify: bool,
+        /// Sending pane ($CDOCK_PANE_ID, filled by the CLI). A team
+        /// worker writing into its orchestrator gets a [cdock:%from → %to]
+        /// prefix so the orchestrator never mistakes it for the user.
+        #[serde(default)]
+        from: Option<u64>,
     },
     /// Read the last non-empty screen lines of a pane.
     Read {
@@ -226,6 +235,17 @@ pub enum Req {
         worker: u64,
         orchestrator: Option<u64>,
     },
+    /// Park a worker: no task in flight (task_state = collected) — the
+    /// stall watchdog leaves it alone until the next real assignment.
+    TeamPark {
+        worker: u64,
+    },
+    /// One-line orchestrator note shown under the worker in the team panel
+    /// (empty clears it).
+    TeamNote {
+        worker: u64,
+        note: String,
+    },
     /// Set an orchestrator's reaction mode: report | auto | notify (what
     /// the team panel's mode row does).
     TeamMode {
@@ -379,7 +399,7 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
         // must land as one block. Enter follows as its OWN late keystroke —
         // in the same burst as the paste close, agent TUIs sometimes fold
         // it into the paste and the message sits unsubmitted.
-        Req::Run { pane, command } => {
+        Req::Run { pane, command, notify, from } => {
             if let Some(e) = user_grip_err(rt, pane) {
                 return Ok(e);
             }
@@ -392,11 +412,20 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                      or clear it first (pane key {pane} esc)"
                 )));
             }
+            let command = match from.map(PaneId) {
+                Some(f) if f.0 != pane && rt.state.orchestrators.contains(&PaneId(pane)) => {
+                    format!("[cdock:%{} → %{pane}] {command}", f.0)
+                }
+                _ => command,
+            };
             Ok(match rt.paste_write(PaneId(pane), &command, false) {
                 Ok(()) => {
                     // A new assignment: the finished-task shield comes off
-                    // and the stall watchdog watches again.
-                    rt.collected.remove(&PaneId(pane));
+                    // and the stall watchdog watches again. A --notify
+                    // message is not a task and leaves it alone.
+                    if !notify {
+                        rt.collected.remove(&PaneId(pane));
+                    }
                     rt.submit_later(PaneId(pane), Duration::from_millis(150), &command);
                     json!({"ok": true})
                 }
@@ -525,6 +554,9 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             if !rt.panes.contains_key(&pane) {
                 return Ok(err(format!("no such pane {pane}")));
             }
+            // Closed deliberately through the API (the orchestrator closing
+            // its own helper): no "left your team" notice back to it.
+            rt.quiet_close.insert(pane);
             rt.kill_pane(pane); // PtyExit drives the close (single path)
             Ok(json!({"ok": true}))
         }
@@ -823,6 +855,8 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                         // into it are refused until the handback update.
                         // (Just viewing does not set this.)
                         "user_active": rt.user_grip.get(&id) == Some(&true),
+                        // The orchestrator's one-line note for this worker.
+                        "note": rt.state.team_notes.get(&id),
                         // A half-typed user message sits in its input box.
                         "input_pending": p.map(|p| p.user_input_pending),
                         // An uncollected task result is parked for it.
@@ -894,6 +928,29 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             rt.save_session();
             Ok(json!({"ok": true}))
         }
+        Req::TeamPark { worker } => {
+            let w = PaneId(worker);
+            if !rt.state.teams.contains_key(&w) {
+                return Ok(err(format!("{w} is not in a team")));
+            }
+            rt.collected.insert(w);
+            rt.stall_nudged.remove(&w);
+            Ok(json!({"ok": true}))
+        }
+        Req::TeamNote { worker, note } => {
+            let w = PaneId(worker);
+            if !rt.state.teams.contains_key(&w) {
+                return Ok(err(format!("{w} is not in a team")));
+            }
+            let note = note.trim().to_string();
+            if note.is_empty() {
+                rt.state.team_notes.remove(&w);
+            } else {
+                rt.state.team_notes.insert(w, note);
+            }
+            rt.mark_dirty();
+            Ok(json!({"ok": true}))
+        }
         Req::TeamMode { orchestrator, mode } => {
             let orch = PaneId(orchestrator);
             if !rt.panes.contains_key(&orch) {
@@ -917,7 +974,7 @@ pub const REFERENCE: &str = r#"[
   {"cmd":"snapshot"},
   {"cmd":"split","pane":1,"direction":"right","command":"cargo test"},
   {"cmd":"send-text","pane":1,"text":"hello","paste":false},
-  {"cmd":"run","pane":1,"command":"ls"},
+  {"cmd":"run","pane":1,"command":"ls","notify":false,"from":2},
   {"cmd":"read","pane":1,"lines":30},
   {"cmd":"focus","pane":1},
   {"cmd":"agent-start","command":"claude","split":"right","workspace":3,"env":[["K","V"]],"team":5,"orchestrator":false},
@@ -950,6 +1007,8 @@ pub const REFERENCE: &str = r#"[
   {"cmd":"team-list","orchestrator":5},
   {"cmd":"team-set","worker":1,"orchestrator":5},
   {"cmd":"team-mode","orchestrator":5,"mode":"auto"},
+  {"cmd":"team-park","worker":1},
+  {"cmd":"team-note","worker":1,"note":"waiting on CI"},
   {"cmd":"subscribe","events":["agent-status","output"],"pane":1}
 ]"#;
 
@@ -1527,6 +1586,9 @@ mod tests {
         let req: Req = serde_json::from_str(r#"{"cmd":"task-done","pane":7,"result":"r"}"#)
             .expect("task-done without pid parses");
         assert!(matches!(req, Req::TaskDone { pid: None, .. }));
+        let req: Req = serde_json::from_str(r#"{"cmd":"run","pane":1,"command":"ls"}"#)
+            .expect("run without notify/from parses");
+        assert!(matches!(req, Req::Run { notify: false, from: None, .. }));
         let req: Req = serde_json::from_str(r#"{"cmd":"rename-pane","pane":1,"name":"x"}"#)
             .expect("rename-pane without local parses");
         assert!(matches!(req, Req::RenamePane { local: false, .. }));

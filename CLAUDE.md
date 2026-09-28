@@ -34,6 +34,9 @@ server (`$!`), or match the dev name exactly: `pgrep -f "cdock-dev --server"`.
 
 `cargo clippy --all-targets` clean and `cargo test` green before every
 commit. New behavior gets a test or a sandboxed end-to-end check.
+Orchestration/team/api changes also run `sh scripts/e2e-orchestrator.sh`
+(throwaway cdock-dev server, never the live session) — extend it with the
+new behavior.
 
 ## Rollout
 

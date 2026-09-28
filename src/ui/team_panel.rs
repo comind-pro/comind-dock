@@ -195,7 +195,22 @@ pub fn render(rt: &Runtime, theme: &Theme, orch: PaneId, rect: Rect, frame: &mut
                         .map(|p| p.effective_status().word().to_string())
                         .unwrap_or_else(|| "?".to_string())
                 };
-                Line::from(Span::styled(format!("     {word}"), Style::new().fg(theme.muted)))
+                // The orchestrator's own note rides next to the status.
+                let note = rt
+                    .state
+                    .team_notes
+                    .get(&id)
+                    .map(|n| {
+                        format!(
+                            " · {}",
+                            crate::agents::truncate_clean(
+                                n,
+                                inner_w.saturating_sub(8 + word.len())
+                            )
+                        )
+                    })
+                    .unwrap_or_default();
+                Line::from(Span::styled(format!("     {word}{note}"), Style::new().fg(theme.muted)))
             }
         });
     }

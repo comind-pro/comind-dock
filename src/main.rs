@@ -256,7 +256,17 @@ enum PaneCmd {
     /// Write text + Enter to a pane's PTY.
     Run {
         pane: String,
-        command: String,
+        /// Text to send (or use --file).
+        #[arg(required_unless_present = "file")]
+        command: Option<String>,
+        /// Read the text from a file ("-" = stdin) — long prompts without
+        /// shell quoting: backticks and $() stay literal.
+        #[arg(long, conflicts_with = "command")]
+        file: Option<std::path::PathBuf>,
+        /// Informational message, not a task: task_state stays as is (no
+        /// stall watch re-armed).
+        #[arg(long)]
+        notify: bool,
     },
     /// Write literal text (no Enter).
     SendText {
@@ -321,9 +331,10 @@ enum PaneCmd {
         pane: String,
         #[arg(default_value = "")]
         name: String,
-        /// Sidebar-only: skip typing /rename into the agent's conversation.
+        /// Also type /rename into an idle claude so the CONVERSATION carries
+        /// the name (default: sidebar-only).
         #[arg(long)]
-        local: bool,
+        sync: bool,
     },
     /// Close a pane (kill its process; the layout collapses around it).
     Close {
@@ -374,6 +385,11 @@ enum AgentCmd {
         /// returning — safe to `pane run` immediately after.
         #[arg(long)]
         wait_ready: bool,
+        /// Claude permission mode for the new agent (e.g. auto,
+        /// acceptEdits, bypassPermissions) — a spawned claude otherwise
+        /// starts in the default mode and blocks on permission dialogs.
+        #[arg(long)]
+        permission_mode: Option<String>,
     },
 }
 
@@ -526,6 +542,11 @@ enum TeamCmd {
     Set { worker: String, orchestrator: String },
     /// Set an orchestrator's reaction mode: report | auto | notify.
     Mode { orchestrator: String, mode: String },
+    /// Park a worker: no task in flight — no stall notices until the next
+    /// real assignment.
+    Park { worker: String },
+    /// One-line note shown under the worker in the team panel ("" clears).
+    Note { worker: String, note: String },
 }
 
 /// Sessions are files in the state dir: session-<name>.json (+ sockets
@@ -952,7 +973,20 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 direction: Some(direction),
                 command,
             },
-            PaneCmd::Run { pane, command } => Req::Run { pane: parse_pane(&pane)?, command },
+            PaneCmd::Run { pane, command, file, notify } => {
+                let command = match (command, file) {
+                    (Some(c), _) => c,
+                    (None, Some(f)) if f == std::path::Path::new("-") => {
+                        std::io::read_to_string(std::io::stdin()).map_err(|e| e.to_string())?
+                    }
+                    (None, Some(f)) => std::fs::read_to_string(&f).map_err(|e| e.to_string())?,
+                    (None, None) => return Err("text or --file required".to_string()),
+                };
+                // Who is sending: lets the server tag worker → orchestrator
+                // messages so they never read as the user.
+                let from = std::env::var("CDOCK_PANE_ID").ok().and_then(|p| parse_pane(&p).ok());
+                Req::Run { pane: parse_pane(&pane)?, command, notify, from }
+            }
             PaneCmd::SendText { pane, text, paste } => {
                 Req::SendText { pane: parse_pane(&pane)?, text, paste }
             }
@@ -991,8 +1025,8 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             PaneCmd::ReportAgent { pane, state, label, ttl_ms, pid } => {
                 Req::ReportAgent { pane: parse_pane(&pane)?, state, label, ttl_ms, pid }
             }
-            PaneCmd::Rename { pane, name, local } => {
-                Req::RenamePane { pane: parse_pane(&pane)?, name, local }
+            PaneCmd::Rename { pane, name, sync } => {
+                Req::RenamePane { pane: parse_pane(&pane)?, name, local: !sync }
             }
             PaneCmd::Close { pane } => Req::PaneClose { pane: parse_pane(&pane)? },
             PaneCmd::ReportMetadata { pane, title } => {
@@ -1034,7 +1068,16 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             Req::AgentExplain { pane: parse_pane(&pane)? }
         }
         Cmd::Agent {
-            sub: AgentCmd::Start { command, profile, split, workspace, team, wait_ready },
+            sub:
+                AgentCmd::Start {
+                    command,
+                    profile,
+                    split,
+                    workspace,
+                    team,
+                    wait_ready,
+                    permission_mode,
+                },
         } => {
             let (command, mut env, orchestrator) = match profile {
                 // Workspace-scoped agents (this cwd) win over global ones;
@@ -1054,6 +1097,23 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(),
             );
             let team = team.as_deref().map(parse_pane).transpose()?;
+            let command = match permission_mode {
+                Some(m)
+                    if command
+                        .split_whitespace()
+                        .next()
+                        .and_then(|w| w.rsplit('/').next())
+                        .is_some_and(|b| b.starts_with("claude")) =>
+                {
+                    // Insert right after the binary: flags before the
+                    // staged --append-system-prompt stay well-formed.
+                    match command.split_once(' ') {
+                        Some((bin, rest)) => format!("{bin} --permission-mode {m} {rest}"),
+                        None => format!("{command} --permission-mode {m}"),
+                    }
+                }
+                _ => command,
+            };
             let req = Req::AgentStart { command, split, workspace, env, team, orchestrator };
             if wait_ready {
                 let v = api::request(&req).map_err(|e| e.to_string())?;
@@ -1169,8 +1229,13 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 // No exec: a failed ssh drops back to the local shell
                 // instead of killing the fresh space.
                 let quoted = format!("'{}'", host.replace('\'', "'\\''"));
-                let r = api::request(&Req::Run { pane, command: format!("ssh -t {quoted}") })
-                    .map_err(|e| e.to_string())?;
+                let r = api::request(&Req::Run {
+                    pane,
+                    command: format!("ssh -t {quoted}"),
+                    notify: false,
+                    from: None,
+                })
+                .map_err(|e| e.to_string())?;
                 println!("{v}");
                 return Ok(r["ok"].as_bool().unwrap_or(false));
             }
@@ -1301,6 +1366,8 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             TeamCmd::Mode { orchestrator, mode } => {
                 Req::TeamMode { orchestrator: parse_pane(&orchestrator)?, mode }
             }
+            TeamCmd::Park { worker } => Req::TeamPark { worker: parse_pane(&worker)? },
+            TeamCmd::Note { worker, note } => Req::TeamNote { worker: parse_pane(&worker)?, note },
         },
         Cmd::Api { sub: ApiCmd::Snapshot } => Req::Snapshot,
         Cmd::Api { sub: ApiCmd::Reference | ApiCmd::Schema } => {

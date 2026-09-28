@@ -791,6 +791,15 @@ fn nudge_stalls(rt: &mut Runtime) {
             continue;
         }
         let status = p.last_shown;
+        // Which layer the status claim comes from — an "activity" working
+        // is just output noise (a background shell), not proof of progress.
+        let source = if p.reported.as_ref().is_some_and(|r| r.until > std::time::Instant::now()) {
+            "hook"
+        } else if p.status != crate::detect::Status::Unknown {
+            "screen"
+        } else {
+            "activity"
+        };
         if rt.stall_nudged.contains(&pane)
             // Blocked has its own (screen-carrying) nudge…
             || status == crate::detect::Status::Blocked
@@ -811,7 +820,7 @@ fn nudge_stalls(rt: &mut Runtime) {
         }
         let mode = rt.state.orch_modes.get(&orch).copied().unwrap_or_default();
         let msg = format!(
-            "[cdock] team update (mode: {}): %{} has been silent for {}m (status: {}) \
+            "[cdock] team update (mode: {}): %{} has been silent for {}m (status: {} via {source}) \
              without reporting a result — it may be stuck on a refusal or prompt, have \
              crashed, or finished silently. Read its screen (pane read {}) and recover \
              or re-task it.",

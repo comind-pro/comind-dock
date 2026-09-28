@@ -351,6 +351,7 @@ impl Snapshot {
             orch_dirs,
             orch_modes,
             orch_cmds: std::collections::HashMap::new(),
+            team_notes: std::collections::HashMap::new(),
             orch_added,
             // Stale worker pane ids inside are harmless: relaunch reattaches
             // only panes that still exist.

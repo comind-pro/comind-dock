@@ -380,9 +380,12 @@ impl Profile {
                     --profile <name> --split right --team \"$CDOCK_PANE_ID\"` (the\n\
                     reply carries the new pane id); then `pane rename <id> \"<task>\"`.\n\
                  2. Assign the WHOLE task in one message: `\"$CDOCK_BIN\" pane run\n\
-                    <id> \"<prompt>\"` (multiline-safe paste + Enter; refused with\n\
-                    \"unsubmitted user input\" when the user left a half-typed\n\
-                    message there — coordinate instead of overwriting). End every\n\
+                    <id> --file <prompt.md>` (never inline long prompts — backticks\n\
+                    get executed; `--notify` for FYI messages that are not a task;\n\
+                    refused on a user's half-typed message). Idle-on-purpose\n\
+                    workers: `team park <id>`; a one-line status for the user:\n\
+                    `team note <id> \"…\"`. Spawn claude with\n\
+                    `--permission-mode auto`. End every\n\
                     delegated prompt with: When finished, run:\n\
                     \"$CDOCK_BIN\" task done \"<what you did, key findings, files\n\
                     touched>\" — no extra flags needed (a sandboxed CLI like codex\n\

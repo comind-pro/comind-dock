@@ -240,6 +240,9 @@ pub struct Runtime {
     /// finish booting: delivered when its agent is detected and settles at
     /// the prompt (idle), or at the deadline as a last resort.
     pub boot_briefs: HashMap<PaneId, (String, std::time::Instant)>,
+    /// Panes closed deliberately through the API (pane close): their exit
+    /// sends no "left your team" notice to the orchestrator that closed them.
+    pub quiet_close: HashSet<PaneId>,
     /// Panes being replaced by an agent SWITCH — their exit must not spam
     /// the "↻ recent orchestrators" list with intermediate heads.
     pub switching: HashSet<PaneId>,
@@ -1532,6 +1535,7 @@ pub fn build(
         collected: HashSet::new(),
         boot_briefs: HashMap::new(),
         switching: HashSet::new(),
+        quiet_close: HashSet::new(),
         toasts: Vec::new(),
         update_available: None,
         last_view: None,
@@ -1788,7 +1792,9 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
     // A closing TEAM WORKER tells its orchestrator — otherwise the next
     // pane read hits "no such pane" with no explanation. Its last result
     // (if any) deliberately survives the pane: still collectable.
+    let quiet = rt.quiet_close.remove(&id);
     if let Some(&orch) = rt.state.teams.get(&id)
+        && !quiet
         && orch != id
         && rt.state.orchestrators.contains(&orch)
         && rt.panes.contains_key(&orch)
@@ -1821,6 +1827,7 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
     rt.state.orch_dirs.remove(&id);
     rt.state.orch_modes.remove(&id);
     rt.state.orch_cmds.remove(&id);
+    rt.state.team_notes.remove(&id);
     // Ownership marks live only as long as the membership itself.
     let crate::state::AppState { teams, orch_added, .. } = &mut rt.state;
     orch_added.retain(|w| teams.contains_key(w));
@@ -2027,6 +2034,7 @@ pub fn build_from_handoff(
         stall_nudged: HashSet::new(),
         boot_briefs: HashMap::new(),
         switching: HashSet::new(),
+        quiet_close: HashSet::new(),
         toasts: Vec::new(),
         update_available: None,
         last_view: None,

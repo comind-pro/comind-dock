@@ -249,6 +249,10 @@ pub struct AppState {
     /// back to the pane's detected agent).
     #[serde(default)]
     pub orch_cmds: std::collections::HashMap<PaneId, String>,
+    /// Orchestrator notes per worker (team note) — one line shown under
+    /// the worker in the team panel.
+    #[serde(default)]
+    pub team_notes: std::collections::HashMap<PaneId, String>,
     /// Workers the ORCHESTRATOR itself added (CLI team set / --team).
     /// Absent = user-assigned: the server refuses CLI removal of those —
     /// an orchestrator may only drop members it added itself.
@@ -362,6 +366,7 @@ impl AppState {
             orch_dirs: std::collections::HashMap::new(),
             orch_modes: std::collections::HashMap::new(),
             orch_cmds: std::collections::HashMap::new(),
+            team_notes: std::collections::HashMap::new(),
             orch_added: std::collections::HashSet::new(),
             recent_spaces: Vec::new(),
             workspaces: vec![ws],
