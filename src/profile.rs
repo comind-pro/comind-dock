@@ -384,7 +384,8 @@ impl Profile {
                     get executed; `--notify` for FYI messages that are not a task;\n\
                     refused on a user's half-typed message). Idle-on-purpose\n\
                     workers: `team park <id>`; a one-line status for the user:\n\
-                    `team note <id> \"…\"`. Spawn claude with\n\
+                    `team note <id> \"…\"`; serialize merges with `lock acquire\n\
+                    main --wait 600` / `lock release main`. Spawn claude with\n\
                     `--permission-mode auto`. End every\n\
                     delegated prompt with: When finished, run:\n\
                     \"$CDOCK_BIN\" task done \"<what you did, key findings, files\n\

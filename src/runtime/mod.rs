@@ -223,7 +223,7 @@ pub struct Runtime {
     /// on read by an orchestrator (`task result` / `wait task-result`).
     // ponytail: in-memory only, no queue — lost on server restart/handoff;
     // persist alongside agent_sessions if orchestration must survive one.
-    pub results: HashMap<PaneId, String>,
+    pub results: ResultQueue,
     /// Team panes the user is in (focused): value = has the user TYPED.
     /// Only typed panes block the orchestrator. Ephemeral — see
     /// poll_user_grip.
@@ -240,6 +240,20 @@ pub struct Runtime {
     /// finish booting: delivered when its agent is detected and settles at
     /// the prompt (idle), or at the deadline as a last resort.
     pub boot_briefs: HashMap<PaneId, (String, std::time::Instant)>,
+    /// Messages waiting for a pane whose input box is busy (the user's
+    /// unsent draft, or the user typing there): delivered in order once it
+    /// frees up — never spliced into the draft, never dropped.
+    pub inbox: HashMap<PaneId, std::collections::VecDeque<String>>,
+    /// Last keystroke into a gripped pane — a grip with no typing for a
+    /// while is handed back (an accidental click + keypress must not block
+    /// the orchestrator for an hour).
+    pub grip_last_key: HashMap<PaneId, std::time::Instant>,
+    /// Workers already nudged about a provider limit / auth wall on screen;
+    /// cleared once the screen no longer shows it.
+    pub limit_nudged: HashSet<PaneId>,
+    /// Named team locks (merge queue, shared env): name → (holder, since).
+    /// Released by their holder, or automatically when it exits.
+    pub locks: HashMap<String, (PaneId, std::time::Instant)>,
     /// Panes closed deliberately through the API (pane close): their exit
     /// sends no "left your team" notice to the orchestrator that closed them.
     pub quiet_close: HashSet<PaneId>,
@@ -295,6 +309,7 @@ impl Runtime {
         // GRIPPED — the orchestrator's writes are refused until handback.
         if let Some(typed) = self.user_grip.get_mut(&focused) {
             *typed = true;
+            self.grip_last_key.insert(focused, std::time::Instant::now());
         }
         if let Some(p) = self.panes.get_mut(&focused) {
             use crossterm::event::{KeyCode, KeyModifiers};
@@ -317,15 +332,36 @@ impl Runtime {
     /// orchestrator to re-read the conversation before continuing.
     pub fn poll_user_grip(&mut self, clients_attached: bool) -> Vec<PaneId> {
         let focused = self.state.focused_pane();
+        // A grip with no keystroke for 5 minutes is handed back: the user
+        // is reading, not driving.
+        let stale: Vec<PaneId> = self
+            .user_grip
+            .iter()
+            .filter(|(p, typed)| {
+                **typed
+                    && self
+                        .grip_last_key
+                        .get(p)
+                        .is_some_and(|t| t.elapsed() >= Duration::from_secs(300))
+            })
+            .map(|(p, _)| *p)
+            .collect();
+        let mut handbacks = Vec::new();
+        for p in stale {
+            self.user_grip.insert(p, false);
+            self.grip_last_key.remove(&p);
+            handbacks.push(p);
+        }
         let state = &self.state;
         let panes = &self.panes;
-        grip_step(
+        handbacks.extend(grip_step(
             &mut self.user_grip,
             focused,
             clients_attached,
             |id| state.teams.contains_key(&id),
             |id| panes.contains_key(&id),
-        )
+        ));
+        handbacks
     }
 
     /// Kill a pane's child; PtyExit drives the state change (single close path).
@@ -854,6 +890,59 @@ impl Runtime {
         match ident.split_once(':') {
             Some(("claude", id)) if !crate::agents::claude_session_exists(id) => None,
             _ => Some(ident),
+        }
+    }
+
+    /// Is the pane's input box taken by the user right now (an unsent
+    /// draft, or they are typing there)?
+    pub fn input_busy(&self, pane: PaneId) -> bool {
+        self.panes.get(&pane).is_some_and(|p| p.user_input_pending)
+            || self.user_grip.get(&pane) == Some(&true)
+    }
+
+    /// Deliver an automated message into a pane: paste + late Enter now,
+    /// or — when the user's draft occupies the input box — queue it for
+    /// delivery once the box is free. Returns whether it was queued.
+    pub fn inject(&mut self, pane: PaneId, msg: String) -> Result<bool, String> {
+        if !self.panes.contains_key(&pane) {
+            return Err(format!("no such pane {pane}"));
+        }
+        if self.input_busy(pane) || self.inbox.get(&pane).is_some_and(|q| !q.is_empty()) {
+            let q = self.inbox.entry(pane).or_default();
+            q.push_back(msg);
+            if q.len() == 1 {
+                self.add_plain_toast(
+                    format!("✉ messages waiting for %{} — send or clear your draft there", pane.0),
+                    12,
+                );
+            }
+            return Ok(true);
+        }
+        self.paste_write(pane, &msg, false)?;
+        self.submit_later(pane, Duration::from_millis(150), &msg);
+        Ok(false)
+    }
+
+    /// Deliver one queued message per pane whose input box freed up.
+    /// Called from the agent poll; one per tick keeps the late-Enter dance
+    /// of consecutive messages apart.
+    pub fn flush_inbox(&mut self) {
+        let ready: Vec<PaneId> = self
+            .inbox
+            .iter()
+            .filter(|(p, q)| !q.is_empty() && !self.input_busy(**p))
+            .map(|(p, _)| *p)
+            .collect();
+        for pane in ready {
+            let Some(msg) = self.inbox.get_mut(&pane).and_then(|q| q.pop_front()) else {
+                continue;
+            };
+            if self.inbox.get(&pane).is_some_and(|q| q.is_empty()) {
+                self.inbox.remove(&pane);
+            }
+            if self.paste_write(pane, &msg, false).is_ok() {
+                self.submit_later(pane, Duration::from_millis(150), &msg);
+            }
         }
     }
 
@@ -1529,13 +1618,17 @@ pub fn build(
         branches: HashMap::new(),
         persist: true,
         agent_sessions: HashMap::new(),
-        results: HashMap::new(),
+        results: ResultQueue::default(),
         user_grip: HashMap::new(),
         stall_nudged: HashSet::new(),
         collected: HashSet::new(),
         boot_briefs: HashMap::new(),
         switching: HashSet::new(),
         quiet_close: HashSet::new(),
+        inbox: HashMap::new(),
+        grip_last_key: HashMap::new(),
+        limit_nudged: HashSet::new(),
+        locks: HashMap::new(),
         toasts: Vec::new(),
         update_available: None,
         last_view: None,
@@ -1808,9 +1901,7 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
             id.0,
             id.0,
         );
-        if rt.paste_write(orch, &msg, false).is_ok() {
-            rt.submit_later(orch, Duration::from_millis(150), &msg);
-        }
+        let _ = rt.inject(orch, msg);
     }
     if let Some(mut p) = rt.panes.remove(&id) {
         p.pty.kill();
@@ -1821,6 +1912,10 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
     rt.stall_nudged.remove(&id);
     rt.boot_briefs.remove(&id);
     rt.collected.remove(&id);
+    rt.inbox.remove(&id);
+    rt.grip_last_key.remove(&id);
+    rt.limit_nudged.remove(&id);
+    rt.locks.retain(|_, (holder, _)| *holder != id);
     rt.state.teams.remove(&id);
     rt.state.teams.retain(|_, orch| *orch != id);
     rt.state.orchestrators.remove(&id);
@@ -2035,6 +2130,10 @@ pub fn build_from_handoff(
         boot_briefs: HashMap::new(),
         switching: HashSet::new(),
         quiet_close: HashSet::new(),
+        inbox: HashMap::new(),
+        grip_last_key: HashMap::new(),
+        limit_nudged: HashSet::new(),
+        locks: HashMap::new(),
         toasts: Vec::new(),
         update_available: None,
         last_view: None,
@@ -2344,6 +2443,66 @@ fn binary_on_path(name: &str) -> bool {
         .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
 }
 
+/// Task results per pane, FIFO: two `task done` in a row no longer
+/// overwrite each other — `task result` hands them out oldest first.
+#[derive(Default)]
+pub struct ResultQueue(HashMap<PaneId, std::collections::VecDeque<String>>);
+
+impl ResultQueue {
+    pub fn insert(&mut self, pane: PaneId, result: String) {
+        self.0.entry(pane).or_default().push_back(result);
+    }
+    /// Oldest result for the pane (consumed).
+    pub fn remove(&mut self, pane: &PaneId) -> Option<String> {
+        let q = self.0.get_mut(pane)?;
+        let r = q.pop_front();
+        if q.is_empty() {
+            self.0.remove(pane);
+        }
+        r
+    }
+    pub fn contains_key(&self, pane: &PaneId) -> bool {
+        self.0.contains_key(pane)
+    }
+    /// Results still waiting for the pane.
+    pub fn pending(&self, pane: &PaneId) -> usize {
+        self.0.get(pane).map_or(0, |q| q.len())
+    }
+    /// Every (pane, result) pair in order — handoff serialization.
+    pub fn iter(&self) -> impl Iterator<Item = (&PaneId, &String)> {
+        self.0.iter().flat_map(|(p, q)| q.iter().map(move |r| (p, r)))
+    }
+}
+
+impl FromIterator<(PaneId, String)> for ResultQueue {
+    fn from_iter<I: IntoIterator<Item = (PaneId, String)>>(it: I) -> Self {
+        let mut q = ResultQueue::default();
+        for (p, r) in it {
+            q.insert(p, r);
+        }
+        q
+    }
+}
+
+/// The screen line announcing a provider stop (usage/rate limit, quota,
+/// expired auth), if any — agent-agnostic substring match on the bottom
+/// lines, trimmed for the nudge text.
+pub fn limit_line(lines: &[String]) -> Option<String> {
+    const MARKS: [&str; 7] = [
+        "usage limit",
+        "rate limit",
+        "limit reached",
+        "quota exceeded",
+        "re-authenticat",
+        "reauthenticat",
+        "credit balance is too low",
+    ];
+    lines.iter().rev().find_map(|l| {
+        let low = l.to_lowercase();
+        MARKS.iter().any(|m| low.contains(m)).then(|| crate::agents::truncate_clean(l.trim(), 140))
+    })
+}
+
 /// One grip tick, pure for tests: watch the focused team pane (typed =
 /// false until send_key flips it), end watches on panes the user left,
 /// and return handbacks ONLY for panes the user actually typed into —
@@ -2503,6 +2662,35 @@ mod tests {
         );
         assert!(super::Runtime::folder_stored_session(&dir, "agy").is_none());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Provider-stop lines are recognized across CLIs; ordinary output is not.
+    #[test]
+    fn limit_line_detection() {
+        let l =
+            |v: &[&str]| super::limit_line(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert!(
+            l(&["› ok", "You've hit your usage limit. Upgrade or try again at 9 PM."]).is_some()
+        );
+        assert!(l(&["cline requires re-authentication"]).is_some());
+        assert!(l(&["Rate limit reached for requests"]).is_some());
+        assert!(l(&["all tests passed", "› Ask Codex to do anything"]).is_none());
+    }
+
+    /// FIFO results: two reports in a row both survive, oldest first.
+    #[test]
+    fn result_queue_fifo() {
+        let mut q = super::ResultQueue::default();
+        q.insert(PaneId(1), "a".into());
+        q.insert(PaneId(1), "b".into());
+        assert_eq!(q.pending(&PaneId(1)), 2);
+        assert_eq!(q.remove(&PaneId(1)).as_deref(), Some("a"));
+        assert!(q.contains_key(&PaneId(1)));
+        assert_eq!(q.remove(&PaneId(1)).as_deref(), Some("b"));
+        assert!(!q.contains_key(&PaneId(1)));
+        let back: super::ResultQueue =
+            vec![(PaneId(2), "x".to_string()), (PaneId(2), "y".to_string())].into_iter().collect();
+        assert_eq!(back.pending(&PaneId(2)), 2, "handoff round-trip keeps both");
     }
 
     /// The mode cycle is a closed loop over all three modes.

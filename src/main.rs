@@ -84,6 +84,11 @@ enum Cmd {
         #[command(subcommand)]
         sub: TeamCmd,
     },
+    /// Named locks for shared resources (merge queue: `lock acquire main`).
+    Lock {
+        #[command(subcommand)]
+        sub: LockCmd,
+    },
     /// Install per-agent integration hooks (session identity).
     Integration {
         #[command(subcommand)]
@@ -525,6 +530,21 @@ enum TaskCmd {
     },
     /// Fetch and consume a pane's stored result (exit 1 when none).
     Result { pane: String },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum LockCmd {
+    /// Take a lock as this pane ($CDOCK_PANE_ID); --wait polls until free.
+    Acquire {
+        name: String,
+        /// Seconds to keep trying while another pane holds it.
+        #[arg(long, default_value_t = 0)]
+        wait: u64,
+    },
+    /// Release a lock this pane holds.
+    Release { name: String },
+    /// Held locks.
+    List,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -1344,6 +1364,31 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             }
             TaskCmd::Result { pane } => Req::TaskResult { pane: parse_pane(&pane)? },
         },
+        Cmd::Lock { sub } => {
+            let owner = || -> Result<u64, String> {
+                let id = std::env::var("CDOCK_PANE_ID")
+                    .map_err(|_| "locks need $CDOCK_PANE_ID (run inside a pane)".to_string())?;
+                parse_pane(&id)
+            };
+            match sub {
+                LockCmd::Acquire { name, wait } => {
+                    let req = Req::LockAcquire { name, owner: owner()? };
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait);
+                    loop {
+                        let v = api::request(&req).map_err(|e| e.to_string())?;
+                        if v["ok"].as_bool().unwrap_or(false)
+                            || std::time::Instant::now() >= deadline
+                        {
+                            println!("{v}");
+                            return Ok(v["ok"].as_bool().unwrap_or(false));
+                        }
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                    }
+                }
+                LockCmd::Release { name } => Req::LockRelease { name, owner: owner()? },
+                LockCmd::List => Req::LockList,
+            }
+        }
         Cmd::Team { sub } => match sub {
             TeamCmd::List { orchestrator, all } => {
                 // Caller's own roster by default; --all drops the filter.
