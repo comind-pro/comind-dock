@@ -105,7 +105,21 @@ env CDOCK_PANE_ID="%$ORCH" XDG_STATE_HOME="$D" $BIN lock acquire main | grep -q 
 LW=$(C agent start "printf 'You have hit your usage limit. Try again later.\\n'; sleep 300" --team "$ORCH" | pid_of); sleep 3
 flat "$ORCH" | grep -q "isstoppedbyitsprovider" && ok "usage limit nudges orchestrator" || bad "limit nudge"
 C team list --orchestrator "$ORCH" | grep -q '"limited":"You have hit your usage limit' && ok "team list limited" || bad "limited field"
-R=$(C pane run "$ORCH" "plain message"); echo "$R" | grep -q '"queued":false' && ok "orchestrator run delivers" || bad "orch run: $R"
+sleep 2
+C pane run "$ORCH" "plain-message" >/dev/null; sleep 4
+flat "$ORCH" | grep -q "plain-message" && ok "orchestrator run delivers" || bad "orch run not delivered"
+# Back-to-back messages must arrive as SEPARATE submits, not one glued input.
+C pane run "$ORCH" "burst-one" >/dev/null; C pane run "$ORCH" "burst-two" >/dev/null; sleep 6
+flat "$ORCH" | grep -q "burst-oneburst-two" && bad "burst messages glued" || ok "burst messages separate"
+flat "$ORCH" | grep -q "burst-two" && ok "queued burst delivered" || bad "burst-two never delivered"
+# An orchestrator must name the target space; a worker defaults to its own.
+R=$(env CDOCK_PANE_ID="%$ORCH" XDG_STATE_HOME="$D" CDOCK_CONFIG_PATH="$D/cfg/config.toml" $BIN agent start 'sleep 300')
+echo "$R" | grep -q "must pass --workspace" && ok "orchestrator spawn needs --workspace" || bad "orch spawn: $R"
+R=$(env CDOCK_PANE_ID="%$S" XDG_STATE_HOME="$D" $BIN agent start 'sleep 300')
+NP=$(echo "$R" | pid_of)
+WS_S=$(C pane list | python3 -c "import json,sys;print([p['workspace'] for p in json.load(sys.stdin)['panes'] if p['id']==$S][0])")
+WS_N=$(C pane list | python3 -c "import json,sys;print([p['workspace'] for p in json.load(sys.stdin)['panes'] if p['id']==$NP][0])")
+[ "$WS_S" = "$WS_N" ] && ok "spawn lands in caller's space" || bad "spawn ws $WS_N != caller $WS_S"
 
 # --- persistence -------------------------------------------------------
 Z=$(C agent start 'sleep 300' --team "$ORCH" | pid_of)

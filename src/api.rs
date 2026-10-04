@@ -75,6 +75,11 @@ pub enum Req {
         /// sets it from the profile's `orchestrator = true`.
         #[serde(default)]
         orchestrator: bool,
+        /// Calling pane ($CDOCK_PANE_ID, filled by the CLI): without an
+        /// explicit workspace the new agent lands in the CALLER's space —
+        /// not whichever space the user happens to be looking at.
+        #[serde(default)]
+        from: Option<u64>,
     },
     /// From the agent's SessionStart integration hook: which conversation
     /// runs in this pane (restore resumes exactly it).
@@ -472,8 +477,24 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                 Ok(err(format!("no such pane %{pane}")))
             }
         }
-        Req::AgentStart { command, split, workspace, env, team, orchestrator } => {
-            let Some(wi) = resolve_ws(rt, workspace) else {
+        Req::AgentStart { command, split, workspace, env, team, orchestrator, from } => {
+            // Where the agent runs decides which REPO it works in. Default
+            // to the caller's own space; an orchestrator's space is just its
+            // notes folder, so it must name the target explicitly.
+            let caller_ws =
+                from.map(PaneId).and_then(|p| rt.state.locate_pane(p).map(|(wi, _)| (p, wi)));
+            let wi = match (workspace, caller_ws) {
+                (Some(_), _) => resolve_ws(rt, workspace),
+                (None, Some((p, _))) if rt.state.orchestrators.contains(&p) => {
+                    return Ok(err(
+                        "orchestrators must pass --workspace <workspace_id> (see team list) — \
+                         otherwise the agent would run in the wrong repo",
+                    ));
+                }
+                (None, Some((_, wi))) => Some(wi),
+                (None, None) => resolve_ws(rt, None),
+            };
+            let Some(wi) = wi else {
                 return Ok(err("no such workspace"));
             };
             // Background spawns never steal the user's view.

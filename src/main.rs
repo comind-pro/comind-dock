@@ -1134,7 +1134,8 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 }
                 _ => command,
             };
-            let req = Req::AgentStart { command, split, workspace, env, team, orchestrator };
+            let from = std::env::var("CDOCK_PANE_ID").ok().and_then(|p| parse_pane(&p).ok());
+            let req = Req::AgentStart { command, split, workspace, env, team, orchestrator, from };
             if wait_ready {
                 let v = api::request(&req).map_err(|e| e.to_string())?;
                 println!("{v}");

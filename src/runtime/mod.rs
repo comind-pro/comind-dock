@@ -244,6 +244,10 @@ pub struct Runtime {
     /// unsent draft, or the user typing there): delivered in order once it
     /// frees up — never spliced into the draft, never dropped.
     pub inbox: HashMap<PaneId, std::collections::VecDeque<String>>,
+    /// An injected message is still in flight (pasted, Enter + delivery
+    /// check pending) until this instant — the next one waits, or several
+    /// nudges in one tick would glue into a single unsent input.
+    pub inject_inflight: HashMap<PaneId, std::time::Instant>,
     /// Last keystroke into a gripped pane — a grip with no typing for a
     /// while is handed back (an accidental click + keypress must not block
     /// the orchestrator for an hour).
@@ -907,10 +911,14 @@ impl Runtime {
         if !self.panes.contains_key(&pane) {
             return Err(format!("no such pane {pane}"));
         }
-        if self.input_busy(pane) || self.inbox.get(&pane).is_some_and(|q| !q.is_empty()) {
+        let inflight =
+            self.inject_inflight.get(&pane).is_some_and(|t| std::time::Instant::now() < *t);
+        if inflight || self.input_busy(pane) || self.inbox.get(&pane).is_some_and(|q| !q.is_empty())
+        {
+            let user_draft = self.input_busy(pane);
             let q = self.inbox.entry(pane).or_default();
             q.push_back(msg);
-            if q.len() == 1 {
+            if q.len() == 1 && user_draft {
                 self.add_plain_toast(
                     format!("✉ messages waiting for %{} — send or clear your draft there", pane.0),
                     12,
@@ -920,6 +928,7 @@ impl Runtime {
         }
         self.paste_write(pane, &msg, false)?;
         self.submit_later(pane, Duration::from_millis(150), &msg);
+        self.inject_inflight.insert(pane, std::time::Instant::now() + Duration::from_millis(1600));
         Ok(false)
     }
 
@@ -930,7 +939,11 @@ impl Runtime {
         let ready: Vec<PaneId> = self
             .inbox
             .iter()
-            .filter(|(p, q)| !q.is_empty() && !self.input_busy(**p))
+            .filter(|(p, q)| {
+                !q.is_empty()
+                    && !self.input_busy(**p)
+                    && self.inject_inflight.get(p).is_none_or(|t| std::time::Instant::now() >= *t)
+            })
             .map(|(p, _)| *p)
             .collect();
         for pane in ready {
@@ -942,6 +955,8 @@ impl Runtime {
             }
             if self.paste_write(pane, &msg, false).is_ok() {
                 self.submit_later(pane, Duration::from_millis(150), &msg);
+                self.inject_inflight
+                    .insert(pane, std::time::Instant::now() + Duration::from_millis(1600));
             }
         }
     }
@@ -1626,6 +1641,7 @@ pub fn build(
         switching: HashSet::new(),
         quiet_close: HashSet::new(),
         inbox: HashMap::new(),
+        inject_inflight: HashMap::new(),
         grip_last_key: HashMap::new(),
         limit_nudged: HashSet::new(),
         locks: HashMap::new(),
@@ -1913,6 +1929,7 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
     rt.boot_briefs.remove(&id);
     rt.collected.remove(&id);
     rt.inbox.remove(&id);
+    rt.inject_inflight.remove(&id);
     rt.grip_last_key.remove(&id);
     rt.limit_nudged.remove(&id);
     rt.locks.retain(|_, (holder, _)| *holder != id);
@@ -2131,6 +2148,7 @@ pub fn build_from_handoff(
         switching: HashSet::new(),
         quiet_close: HashSet::new(),
         inbox: HashMap::new(),
+        inject_inflight: HashMap::new(),
         grip_last_key: HashMap::new(),
         limit_nudged: HashSet::new(),
         locks: HashMap::new(),
