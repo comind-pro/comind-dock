@@ -92,6 +92,21 @@ flat "$ORCH" | grep -q "\[cdock:%${WK}→%${ORCH}\]fromworker" && ok "worker mes
 C pane close "$WK" >/dev/null; sleep 2
 flat "$ORCH" | grep -q "closedandleftyourteam" && bad "pane close notified" || ok "pane close is quiet"
 
+# --- queues, locks, provider limits -------------------------------------
+Q=$(C agent start 'sleep 300' | pid_of)
+C task done "one" --pane "$Q" >/dev/null; C task done "two" --pane "$Q" >/dev/null
+R=$(C task result "$Q"); echo "$R" | grep -q '"result":"one"' && echo "$R" | grep -q '"pending":1' \
+  && ok "results FIFO (two reports kept)" || bad "fifo: $R"
+C task result "$Q" | grep -q '"result":"two"' && ok "second result kept" || bad "second result lost"
+env CDOCK_PANE_ID="%$Q" XDG_STATE_HOME="$D" $BIN lock acquire main | grep -q '"ok":true' && ok "lock acquire" || bad "lock acquire"
+env CDOCK_PANE_ID="%$ORCH" XDG_STATE_HOME="$D" $BIN lock acquire main | grep -q "\"held_by\":$Q" && ok "lock contention reports holder" || bad "lock contention"
+C pane close "$Q" >/dev/null; sleep 2
+env CDOCK_PANE_ID="%$ORCH" XDG_STATE_HOME="$D" $BIN lock acquire main | grep -q '"ok":true' && ok "lock auto-released on holder exit" || bad "lock not released"
+LW=$(C agent start "printf 'You have hit your usage limit. Try again later.\\n'; sleep 300" --team "$ORCH" | pid_of); sleep 3
+flat "$ORCH" | grep -q "isstoppedbyitsprovider" && ok "usage limit nudges orchestrator" || bad "limit nudge"
+C team list --orchestrator "$ORCH" | grep -q '"limited":"You have hit your usage limit' && ok "team list limited" || bad "limited field"
+R=$(C pane run "$ORCH" "plain message"); echo "$R" | grep -q '"queued":false' && ok "orchestrator run delivers" || bad "orch run: $R"
+
 # --- persistence -------------------------------------------------------
 Z=$(C agent start 'sleep 300' --team "$ORCH" | pid_of)
 C team list --orchestrator "$ORCH" | grep -q "\"worker\":$Z" && ok "agent start --team" || bad "--team"

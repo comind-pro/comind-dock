@@ -246,6 +246,19 @@ pub enum Req {
         worker: u64,
         note: String,
     },
+    /// Take a named team lock (merge queue, shared env). Free or already
+    /// ours → ok; held by another pane → ok:false with the holder.
+    LockAcquire {
+        name: String,
+        owner: u64,
+    },
+    /// Release a named lock (only its holder may).
+    LockRelease {
+        name: String,
+        owner: u64,
+    },
+    /// Every held lock: name, holder, age.
+    LockList,
     /// Set an orchestrator's reaction mode: report | auto | notify (what
     /// the team panel's mode row does).
     TeamMode {
@@ -400,6 +413,18 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
         // in the same burst as the paste close, agent TUIs sometimes fold
         // it into the paste and the message sits unsubmitted.
         Req::Run { pane, command, notify, from } => {
+            // Messages INTO an orchestrator queue behind the user's draft
+            // instead of failing — workers can't usefully retry.
+            if rt.state.orchestrators.contains(&PaneId(pane)) {
+                let command = match from.map(PaneId) {
+                    Some(f) if f.0 != pane => format!("[cdock:%{} → %{pane}] {command}", f.0),
+                    _ => command,
+                };
+                return Ok(match rt.inject(PaneId(pane), command) {
+                    Ok(queued) => json!({"ok": true, "queued": queued}),
+                    Err(e) => err(e),
+                });
+            }
             if let Some(e) = user_grip_err(rt, pane) {
                 return Ok(e);
             }
@@ -782,18 +807,20 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                     pane.0,
                     pane.0,
                 );
-                if rt.paste_write(orch, &msg, false).is_ok() {
-                    rt.submit_later(orch, Duration::from_millis(150), &msg);
-                }
+                let _ = rt.inject(orch, msg);
             }
             Ok(json!({"ok": true}))
         }
         Req::TaskResult { pane } => match rt.results.remove(&PaneId(pane)) {
             Some(result) => {
                 // Collected = the task is DONE until the next assignment;
-                // the stall watchdog leaves this pane alone.
-                rt.collected.insert(PaneId(pane));
-                Ok(json!({"ok": true, "pane": pane, "result": result}))
+                // the stall watchdog leaves this pane alone. More queued
+                // reports keep it "reported".
+                let pending = rt.results.pending(&PaneId(pane));
+                if pending == 0 {
+                    rt.collected.insert(PaneId(pane));
+                }
+                Ok(json!({"ok": true, "pane": pane, "result": result, "pending": pending}))
             }
             None => Ok(err(format!("no result for pane %{pane}"))),
         },
@@ -857,6 +884,8 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                         "user_active": rt.user_grip.get(&id) == Some(&true),
                         // The orchestrator's one-line note for this worker.
                         "note": rt.state.team_notes.get(&id),
+                        // Stopped by its provider (usage limit, expired auth).
+                        "limited": p.and_then(|p| crate::runtime::limit_line(&p.emu.bottom_text(8))),
                         // A half-typed user message sits in its input box.
                         "input_pending": p.map(|p| p.user_input_pending),
                         // An uncollected task result is parked for it.
@@ -927,6 +956,38 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             rt.mark_dirty();
             rt.save_session();
             Ok(json!({"ok": true}))
+        }
+        Req::LockAcquire { name, owner } => {
+            let owner = PaneId(owner);
+            match rt.locks.get(&name) {
+                Some((h, since)) if *h != owner && rt.panes.contains_key(h) => Ok(json!({
+                    "ok": false,
+                    "error": format!("lock {name:?} held by %{}", h.0),
+                    "held_by": h.0,
+                    "since_secs": since.elapsed().as_secs(),
+                })),
+                _ => {
+                    rt.locks.insert(name.clone(), (owner, Instant::now()));
+                    Ok(json!({"ok": true, "lock": name}))
+                }
+            }
+        }
+        Req::LockRelease { name, owner } => match rt.locks.get(&name) {
+            Some((h, _)) if h.0 == owner => {
+                rt.locks.remove(&name);
+                Ok(json!({"ok": true}))
+            }
+            Some((h, _)) => Ok(err(format!("lock {name:?} held by %{}, not %{owner}", h.0))),
+            None => Ok(json!({"ok": true, "note": "was not held"})),
+        },
+        Req::LockList => {
+            let mut v: Vec<Value> = rt
+                .locks
+                .iter()
+                .map(|(n, (h, t))| json!({"name": n, "held_by": h.0, "since_secs": t.elapsed().as_secs()}))
+                .collect();
+            v.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+            Ok(json!({"ok": true, "locks": v}))
         }
         Req::TeamPark { worker } => {
             let w = PaneId(worker);
@@ -1008,6 +1069,9 @@ pub const REFERENCE: &str = r#"[
   {"cmd":"team-set","worker":1,"orchestrator":5},
   {"cmd":"team-mode","orchestrator":5,"mode":"auto"},
   {"cmd":"team-park","worker":1},
+  {"cmd":"lock-acquire","name":"main","owner":1},
+  {"cmd":"lock-release","name":"main","owner":1},
+  {"cmd":"lock-list"},
   {"cmd":"team-note","worker":1,"note":"waiting on CI"},
   {"cmd":"subscribe","events":["agent-status","output"],"pane":1}
 ]"#;

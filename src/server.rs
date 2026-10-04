@@ -676,6 +676,8 @@ pub async fn run(
                     nudge_handback(&mut rt, pane);
                 }
                 nudge_stalls(&mut rt);
+                nudge_limits(&mut rt);
+                rt.flush_inbox();
                 deliver_boot_briefs(&mut rt);
             }
             _ = autosave.tick() => {
@@ -760,9 +762,8 @@ fn nudge_orchestrator(rt: &mut Runtime, notice: &runtime::Notice) {
         notice.pane.0,
     );
     // Enter arrives as its own late keystroke — see AppEvent::SubmitEnter.
-    match rt.paste_write(orch, &msg, false) {
-        Ok(()) => rt.submit_later(orch, Duration::from_millis(150), &msg),
-        Err(e) => tracing::warn!(error = %e, "orchestrator nudge failed"),
+    if let Err(e) = rt.inject(orch, msg) {
+        tracing::warn!(error = %e, "orchestrator nudge failed");
     }
 }
 
@@ -830,10 +831,37 @@ fn nudge_stalls(rt: &mut Runtime) {
             status.word(),
             pane.0,
         );
-        if rt.paste_write(orch, &msg, false).is_ok() {
-            rt.submit_later(orch, Duration::from_millis(150), &msg);
+        if rt.inject(orch, msg).is_ok() {
             rt.stall_nudged.insert(pane);
         }
+    }
+}
+
+/// A worker stopped by its PROVIDER (usage limit, rate limit, expired
+/// auth) sits idle looking healthy — the orchestrator only learned from a
+/// screenshot. One nudge per occurrence, with the offending line; the
+/// watch re-arms once the screen no longer shows it.
+fn nudge_limits(rt: &mut Runtime) {
+    let workers: Vec<_> = rt.state.teams.iter().map(|(w, o)| (*w, *o)).collect();
+    for (pane, orch) in workers {
+        let Some(line) =
+            rt.panes.get(&pane).and_then(|p| runtime::limit_line(&p.emu.bottom_text(8)))
+        else {
+            rt.limit_nudged.remove(&pane);
+            continue;
+        };
+        if !rt.limit_nudged.insert(pane) || orch == pane || !rt.state.orchestrators.contains(&orch)
+        {
+            continue;
+        }
+        let mode = rt.state.orch_modes.get(&orch).copied().unwrap_or_default();
+        let msg = format!(
+            "[cdock] team update (mode: {}): %{} is stopped by its provider: \"{line}\" — \
+             move its task to another agent kind or wait for the reset.",
+            mode.word(),
+            pane.0,
+        );
+        let _ = rt.inject(orch, msg);
     }
 }
 
@@ -854,10 +882,8 @@ fn deliver_boot_briefs(rt: &mut Runtime) {
         if !(settled || overdue) {
             continue;
         }
-        if let Some((msg, _)) = rt.boot_briefs.remove(&pane)
-            && rt.paste_write(pane, &msg, false).is_ok()
-        {
-            rt.submit_later(pane, Duration::from_millis(150), &msg);
+        if let Some((msg, _)) = rt.boot_briefs.remove(&pane) {
+            let _ = rt.inject(pane, msg);
         }
     }
 }
@@ -877,9 +903,8 @@ fn nudge_handback(rt: &mut Runtime, pane: crate::state::ids::PaneId) {
         mode.word(),
         pane.0,
     );
-    match rt.paste_write(orch, &msg, false) {
-        Ok(()) => rt.submit_later(orch, Duration::from_millis(150), &msg),
-        Err(e) => tracing::warn!(error = %e, "handback nudge failed"),
+    if let Err(e) = rt.inject(orch, msg) {
+        tracing::warn!(error = %e, "handback nudge failed");
     }
 }
 

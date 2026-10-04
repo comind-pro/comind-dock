@@ -117,6 +117,8 @@ no screen-scraping. Each pane holds ONE result slot, consumed on read.
 "$CDOCK_BIN" pane run 7 --notify "main moved to abc123"    # FYI, not a task: no stall watch
 "$CDOCK_BIN" team park 7                                   # idle on purpose: no stall notices
 "$CDOCK_BIN" team note 7 "waiting on CI"                   # one line under the worker in the team panel
+"$CDOCK_BIN" lock acquire main --wait 600                 # serialize merges (any pane; auto-released on exit)
+"$CDOCK_BIN" lock release main                            # …and let the next one in
 "$CDOCK_BIN" agent start claude --permission-mode auto     # spawned claude won't block on permissions
 "$CDOCK_BIN" pane key 7 esc                                 # answer a TUI prompt (enter|esc|y|n|1..9|up|down)
 "$CDOCK_BIN" pane read 7 --plain --lines 20                 # raw text, no JSON envelope
@@ -136,7 +138,11 @@ result waiting, assigned = in flight; `status_source` says whether
 `pane rename` is sidebar-only by default; `--sync` also types /rename
 into an idle claude so the conversation carries the same label.
 Messages a worker `pane run`s into its orchestrator arrive prefixed
-`[cdock:%from → %to]` — never mistaken for the user.
+`[cdock:%from → %to]` — never mistaken for the user — and queue behind
+the user's unsent draft instead of failing (`"queued": true`). Results
+are a FIFO: `task result` returns the oldest and `pending` left. A
+worker stopped by its provider (usage limit, re-auth) shows `limited`
+in team list and nudges its orchestrator once.
 
 An orchestrator's AGENT can be swapped in place from the team panel
 ("agent:" row → type codex/claude/…): same folder, memory, mode and
