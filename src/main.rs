@@ -89,6 +89,28 @@ enum Cmd {
         #[command(subcommand)]
         sub: LockCmd,
     },
+    /// Message teammates and WAKE them: lands in their chat, tagged
+    /// [cdock msg %from → %to]. Comma list for several (3,5,7).
+    Msg {
+        to: String,
+        #[arg(required_unless_present = "file")]
+        text: Option<String>,
+        /// Read the message from a file ("-" = stdin).
+        #[arg(long, conflicts_with = "text")]
+        file: Option<std::path::PathBuf>,
+    },
+    /// Wake a pane later with a reminder: --in 30m | 2h | 90s, or --at 18:15.
+    Wake {
+        text: String,
+        #[arg(long, conflicts_with = "at")]
+        r#in: Option<String>,
+        /// Local wall-clock time HH:MM (today, or tomorrow if past).
+        #[arg(long)]
+        at: Option<String>,
+        /// Pane to wake (default: this pane, $CDOCK_PANE_ID).
+        #[arg(long)]
+        pane: Option<String>,
+    },
     /// Install per-agent integration hooks (session identity).
     Integration {
         #[command(subcommand)]
@@ -530,6 +552,13 @@ enum TaskCmd {
     },
     /// Fetch and consume a pane's stored result (exit 1 when none).
     Result { pane: String },
+    /// Every result the pane ever reported (kept on disk; reading the
+    /// slot does not erase it). --last N limits to the newest N.
+    Log {
+        pane: String,
+        #[arg(long)]
+        last: Option<usize>,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -567,6 +596,8 @@ enum TeamCmd {
     Park { worker: String },
     /// One-line note shown under the worker in the team panel ("" clears).
     Note { worker: String, note: String },
+    /// Worker role (lead, member, critic, …) shown in panel + team list.
+    Role { worker: String, role: String },
 }
 
 /// Sessions are files in the state dir: session-<name>.json (+ sockets
@@ -993,6 +1024,27 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 direction: Some(direction),
                 command,
             },
+            PaneCmd::Run { pane, command, file, notify } if pane.contains(',') => {
+                // Bulk: the same text to several panes, one request each.
+                let text = match (command, file) {
+                    (Some(c), _) => c,
+                    (None, Some(f)) if f == std::path::Path::new("-") => {
+                        std::io::read_to_string(std::io::stdin()).map_err(|e| e.to_string())?
+                    }
+                    (None, Some(f)) => std::fs::read_to_string(&f).map_err(|e| e.to_string())?,
+                    (None, None) => return Err("text or --file required".to_string()),
+                };
+                let from = std::env::var("CDOCK_PANE_ID").ok().and_then(|p| parse_pane(&p).ok());
+                let mut all = true;
+                for p in pane.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+                    let req =
+                        Req::Run { pane: parse_pane(p)?, command: text.clone(), notify, from };
+                    let v = api::request(&req).map_err(|e| e.to_string())?;
+                    all &= v["ok"].as_bool().unwrap_or(false);
+                    println!("{v}");
+                }
+                return Ok(all);
+            }
             PaneCmd::Run { pane, command, file, notify } => {
                 let command = match (command, file) {
                     (Some(c), _) => c,
@@ -1364,7 +1416,51 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
                 Req::TaskDone { pane, result, pid }
             }
             TaskCmd::Result { pane } => Req::TaskResult { pane: parse_pane(&pane)? },
+            TaskCmd::Log { pane, last } => {
+                let pane = crate::state::ids::PaneId(parse_pane(&pane)?);
+                let path = runtime::results_log_path(pane).ok_or("no state dir")?;
+                let text = std::fs::read_to_string(&path)
+                    .map_err(|_| format!("no results logged for {pane} ({})", path.display()))?;
+                let entries: Vec<&str> =
+                    text.split("\n---\n").map(str::trim).filter(|e| !e.is_empty()).collect();
+                let skip = last.map_or(0, |n| entries.len().saturating_sub(n));
+                for e in &entries[skip..] {
+                    println!("---\n{e}");
+                }
+                return Ok(true);
+            }
         },
+        Cmd::Msg { to, text, file } => {
+            let text = match (text, file) {
+                (Some(t), _) => t,
+                (None, Some(f)) if f == std::path::Path::new("-") => {
+                    std::io::read_to_string(std::io::stdin()).map_err(|e| e.to_string())?
+                }
+                (None, Some(f)) => std::fs::read_to_string(&f).map_err(|e| e.to_string())?,
+                (None, None) => return Err("text or --file required".to_string()),
+            };
+            let from = std::env::var("CDOCK_PANE_ID").ok().and_then(|p| parse_pane(&p).ok());
+            let mut all = true;
+            for t in to.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+                let v = api::request(&Req::Msg { to: parse_pane(t)?, text: text.clone(), from })
+                    .map_err(|e| e.to_string())?;
+                all &= v["ok"].as_bool().unwrap_or(false);
+                println!("{v}");
+            }
+            return Ok(all);
+        }
+        Cmd::Wake { text, r#in, at, pane } => {
+            let pane = match pane.or_else(|| std::env::var("CDOCK_PANE_ID").ok()) {
+                Some(p) => parse_pane(&p)?,
+                None => return Err("--pane or $CDOCK_PANE_ID required".to_string()),
+            };
+            let secs = match (r#in, at) {
+                (Some(d), _) => parse_duration_secs(&d)?,
+                (None, Some(t)) => secs_until_local(&t)?,
+                (None, None) => return Err("--in <dur> or --at HH:MM required".to_string()),
+            };
+            Req::Wake { pane, delay_ms: secs * 1000, text }
+        }
         Cmd::Lock { sub } => {
             let owner = || -> Result<u64, String> {
                 let id = std::env::var("CDOCK_PANE_ID")
@@ -1414,6 +1510,7 @@ fn run_cmd(cmd: Cmd) -> Result<bool, String> {
             }
             TeamCmd::Park { worker } => Req::TeamPark { worker: parse_pane(&worker)? },
             TeamCmd::Note { worker, note } => Req::TeamNote { worker: parse_pane(&worker)?, note },
+            TeamCmd::Role { worker, role } => Req::TeamRole { worker: parse_pane(&worker)?, role },
         },
         Cmd::Api { sub: ApiCmd::Snapshot } => Req::Snapshot,
         Cmd::Api { sub: ApiCmd::Reference | ApiCmd::Schema } => {
@@ -1999,5 +2096,55 @@ mod tests {
         assert_eq!(super::cline_session_id(&b).as_deref(), Some("conv-2"));
         // neither → None, no panic
         assert_eq!(super::cline_session_id(&json!({})), None);
+    }
+}
+
+/// "90s" | "30m" | "2h" | bare seconds → seconds.
+fn parse_duration_secs(d: &str) -> Result<u64, String> {
+    let d = d.trim();
+    let (num, mul) = match d.chars().last() {
+        Some('s') => (&d[..d.len() - 1], 1),
+        Some('m') => (&d[..d.len() - 1], 60),
+        Some('h') => (&d[..d.len() - 1], 3600),
+        _ => (d, 1),
+    };
+    num.parse::<u64>()
+        .map(|n| n * mul)
+        .map_err(|_| format!("bad duration {d:?} (use 90s, 30m, 2h)"))
+}
+
+/// Seconds from now until the next local HH:MM (tomorrow if already past).
+fn secs_until_local(hhmm: &str) -> Result<u64, String> {
+    let bad = || format!("bad time {hhmm:?} (use HH:MM)");
+    let (h, m) = hhmm.split_once(':').ok_or_else(bad)?;
+    let (h, m): (i64, i64) = (h.parse().map_err(|_| bad())?, m.parse().map_err(|_| bad())?);
+    if !(0..24).contains(&h) || !(0..60).contains(&m) {
+        return Err(bad());
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as libc::time_t;
+    // SAFETY: localtime_r writes only into the provided tm.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&now, &mut tm) };
+    let now_of_day = tm.tm_hour as i64 * 3600 + tm.tm_min as i64 * 60 + tm.tm_sec as i64;
+    let target = h * 3600 + m * 60;
+    let delta =
+        if target > now_of_day { target - now_of_day } else { target + 86_400 - now_of_day };
+    Ok(delta as u64)
+}
+
+#[cfg(test)]
+mod wake_tests {
+    #[test]
+    fn durations_parse() {
+        assert_eq!(super::parse_duration_secs("90s"), Ok(90));
+        assert_eq!(super::parse_duration_secs("30m"), Ok(1800));
+        assert_eq!(super::parse_duration_secs("2h"), Ok(7200));
+        assert!(super::parse_duration_secs("soon").is_err());
+        let s = super::secs_until_local("23:59").unwrap();
+        assert!(s > 0 && s <= 86_400);
+        assert!(super::secs_until_local("25:00").is_err());
     }
 }

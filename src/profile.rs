@@ -384,7 +384,9 @@ impl Profile {
                     get executed; `--notify` for FYI messages that are not a task;\n\
                     refused on a user's half-typed message). Idle-on-purpose\n\
                     workers: `team park <id>`; a one-line status for the user:\n\
-                    `team note <id> \"…\"`; serialize merges with `lock acquire\n\
+                    `team note <id> \"…\"`; teammates talk via `msg <id>[,<id>]\n\
+                    \"…\"` (wakes them — no file boards); `wake --at 18:15 \"…\"`\n\
+                    for deadlines; `task log <id>` keeps every result; serialize merges with `lock acquire\n\
                     main --wait 600` / `lock release main`. Spawn claude with\n\
                     `--permission-mode auto`. End every\n\
                     delegated prompt with: When finished, run:\n\

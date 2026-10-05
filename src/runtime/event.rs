@@ -22,6 +22,8 @@ pub enum AppEvent {
     /// on the pane's screen bottom (input box), the Enter was swallowed —
     /// press it once more.
     VerifySubmit(PaneId, String),
+    /// A scheduled wake-up (`cdock wake`) fires: inject its text.
+    Wake(PaneId, String),
 }
 
 /// PTY output travels on its own BOUNDED channel: when the main loop falls

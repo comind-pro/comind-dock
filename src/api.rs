@@ -251,6 +251,27 @@ pub enum Req {
         worker: u64,
         note: String,
     },
+    /// Message another pane and WAKE it: the text lands in its chat,
+    /// tagged [cdock msg %from → %to], queued behind any user draft. Only
+    /// within one team (peers, or orchestrator ↔ its workers).
+    Msg {
+        to: u64,
+        text: String,
+        #[serde(default)]
+        from: Option<u64>,
+    },
+    /// Wake a pane later with a reminder ([cdock] wake-up: …).
+    Wake {
+        pane: u64,
+        delay_ms: u64,
+        text: String,
+    },
+    /// Orchestrator-assigned role for a worker (lead, member, critic…);
+    /// empty clears it.
+    TeamRole {
+        worker: u64,
+        role: String,
+    },
     /// Take a named team lock (merge queue, shared env). Free or already
     /// ours → ok; held by another pane → ok:false with the holder.
     LockAcquire {
@@ -455,6 +476,15 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                     // message is not a task and leaves it alone.
                     if !notify {
                         rt.collected.remove(&PaneId(pane));
+                        let title: String = command
+                            .lines()
+                            .map(str::trim)
+                            .find(|l| !l.is_empty())
+                            .unwrap_or("")
+                            .chars()
+                            .take(80)
+                            .collect();
+                        rt.task_meta.insert(PaneId(pane), (title, Instant::now()));
                     }
                     rt.submit_later(PaneId(pane), Duration::from_millis(150), &command);
                     json!({"ok": true})
@@ -808,6 +838,7 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             {
                 return Ok(json!({"ok": true, "ignored": "nested agent"}));
             }
+            rt.record_result(pane, &result);
             rt.results.insert(pane, result);
             // A report ends any stall watch — the next quiet stretch may
             // warn again — and reopens the task lifecycle.
@@ -905,6 +936,11 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
                         "user_active": rt.user_grip.get(&id) == Some(&true),
                         // The orchestrator's one-line note for this worker.
                         "note": rt.state.team_notes.get(&id),
+                        "role": rt.state.team_roles.get(&id),
+                        // First line of the current assignment, and when.
+                        "task": rt.task_meta.get(&id).map(|(t, _)| t),
+                        "assigned_secs": rt.task_meta.get(&id).map(|(_, at)| at.elapsed().as_secs()),
+                        "last_result_secs": rt.last_result_at.get(&id).map(|t| t.elapsed().as_secs()),
                         // Stopped by its provider (usage limit, expired auth).
                         "limited": p.and_then(|p| crate::runtime::limit_line(&p.emu.bottom_text(8))),
                         // A half-typed user message sits in its input box.
@@ -976,6 +1012,62 @@ pub fn handle(rt: &mut Runtime, area: Rect, req: Req) -> Result<Value, PendingWa
             }
             rt.mark_dirty();
             rt.save_session();
+            Ok(json!({"ok": true}))
+        }
+        Req::Msg { to, text, from } => {
+            let to_p = PaneId(to);
+            if !rt.panes.contains_key(&to_p) {
+                return Ok(err(format!("no such pane {to_p}")));
+            }
+            // Team scope: same orchestrator, or one is the other's
+            // orchestrator. A call from outside any pane (the user's shell)
+            // is allowed.
+            if let Some(f) = from.map(PaneId) {
+                let team_of = |p: PaneId| {
+                    rt.state
+                        .teams
+                        .get(&p)
+                        .copied()
+                        .or_else(|| rt.state.orchestrators.contains(&p).then_some(p))
+                };
+                match (team_of(f), team_of(to_p)) {
+                    (Some(a), Some(b)) if a == b => {}
+                    _ => {
+                        return Ok(err(format!(
+                            "%{} and %{to} are not in one team — msg stays within a team",
+                            f.0
+                        )));
+                    }
+                }
+            }
+            let tag = match from {
+                Some(f) => format!("[cdock msg %{f} → %{to}]"),
+                None => format!("[cdock msg → %{to}]"),
+            };
+            Ok(match rt.inject(to_p, format!("{tag} {text}")) {
+                Ok(queued) => json!({"ok": true, "queued": queued}),
+                Err(e) => err(e),
+            })
+        }
+        Req::Wake { pane, delay_ms, text } => {
+            if !rt.panes.contains_key(&PaneId(pane)) {
+                return Ok(err(format!("no such pane %{pane}")));
+            }
+            rt.wake_later(PaneId(pane), text, Duration::from_millis(delay_ms));
+            Ok(json!({"ok": true, "in_secs": delay_ms / 1000}))
+        }
+        Req::TeamRole { worker, role } => {
+            let w = PaneId(worker);
+            if !rt.state.teams.contains_key(&w) {
+                return Ok(err(format!("{w} is not in a team")));
+            }
+            let role = role.trim().to_string();
+            if role.is_empty() {
+                rt.state.team_roles.remove(&w);
+            } else {
+                rt.state.team_roles.insert(w, role);
+            }
+            rt.mark_dirty();
             Ok(json!({"ok": true}))
         }
         Req::LockAcquire { name, owner } => {
@@ -1090,6 +1182,9 @@ pub const REFERENCE: &str = r#"[
   {"cmd":"team-set","worker":1,"orchestrator":5},
   {"cmd":"team-mode","orchestrator":5,"mode":"auto"},
   {"cmd":"team-park","worker":1},
+  {"cmd":"msg","to":3,"text":"review my diff","from":1},
+  {"cmd":"wake","pane":1,"delay_ms":1800000,"text":"R7 deadline"},
+  {"cmd":"team-role","worker":1,"role":"critic"},
   {"cmd":"lock-acquire","name":"main","owner":1},
   {"cmd":"lock-release","name":"main","owner":1},
   {"cmd":"lock-list"},

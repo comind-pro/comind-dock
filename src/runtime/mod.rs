@@ -248,6 +248,11 @@ pub struct Runtime {
     /// check pending) until this instant — the next one waits, or several
     /// nudges in one tick would glue into a single unsent input.
     pub inject_inflight: HashMap<PaneId, std::time::Instant>,
+    /// Current task per worker: first line of the last real assignment and
+    /// when it was given — team list shows who is lagging.
+    pub task_meta: HashMap<PaneId, (String, std::time::Instant)>,
+    /// When each worker last reported a result.
+    pub last_result_at: HashMap<PaneId, std::time::Instant>,
     /// Last keystroke into a gripped pane — a grip with no typing for a
     /// while is handed back (an accidental click + keypress must not block
     /// the orchestrator for an hour).
@@ -978,6 +983,16 @@ impl Runtime {
         });
     }
 
+    /// Schedule a wake-up message into a pane (`cdock wake`).
+    // ponytail: in-memory timer — a server restart drops pending wake-ups.
+    pub fn wake_later(&self, pane: PaneId, text: String, delay: Duration) {
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let _ = tx.send(AppEvent::Wake(pane, text));
+        });
+    }
+
     /// Schedule the post-Enter delivery check (see AppEvent::VerifySubmit).
     pub fn verify_submit_later(&self, pane: PaneId, tail: String, delay: Duration) {
         let tx = self.tx.clone();
@@ -1642,6 +1657,8 @@ pub fn build(
         quiet_close: HashSet::new(),
         inbox: HashMap::new(),
         inject_inflight: HashMap::new(),
+        task_meta: HashMap::new(),
+        last_result_at: HashMap::new(),
         grip_last_key: HashMap::new(),
         limit_nudged: HashSet::new(),
         locks: HashMap::new(),
@@ -1790,6 +1807,11 @@ pub fn build(
     // Branches known before the first frame — the sidebar subtitle must not
     // repaint from counts to branch a poll-tick later.
     rt.poll_workspaces();
+    // A cold restore cannot know which tasks were in flight: every pane
+    // starts with no task (collected) — a stall alarm about a pane that was
+    // parked before the restart is worse than silence until its next
+    // assignment.
+    rt.collected = rt.panes.keys().copied().collect();
     Ok(rt)
 }
 
@@ -1930,6 +1952,9 @@ pub fn handle_pane_exit(rt: &mut Runtime, id: PaneId, area: Rect) {
     rt.collected.remove(&id);
     rt.inbox.remove(&id);
     rt.inject_inflight.remove(&id);
+    rt.task_meta.remove(&id);
+    rt.last_result_at.remove(&id);
+    rt.state.team_roles.remove(&id);
     rt.grip_last_key.remove(&id);
     rt.limit_nudged.remove(&id);
     rt.locks.retain(|_, (holder, _)| *holder != id);
@@ -2149,6 +2174,8 @@ pub fn build_from_handoff(
         quiet_close: HashSet::new(),
         inbox: HashMap::new(),
         inject_inflight: HashMap::new(),
+        task_meta: HashMap::new(),
+        last_result_at: HashMap::new(),
         grip_last_key: HashMap::new(),
         limit_nudged: HashSet::new(),
         locks: HashMap::new(),
@@ -2519,6 +2546,36 @@ pub fn limit_line(lines: &[String]) -> Option<String> {
         let low = l.to_lowercase();
         MARKS.iter().any(|m| low.contains(m)).then(|| crate::agents::truncate_clean(l.trim(), 140))
     })
+}
+
+/// Durable history of reported results: one file per pane under the
+/// state dir. `task result` consumes the slot; this keeps every report so a
+/// truncated read never loses it (`cdock task log <pane>`).
+pub fn results_log_path(pane: PaneId) -> Option<std::path::PathBuf> {
+    crate::logging::state_dir().map(|d| d.join("results").join(format!("pane-{}.md", pane.0)))
+}
+
+fn append_result_log(pane: PaneId, result: &str) {
+    let Some(path) = results_log_path(pane) else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "\n---\n<!-- unix:{stamp} -->\n{result}");
+    }
+}
+
+impl Runtime {
+    /// A result was reported: persist it to the pane's log, stamp it.
+    pub fn record_result(&mut self, pane: PaneId, result: &str) {
+        append_result_log(pane, result);
+        self.last_result_at.insert(pane, std::time::Instant::now());
+    }
 }
 
 /// One grip tick, pure for tests: watch the focused team pane (typed =

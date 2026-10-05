@@ -253,6 +253,9 @@ pub struct AppState {
     /// the worker in the team panel.
     #[serde(default)]
     pub team_notes: std::collections::HashMap<PaneId, String>,
+    /// Orchestrator-assigned role per worker (lead, member, critic, …).
+    #[serde(default)]
+    pub team_roles: std::collections::HashMap<PaneId, String>,
     /// Workers the ORCHESTRATOR itself added (CLI team set / --team).
     /// Absent = user-assigned: the server refuses CLI removal of those —
     /// an orchestrator may only drop members it added itself.
@@ -367,6 +370,7 @@ impl AppState {
             orch_modes: std::collections::HashMap::new(),
             orch_cmds: std::collections::HashMap::new(),
             team_notes: std::collections::HashMap::new(),
+            team_roles: std::collections::HashMap::new(),
             orch_added: std::collections::HashSet::new(),
             recent_spaces: Vec::new(),
             workspaces: vec![ws],

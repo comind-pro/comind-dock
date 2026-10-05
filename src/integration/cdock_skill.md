@@ -117,6 +117,11 @@ no screen-scraping. Each pane holds ONE result slot, consumed on read.
 "$CDOCK_BIN" pane run 7 --notify "main moved to abc123"    # FYI, not a task: no stall watch
 "$CDOCK_BIN" team park 7                                   # idle on purpose: no stall notices
 "$CDOCK_BIN" team note 7 "waiting on CI"                   # one line under the worker in the team panel
+"$CDOCK_BIN" msg 3,5 "need your API diff"                 # message teammates — WAKES them (team-scoped)
+"$CDOCK_BIN" pane run 1,3,5 --file task.md                # same assignment to several panes
+"$CDOCK_BIN" wake --at 18:15 "R7 deadline"                # timed wake-up for yourself ( --in 30m )
+"$CDOCK_BIN" task log 7 --last 3                          # every result ever reported (on disk)
+"$CDOCK_BIN" team role 7 critic                           # role shown in team panel + team list
 "$CDOCK_BIN" lock acquire main --wait 600                 # serialize merges (any pane; auto-released on exit)
 "$CDOCK_BIN" lock release main                            # …and let the next one in
 "$CDOCK_BIN" agent start claude --permission-mode auto     # spawned claude won't block on permissions
@@ -142,7 +147,12 @@ Messages a worker `pane run`s into its orchestrator arrive prefixed
 the user's unsent draft instead of failing (`"queued": true`). Results
 are a FIFO: `task result` returns the oldest and `pending` left. A
 worker stopped by its provider (usage limit, re-auth) shows `limited`
-in team list and nudges its orchestrator once.
+in team list and nudges its orchestrator once. Team list also carries
+`task` (first line of the current assignment), `assigned_secs`,
+`last_result_secs` and `role`. Workspace-scoped profiles (`profile new
+--ws`) belong to the CALLER's cwd — an orchestrator creating one makes it
+in its own folder's scope; `agent start --profile` from the orchestrator
+still finds it.
 
 An orchestrator's AGENT can be swapped in place from the team panel
 ("agent:" row → type codex/claude/…): same folder, memory, mode and

@@ -407,6 +407,9 @@ pub async fn run(
                             rt.update_available = Some(tag);
                             rt.mark_dirty();
                         }
+                        AppEvent::Wake(pane, text) => {
+                            let _ = rt.inject(pane, format!("[cdock] wake-up: {text}"));
+                        }
                         AppEvent::SubmitEnter(pane, tail) => {
                             if let Some(p) = rt.panes.get_mut(&pane) {
                                 p.pty.write(b"\r");
@@ -882,7 +885,11 @@ fn deliver_boot_briefs(rt: &mut Runtime) {
         if !(settled || overdue) {
             continue;
         }
-        if let Some((msg, _)) = rt.boot_briefs.remove(&pane) {
+        // A brief is only useful AT boot: if the user is already typing
+        // there, drop it — queued, it would land mid-conversation later.
+        if let Some((msg, _)) = rt.boot_briefs.remove(&pane)
+            && !rt.input_busy(pane)
+        {
             let _ = rt.inject(pane, msg);
         }
     }

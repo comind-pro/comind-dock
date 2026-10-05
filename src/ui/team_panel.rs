@@ -195,7 +195,11 @@ pub fn render(rt: &Runtime, theme: &Theme, orch: PaneId, rect: Rect, frame: &mut
                         .map(|p| p.effective_status().word().to_string())
                         .unwrap_or_else(|| "?".to_string())
                 };
-                // The orchestrator's own note rides next to the status.
+                // Role, then the orchestrator's own note, next to the status.
+                let word = match rt.state.team_roles.get(&id) {
+                    Some(r) => format!("{word} · {r}"),
+                    None => word,
+                };
                 let note = rt
                     .state
                     .team_notes
