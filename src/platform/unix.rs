@@ -75,15 +75,11 @@ pub fn child_process_idents(pid: u32) -> Vec<(u32, String)> {
 pub fn child_process_idents(pid: u32) -> Vec<(u32, String)> {
     use std::os::raw::{c_int, c_void};
 
-    // proc_listpids(PROC_PPID_ONLY, ppid) → child pids; proc_pidpath → exe
-    // path; proc_name as fallback. Stable public libproc ABI;
-    // proc_listpids returns bytes written.
+    // proc_listpids(PROC_PPID_ONLY, ppid) → child pids, each identified by
+    // process_ident. Stable public libproc ABI; returns bytes written.
     const PROC_PPID_ONLY: u32 = 6;
-    const PROC_PIDPATHINFO_MAXSIZE: usize = 4096;
     unsafe extern "C" {
         fn proc_listpids(t: u32, typeinfo: u32, buffer: *mut c_void, buffersize: c_int) -> c_int;
-        fn proc_pidpath(pid: c_int, buffer: *mut c_void, buffersize: u32) -> c_int;
-        fn proc_name(pid: c_int, buffer: *mut c_void, buffersize: u32) -> c_int;
     }
 
     let mut pids = [0i32; 64];
@@ -102,16 +98,7 @@ pub fn child_process_idents(pid: u32) -> Vec<(u32, String)> {
     pids[..n]
         .iter()
         .filter(|p| **p > 0)
-        .filter_map(|&p| {
-            let mut buf = [0u8; PROC_PIDPATHINFO_MAXSIZE];
-            let mut len =
-                unsafe { proc_pidpath(p, buf.as_mut_ptr() as *mut c_void, buf.len() as u32) };
-            if len <= 0 {
-                len = unsafe { proc_name(p, buf.as_mut_ptr() as *mut c_void, 64) };
-            }
-            (len > 0)
-                .then(|| (p as u32, String::from_utf8_lossy(&buf[..len as usize]).into_owned()))
-        })
+        .filter_map(|&p| process_ident(p as u32).map(|ident| (p as u32, ident)))
         .collect()
 }
 
@@ -135,30 +122,26 @@ pub fn process_ident(pid: u32) -> Option<String> {
         fn proc_name(pid: c_int, buffer: *mut c_void, buffersize: u32) -> c_int;
     }
     let mut buf = [0u8; PROC_PIDPATHINFO_MAXSIZE];
-    let mut len =
+    let len =
         unsafe { proc_pidpath(pid as c_int, buf.as_mut_ptr() as *mut c_void, buf.len() as u32) };
-    if len <= 0 {
-        len = unsafe { proc_name(pid as c_int, buf.as_mut_ptr() as *mut c_void, 64) };
+    if len > 0 {
+        return Some(String::from_utf8_lossy(&buf[..len as usize]).into_owned());
     }
+    // proc_pidpath fails once the exe is deleted — claude's auto-updater
+    // removes old versions under sessions that keep running — and proc_name
+    // is then the bare file name ("2.1.289"), so the agent vanished from the
+    // sidebar. The exec path recorded at launch survives the delete.
+    if let Some(path) = procargs(pid).and_then(|a| exec_path(&a)) {
+        return Some(path);
+    }
+    let len = unsafe { proc_name(pid as c_int, buf.as_mut_ptr() as *mut c_void, 64) };
     (len > 0).then(|| String::from_utf8_lossy(&buf[..len as usize]).into_owned())
 }
 
-/// One environment variable of a live process — how a pane learns which
-/// CLAUDE_CONFIG_DIR its agent runs under (profiles are config dirs).
-#[cfg(target_os = "linux")]
-pub fn process_env_var(pid: u32, key: &str) -> Option<String> {
-    let raw = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
-    let prefix = format!("{key}=");
-    raw.split(|b| *b == 0)
-        .filter_map(|c| std::str::from_utf8(c).ok())
-        .find_map(|c| c.strip_prefix(&prefix).map(str::to_string))
-}
-
+/// Raw sysctl KERN_PROCARGS2: argc (i32), exec path, NUL padding, argv,
+/// then the environment as NUL-separated KEY=VALUE strings.
 #[cfg(target_os = "macos")]
-pub fn process_env_var(pid: u32, key: &str) -> Option<String> {
-    // sysctl KERN_PROCARGS2: argc, exec path, argv, then the environment as
-    // NUL-separated KEY=VALUE strings. We scan every chunk for the prefix —
-    // an argv element spoofing "KEY=" is theoretical for our keys.
+fn procargs(pid: u32) -> Option<Vec<u8>> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
     let mut size: libc::size_t = 0;
     unsafe {
@@ -186,12 +169,40 @@ pub fn process_env_var(pid: u32, key: &str) -> Option<String> {
             return None;
         }
         buf.truncate(size);
-        let prefix = format!("{key}=");
-        buf[4.min(buf.len())..]
-            .split(|b| *b == 0)
-            .filter_map(|c| std::str::from_utf8(c).ok())
-            .find_map(|c| c.strip_prefix(&prefix).map(str::to_string))
+        Some(buf)
     }
+}
+
+/// The exec path out of a KERN_PROCARGS2 buffer (first string after argc).
+#[cfg(target_os = "macos")]
+fn exec_path(args: &[u8]) -> Option<String> {
+    let rest = args.get(4..)?;
+    let end = rest.iter().position(|b| *b == 0)?;
+    let path = std::str::from_utf8(&rest[..end]).ok()?;
+    (!path.is_empty()).then(|| path.to_string())
+}
+
+/// One environment variable of a live process — how a pane learns which
+/// CLAUDE_CONFIG_DIR its agent runs under (profiles are config dirs).
+#[cfg(target_os = "linux")]
+pub fn process_env_var(pid: u32, key: &str) -> Option<String> {
+    let raw = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    let prefix = format!("{key}=");
+    raw.split(|b| *b == 0)
+        .filter_map(|c| std::str::from_utf8(c).ok())
+        .find_map(|c| c.strip_prefix(&prefix).map(str::to_string))
+}
+
+#[cfg(target_os = "macos")]
+pub fn process_env_var(pid: u32, key: &str) -> Option<String> {
+    // Scan every chunk for the prefix — an argv element spoofing "KEY=" is
+    // theoretical for our keys.
+    let buf = procargs(pid)?;
+    let prefix = format!("{key}=");
+    buf[4.min(buf.len())..]
+        .split(|b| *b == 0)
+        .filter_map(|c| std::str::from_utf8(c).ok())
+        .find_map(|c| c.strip_prefix(&prefix).map(str::to_string))
 }
 
 /// Every live process cdock spawned (via a shell or directly), attributed
@@ -458,6 +469,40 @@ mod tests {
             idents.iter().any(|(pid, n)| *pid > 0 && n.ends_with("/sleep")),
             "children: {idents:?}"
         );
+    }
+
+    #[test]
+    fn deleted_exe_still_identified_by_launch_path() {
+        // claude's auto-updater deletes old versions under running sessions:
+        // the ident must still carry the path, not proc_name's "2.1.289".
+        let dir =
+            std::env::temp_dir().join(format!("cdk-ident-{}/claude/versions", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("2.1.289");
+        // A copy of THIS test binary running the ignored sleeper below — a
+        // copied /bin/sleep is SIGKILLed by macOS (platform-binary signature).
+        std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
+        let mut child = std::process::Command::new(&exe)
+            .args(["--ignored", "--exact", "platform::unix::tests::sleeper", "--nocapture"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn copy");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        std::fs::remove_file(&exe).unwrap();
+        let ident = super::process_ident(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap().parent().unwrap());
+        let ident = ident.expect("ident of a process whose exe was deleted");
+        assert_eq!(crate::agents::detect_process(&ident), Some("claude"), "ident: {ident}");
+    }
+
+    /// Child-process body for deleted_exe_still_identified_by_launch_path.
+    #[test]
+    #[ignore]
+    fn sleeper() {
+        std::thread::sleep(std::time::Duration::from_secs(5));
     }
 
     #[test]
