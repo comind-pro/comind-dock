@@ -35,21 +35,38 @@ pub fn render(
     area: Rect,
     frame: &mut Frame,
     focused: bool,
-    title: &str,
+    // Header text + the session's colour dot (agents only).
+    (title, session): (&str, Option<ratatui::style::Color>),
     theme: &crate::config::theme::Theme,
     search_match: Option<&alacritty_terminal::term::search::Match>,
 ) {
     use ratatui::widgets::{Block, BorderType, Borders};
 
-    let border_style =
-        if focused { Style::new().fg(theme.accent) } else { Style::new().fg(theme.divider) };
-    let title_style =
-        if focused { Style::new().fg(theme.accent) } else { Style::new().fg(theme.muted) };
+    use ratatui::style::Modifier;
+    use ratatui::text::{Line, Span};
+    // The focused pane is unmistakable: thick accent frame, bold header.
+    // Everything else recedes to a thin, muted one.
+    let (border_type, border_style, title_style) = if focused {
+        (
+            BorderType::Thick,
+            Style::new().fg(theme.accent),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        )
+    } else {
+        (BorderType::Rounded, Style::new().fg(theme.divider), Style::new().fg(theme.muted))
+    };
+    let budget = (area.width as usize).saturating_sub(6);
+    let mut spans = vec![Span::raw(" ")];
+    if let Some(c) = session {
+        spans.push(Span::styled("● ", Style::new().fg(c)));
+    }
+    spans.push(Span::styled(crate::agents::truncate_clean(title, budget), title_style));
+    spans.push(Span::raw(" "));
     let block = Block::new()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(border_type)
         .border_style(border_style)
-        .title(ratatui::text::Span::styled(format!(" {title} "), title_style));
+        .title(Line::from(spans));
     frame.render_widget(block, area);
 
     let area = super::content_rect(area);

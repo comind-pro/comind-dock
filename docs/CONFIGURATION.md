@@ -48,7 +48,10 @@ screen history) lives in `$XDG_STATE_HOME/comind-dock`
 
 ### `[ui]`
 - `sidebar_width` (24), `mouse_capture` (true), `mouse_scroll_lines` (3),
-  `confirm_close`, `prompt_new_tab_name`, `hide_tab_bar_when_single_tab`.
+  `confirm_close`, `prompt_new_tab_name`, `hide_tab_bar_when_single_tab`,
+  `confirm_send_after_switch` (true): the first Enter in an agent session other
+  than the one you last wrote to shows "↵ again to send to <space › session>"
+  — Enter sends, Esc cancels (the draft stays in the pane).
 - `[ui.sound]` — `enabled` (true): terminal bell + system sound on agent
   blocked/finished; `CDOCK_DISABLE_SOUND` env kills all sounds.
 - `[ui.toast]` — `delivery = app | system | both | off`; app toasts are

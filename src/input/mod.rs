@@ -147,9 +147,21 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<Inp
                 rt.mark_dirty();
                 return dispatch_bound(rt, entry.bound, area);
             }
+            // A held Enter (send guard) is answered by the very next key:
+            // Enter sends, Esc drops the question, anything else carries on.
+            let held = rt.confirm_send.filter(|p| *p == rt.state.focused_pane());
+            if held.is_some() && key.code != KeyCode::Enter {
+                rt.confirm_send = None;
+                rt.mark_dirty();
+                if key.code == KeyCode::Esc {
+                    return Ok(InputOutcome::Continue);
+                }
+            }
             if is_prefix(rt, &key) {
                 rt.state.input_mode = InputMode::Prefix;
                 rt.mark_dirty();
+            } else if key.code == KeyCode::Enter && key.modifiers.is_empty() {
+                rt.submit_focused(&key);
             } else {
                 rt.send_key(&key);
             }

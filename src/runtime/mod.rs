@@ -63,6 +63,9 @@ pub struct PaneRuntime {
     /// keystroke wasn't Enter/Esc/Ctrl-C). `pane run` refuses such panes —
     /// an injected prompt would splice into the half-typed message.
     pub user_input_pending: bool,
+    /// What the user has typed here since the last submit (best effort:
+    /// printable keys, Backspace, pastes) — becomes the pane's task on Enter.
+    pub draft: String,
     /// Exe path of the agent process — resume by absolute path survives a
     /// server started with a PATH that can't find the launcher.
     pub agent_bin: Option<String>,
@@ -228,6 +231,11 @@ pub struct Runtime {
     /// Only typed panes block the orchestrator. Ephemeral — see
     /// poll_user_grip.
     pub user_grip: HashMap<PaneId, bool>,
+    /// The agent pane the user last submitted a message to — Enter anywhere
+    /// else first asks for confirmation (`ui.confirm_send_after_switch`).
+    pub last_sent_pane: Option<PaneId>,
+    /// An Enter held back for confirmation: the pane it would submit in.
+    pub confirm_send: Option<PaneId>,
     /// Team workers already stall-nudged this idle stretch — re-armed when
     /// they work again (or report). One warning per stall, not a drumbeat.
     pub stall_nudged: HashSet<PaneId>,
@@ -328,10 +336,45 @@ impl Runtime {
                 (key.code, key.modifiers.contains(KeyModifiers::CONTROL)),
                 (KeyCode::Enter | KeyCode::Esc, _) | (KeyCode::Char('c'), true)
             );
+            if key.kind != crossterm::event::KeyEventKind::Release {
+                track_draft(&mut p.draft, key);
+            }
             if let Some(bytes) = input::encode::encode_key(key, p.emu.term.mode()) {
                 p.pty.write(&bytes);
             }
         }
+    }
+
+    /// Enter in the focused pane, with the send guard: the first submit in an
+    /// agent session other than the one the user last wrote to is held until
+    /// a second Enter (returns false = held, nothing was sent).
+    pub fn submit_focused(&mut self, key: &crossterm::event::KeyEvent) -> bool {
+        let focused = self.state.focused_pane();
+        let held = self.confirm_send.take() == Some(focused);
+        if !held && self.needs_send_confirm(focused) {
+            self.confirm_send = Some(focused);
+            self.dirty = true;
+            return false;
+        }
+        if let Some(p) = self.panes.get_mut(&focused)
+            && p.agent.is_some()
+        {
+            let draft = std::mem::take(&mut p.draft);
+            self.state.set_pane_task(focused, &draft);
+            self.last_sent_pane = Some(focused);
+        }
+        self.dirty = true;
+        self.send_key(key);
+        true
+    }
+
+    /// A real message (not "y" / "1" to a prompt) about to go to an agent
+    /// session that isn't the one the user was just talking to.
+    fn needs_send_confirm(&self, pane: PaneId) -> bool {
+        self.cfg.ui.confirm_send_after_switch
+            && self.panes.get(&pane).is_some_and(|p| {
+                send_guard_applies(self.last_sent_pane, pane, p.agent.is_some(), &p.draft)
+            })
     }
 
     /// Track the user in team panes. Merely LOOKING at a worker never
@@ -504,6 +547,7 @@ impl Runtime {
                 agent_config_dir: None,
                 agent_profile: None,
                 user_input_pending: false,
+                draft: String::new(),
                 agent_seen: false,
                 agent_bin: None,
                 reported: None,
@@ -1460,11 +1504,18 @@ impl Runtime {
                 env.push(("CDOCK_AGENT_PROFILE".to_string(), name.clone()));
             }
             let name = self.state.pane_name(*id).map(str::to_string);
+            let task = self.state.pane_task(*id).map(str::to_string);
             let team = self.state.teams.get(id).map(|orch| orch.0);
             let team_own = self.state.orch_added.contains(id);
             let orch = self.state.orchestrators.contains(id);
             let orch_mode = self.state.orch_modes.get(id).copied();
-            if agent.is_some() || cwd.is_some() || name.is_some() || team.is_some() || orch {
+            if agent.is_some()
+                || cwd.is_some()
+                || name.is_some()
+                || task.is_some()
+                || team.is_some()
+                || orch
+            {
                 metas.insert(
                     *id,
                     crate::state::snapshot::PaneMeta {
@@ -1474,6 +1525,7 @@ impl Runtime {
                         agent_bin: p.agent_bin.clone(),
                         behavior: p.behavior.clone(),
                         name,
+                        task,
                         team,
                         team_own,
                         orch,
@@ -1650,6 +1702,8 @@ pub fn build(
         agent_sessions: HashMap::new(),
         results: ResultQueue::default(),
         user_grip: HashMap::new(),
+        last_sent_pane: None,
+        confirm_send: None,
         stall_nudged: HashSet::new(),
         collected: HashSet::new(),
         boot_briefs: HashMap::new(),
@@ -2168,6 +2222,8 @@ pub fn build_from_handoff(
         results: h.results.into_iter().collect(),
         collected: h.collected.into_iter().collect(),
         user_grip: HashMap::new(),
+        last_sent_pane: None,
+        confirm_send: None,
         stall_nudged: HashSet::new(),
         boot_briefs: HashMap::new(),
         switching: HashSet::new(),
@@ -2209,6 +2265,7 @@ pub fn build_from_handoff(
                         agent_config_dir: None,
                         agent_profile: None,
                         user_input_pending: false,
+                        draft: String::new(),
                         agent_seen: false,
                         agent_bin: None,
                         reported: None,
@@ -2387,7 +2444,9 @@ pub fn handle_input(
         }
         Event::Paste(text) => {
             let focused = rt.state.focused_pane();
+            rt.confirm_send = None;
             if let Some(p) = rt.panes.get_mut(&focused) {
+                p.draft.push_str(&text);
                 if p.emu.term.mode().contains(TermMode::BRACKETED_PASTE) {
                     p.pty.write(b"\x1b[200~");
                     p.pty.write(text.as_bytes());
@@ -2582,6 +2641,30 @@ impl Runtime {
 /// false until send_key flips it), end watches on panes the user left,
 /// and return handbacks ONLY for panes the user actually typed into —
 /// looking around must never block or nudge anything.
+/// Hold this Enter? Only a real message (12+ chars — not "y" or "1" to a
+/// prompt) to an agent session other than the one last written to.
+fn send_guard_applies(last_sent: Option<PaneId>, pane: PaneId, agent: bool, draft: &str) -> bool {
+    agent && last_sent != Some(pane) && draft.trim().chars().count() >= 12
+}
+
+/// Mirror of what the user is typing into a pane, for the task line and the
+/// send guard. Best effort — cursor movement and history recall aren't seen.
+fn track_draft(draft: &mut String, key: &crossterm::event::KeyEvent) {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Char('c' | 'u') if ctrl => draft.clear(),
+        KeyCode::Char(_) if ctrl || key.modifiers.contains(KeyModifiers::ALT) => {}
+        KeyCode::Char(c) => draft.push(c),
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => draft.push('\n'),
+        KeyCode::Backspace => {
+            draft.pop();
+        }
+        KeyCode::Esc | KeyCode::Enter => draft.clear(),
+        _ => {}
+    }
+}
+
 fn grip_step(
     grip: &mut HashMap<PaneId, bool>,
     focused: PaneId,
@@ -2618,6 +2701,42 @@ mod tests {
 
     /// Just LOOKING at a team pane never produces a handback; only panes
     /// the user typed into do, and only once they leave.
+    #[test]
+    fn draft_mirrors_typing() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let k = |c, m| KeyEvent::new(c, m);
+        let mut d = String::new();
+        for c in "fix teh".chars() {
+            super::track_draft(&mut d, &k(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        super::track_draft(&mut d, &k(KeyCode::Backspace, KeyModifiers::NONE));
+        super::track_draft(&mut d, &k(KeyCode::Backspace, KeyModifiers::NONE));
+        super::track_draft(&mut d, &k(KeyCode::Char('h'), KeyModifiers::NONE));
+        super::track_draft(&mut d, &k(KeyCode::Char('e'), KeyModifiers::NONE));
+        super::track_draft(&mut d, &k(KeyCode::Enter, KeyModifiers::SHIFT));
+        super::track_draft(&mut d, &k(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(d, "fix the\nx");
+        super::track_draft(&mut d, &k(KeyCode::Char('a'), KeyModifiers::CONTROL)); // ignored
+        assert_eq!(d, "fix the\nx");
+        super::track_draft(&mut d, &k(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(d, "");
+        super::track_draft(&mut d, &k(KeyCode::Char('q'), KeyModifiers::NONE));
+        super::track_draft(&mut d, &k(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(d, "");
+    }
+
+    #[test]
+    fn send_guard_only_for_real_messages_to_another_session() {
+        use super::send_guard_applies as g;
+        let msg = "please review the auth diff";
+        assert!(g(None, PaneId(5), true, msg), "first message of the run asks");
+        assert!(g(Some(PaneId(3)), PaneId(5), true, msg), "switched session asks");
+        assert!(!g(Some(PaneId(5)), PaneId(5), true, msg), "same session flows");
+        assert!(!g(Some(PaneId(3)), PaneId(5), true, "y"), "prompt answers flow");
+        assert!(!g(Some(PaneId(3)), PaneId(5), true, "   1   "), "short after trim");
+        assert!(!g(Some(PaneId(3)), PaneId(5), false, msg), "plain shells never ask");
+    }
+
     #[test]
     fn grip_viewing_never_blocks_typing_does() {
         use super::grip_step;

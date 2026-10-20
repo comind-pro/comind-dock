@@ -208,6 +208,9 @@ pub struct UiCfg {
     pub mouse_capture: bool,
     pub mouse_scroll_lines: u16,
     pub confirm_close: bool,
+    /// First Enter in an agent session other than the one you last wrote to
+    /// asks "send to <space › session>?" — a second Enter sends.
+    pub confirm_send_after_switch: bool,
     pub prompt_new_tab_name: bool,
     pub hide_tab_bar_when_single_tab: bool,
     pub sound: SoundCfg,
@@ -221,6 +224,7 @@ impl Default for UiCfg {
             mouse_capture: true,
             mouse_scroll_lines: 3,
             confirm_close: false,
+            confirm_send_after_switch: true,
             prompt_new_tab_name: false,
             hide_tab_bar_when_single_tab: false,
             sound: SoundCfg::default(),

@@ -28,6 +28,8 @@ pub struct PaneMeta {
     pub behavior: Option<String>,
     /// User-given pane name (wins over the agent's OSC title).
     pub name: Option<String>,
+    /// Last message the user sent this pane (sidebar "what is it about").
+    pub task: Option<String>,
     /// SAVED pane id of this pane's orchestrator (teams map) — restore
     /// remaps it to the freshly allocated id.
     pub team: Option<u64>,
@@ -107,6 +109,9 @@ pub enum NodeSnap {
         behavior: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// Last message the user sent this pane.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
         /// Saved pane id of this pane's orchestrator (teams map).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         team: Option<u64>,
@@ -149,6 +154,7 @@ fn node_to_snap(node: &Node, panes: &std::collections::HashMap<PaneId, PaneMeta>
                 agent_bin: meta.agent_bin,
                 behavior: meta.behavior,
                 name: meta.name,
+                task: meta.task,
                 team: meta.team,
                 team_own: meta.team_own,
                 orch: meta.orch,
@@ -177,6 +183,7 @@ fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen, agents: &mut Vec<PaneSpawn>) -
             agent_bin,
             behavior,
             name,
+            task,
             team,
             team_own,
             orch,
@@ -193,6 +200,7 @@ fn snap_to_node(snap: &NodeSnap, ids: &mut IdGen, agents: &mut Vec<PaneSpawn>) -
                     agent_bin: agent_bin.clone(),
                     behavior: behavior.clone(),
                     name: name.clone(),
+                    task: task.clone(),
                     team: *team,
                     team_own: *team_own,
                     orch: *orch,
@@ -323,6 +331,8 @@ impl Snapshot {
             .min(workspaces.len() - 1);
         let pane_names =
             panes.iter().filter_map(|(id, m)| m.name.clone().map(|n| (*id, n))).collect();
+        let pane_tasks =
+            panes.iter().filter_map(|(id, m)| m.task.clone().map(|t| (*id, t))).collect();
         // Teams reference panes by SAVED id — remap through the fresh ids;
         // an entry whose orchestrator pane didn't restore is dropped.
         let saved_to_new: std::collections::HashMap<u64, PaneId> =
@@ -355,6 +365,7 @@ impl Snapshot {
         let orch_added = panes.iter().filter(|(_, m)| m.team_own).map(|(id, _)| *id).collect();
         let state = AppState {
             pane_names,
+            pane_tasks,
             teams,
             orchestrators,
             orch_dirs,
@@ -660,6 +671,7 @@ mod tests {
                 agent_bin: Some("/usr/local/bin/claude".into()),
                 behavior: Some("ws:researcher".into()),
                 name: Some("kafka refactor".into()),
+                task: Some("split the consumer by topic".into()),
                 team: None,
                 team_own: false,
                 orch: false,
@@ -680,6 +692,11 @@ mod tests {
         let agent: Vec<_> = panes.iter().filter(|(_, m)| m.agent.is_some()).collect();
         assert_eq!(agent.len(), 1, "exactly one pane remembers its agent");
         assert_eq!(agent[0].1.agent.as_deref(), Some("claude:uuid-1"));
+        assert_eq!(
+            restored.pane_task(agent[0].0),
+            Some("split the consumer by topic"),
+            "the session's task survives a restart"
+        );
         assert_eq!(
             agent[0].1.cwd.as_deref(),
             Some(std::path::Path::new("/projects/real-home")),

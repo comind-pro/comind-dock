@@ -221,6 +221,11 @@ pub struct AppState {
     /// state; persisted per pane in the snapshot.
     #[serde(default)]
     pub pane_names: std::collections::HashMap<PaneId, String>,
+    /// First line of the last message the USER sent to an agent pane —
+    /// "what is this session about", shown under its name in the sidebar.
+    /// Crosses the handoff with the state; persisted per pane in the snapshot.
+    #[serde(default)]
+    pub pane_tasks: std::collections::HashMap<PaneId, String>,
     /// Orchestrator teams: worker pane → the orchestrator pane it reports
     /// to. Assigned from the pane menu (or `team set`); orchestrators read
     /// their roster via `team list`. Crosses the handoff with the state;
@@ -363,6 +368,7 @@ impl AppState {
         let ws = Workspace::new(ids.workspace(), workspace_name, cwd, tab);
         Self {
             pane_names: std::collections::HashMap::new(),
+            pane_tasks: std::collections::HashMap::new(),
             teams: std::collections::HashMap::new(),
             orchestrators: std::collections::HashSet::new(),
             recent_orchestrators: Vec::new(),
@@ -495,6 +501,7 @@ impl AppState {
     /// Close a pane, cascading tab → workspace → app.
     pub fn close_pane(&mut self, pane: PaneId) -> CloseOutcome {
         self.pane_names.remove(&pane);
+        self.pane_tasks.remove(&pane);
         let wi =
             self.workspaces.iter().position(|w| w.tabs.iter().any(|t| t.layout.contains(pane)));
         let Some(wi) = wi else { return CloseOutcome::PaneRemoved };
@@ -885,6 +892,18 @@ impl AppState {
         }
     }
 
+    /// Record what the user just asked a pane (first non-empty line, capped).
+    pub fn set_pane_task(&mut self, pane: PaneId, message: &str) {
+        if let Some(line) = message.lines().map(str::trim).find(|l| !l.is_empty()) {
+            self.pane_tasks.insert(pane, line.chars().take(120).collect());
+        }
+    }
+
+    /// The last thing the user asked this pane, if any.
+    pub fn pane_task(&self, pane: PaneId) -> Option<&str> {
+        self.pane_tasks.get(&pane).map(String::as_str)
+    }
+
     /// The user's name for a pane, if any.
     pub fn pane_name(&self, pane: PaneId) -> Option<&str> {
         self.pane_names.get(&pane).map(String::as_str)
@@ -987,6 +1006,20 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pane_task_is_first_line_capped_and_dies_with_the_pane() {
+        let mut st = AppState::new("w".into(), std::path::PathBuf::from("/tmp"));
+        let p = st.focused_pane();
+        st.set_pane_task(p, "\n   \n  fix the login bug  \nmore detail");
+        assert_eq!(st.pane_task(p), Some("fix the login bug"));
+        st.set_pane_task(p, "   "); // nothing real typed: keep the old task
+        assert_eq!(st.pane_task(p), Some("fix the login bug"));
+        st.set_pane_task(p, &"x".repeat(500));
+        assert_eq!(st.pane_task(p).unwrap().chars().count(), 120);
+        st.close_pane(p);
+        assert_eq!(st.pane_task(p), None);
+    }
 
     #[test]
     fn new_state_is_valid() {

@@ -125,9 +125,14 @@ fn agent_rows(
     };
     // Orchestrator panes carry a ⌂ so the coordinator chat stands out in
     // the agent list.
+    // The session's colour bar takes the last indent column, so the row
+    // keeps its width; same colour as the pane's frame dot and its tab.
+    let bar_color = crate::ui::session_color(rt, pane).unwrap_or(theme.muted);
+    let lead = indent.strip_suffix(' ').unwrap_or(indent);
     out.push(Row {
         line: Line::from(vec![
-            Span::raw(indent.to_string()),
+            Span::raw(lead.to_string()),
+            Span::styled("▎", Style::new().fg(bar_color)),
             Span::styled(dot, dot_style),
             Span::styled(orch_mark, Style::new().fg(theme.accent)),
             Span::styled(role_mark, Style::new().fg(theme.accent)),
@@ -142,6 +147,17 @@ fn agent_rows(
         )),
         target: Some(Target::Pane(pane)),
     });
+    // What this session is about: the last thing the user asked it.
+    if let Some(task) = state.pane_task(pane) {
+        let budget = (width as usize).saturating_sub(indent.width() + 4).max(6);
+        out.push(Row {
+            line: Line::from(Span::styled(
+                format!("{indent}  › {}", crate::agents::truncate_clean(task, budget)),
+                Style::new().fg(theme.muted).add_modifier(Modifier::ITALIC),
+            )),
+            target: Some(Target::Pane(pane)),
+        });
+    }
 }
 
 /// Sidebar (mockup): one "spaces" section — each workspace shows a status dot,

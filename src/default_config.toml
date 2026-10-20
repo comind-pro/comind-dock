@@ -43,6 +43,9 @@ sidebar_width = 24
 mouse_capture = true
 mouse_scroll_lines = 3
 confirm_close = false
+# first Enter in a different agent session than the last one you wrote to
+# asks "send to <space › session>?" — Enter again sends, Esc cancels
+confirm_send_after_switch = true
 prompt_new_tab_name = false
 hide_tab_bar_when_single_tab = false
 

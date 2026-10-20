@@ -311,6 +311,14 @@ Designed, not yet implemented **(planned)**:
 
 ## 15. Mouse-Native UI
 
+- **Which session am I typing into** — every pane frame reads
+  `space › session · %id`; the focused pane gets a thick accent frame. Each
+  agent session wears a stable colour (● in its frame and tab, ▎ in the
+  sidebar), and the sidebar shows `› <your last message>` under it. The
+  first real message (12+ chars) to a session other than the one you last
+  wrote to is held: `↵ again → %id session · space` — Enter sends, Esc
+  cancels (`ui.confirm_send_after_switch`).
+
 - Click panes/tabs/workspaces/agents to focus; drag split borders to resize;
   right-click context menus (split, new tab, swap, close); drag-select to
   copy; double-click a token to copy it; scroll over the tab bar to switch

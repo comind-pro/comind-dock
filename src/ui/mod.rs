@@ -9,9 +9,45 @@ pub mod toast;
 pub mod view;
 
 use crate::runtime::Runtime;
+use crate::state::ids::PaneId;
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 use view::View;
+
+/// A stable colour per agent session, worn by its sidebar row, its tab and
+/// its frame — sessions told apart at a glance, not by reading. Status hues
+/// (red/green/yellow) are left out so a colour never reads as a state.
+// ponytail: keyed by pane id — a cold restore reassigns ids, so colours
+// reshuffle then; key by the agent's session ident if that ever matters.
+pub fn session_color(rt: &Runtime, pane: PaneId) -> Option<Color> {
+    const PALETTE: [u8; 8] = [39, 170, 208, 141, 45, 219, 99, 117];
+    rt.panes
+        .get(&pane)
+        .filter(|p| p.agent.is_some())
+        .map(|_| Color::Indexed(PALETTE[(pane.0 % PALETTE.len() as u64) as usize]))
+}
+
+/// The session's display name: the user's name, else the agent's OSC title,
+/// else the program.
+pub fn session_name(rt: &Runtime, pane: PaneId) -> String {
+    rt.state
+        .pane_name(pane)
+        .map(str::to_string)
+        .or_else(|| rt.titles.get(&pane).filter(|t| !t.trim().is_empty()).cloned())
+        .or_else(|| rt.panes.get(&pane).map(|p| p.program.clone()))
+        .unwrap_or_default()
+}
+
+/// Where a keystroke lands, spelled out: "space › session · %id". Frame
+/// headers and the send-guard banner use it.
+pub fn pane_header(rt: &Runtime, pane: PaneId) -> String {
+    let name = session_name(rt, pane);
+    match rt.state.locate_pane(pane) {
+        Some((wi, _)) => format!("{} › {name} · %{}", rt.state.workspaces[wi].name, pane.0),
+        None => format!("{name} · %{}", pane.0),
+    }
+}
 
 /// Phase 1 of the frame: all geometry and mutation. Splits the screen into
 /// tab bar / sidebar / content, computes pane rects, and propagates size
@@ -90,24 +126,23 @@ pub fn render(view: &View, rt: &Runtime, frame: &mut Frame) {
     // so adjacent panes read as separate cards (mockup look).
     for (id, rect) in &view.pane_rects {
         if let Some(p) = rt.panes.get(id) {
-            let title = rt
-                .titles
-                .get(id)
-                .filter(|t| !t.trim().is_empty())
-                .cloned()
-                .unwrap_or_else(|| p.program.clone());
             pane_widget::render(
                 &p.emu.term,
                 *rect,
                 frame,
                 *id == view.focused,
-                &title,
+                (&pane_header(rt, *id), session_color(rt, *id)),
                 &rt.theme,
                 if *id == view.focused { p.emu.focused_match() } else { None },
             );
         }
     }
     let full = frame.area();
+    if rt.confirm_send == Some(view.focused)
+        && let Some((_, r)) = view.pane_rects.iter().find(|(id, _)| *id == view.focused)
+    {
+        render_send_guard(rt, view.focused, *r, frame);
+    }
     toast::render(rt, full, frame);
 
     // Drag-drop hover highlight: above panes, below modals.
@@ -222,6 +257,34 @@ fn render_drop_highlight(
             }
         }
     }
+}
+
+/// The held-Enter question, pinned to the bottom of the pane it would send
+/// in: names the destination so a wrong session is caught before it acts.
+fn render_send_guard(rt: &Runtime, pane: PaneId, r: Rect, frame: &mut Frame) {
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::{Line, Span};
+    if r.width < 12 || r.height < 4 {
+        return;
+    }
+    let area = Rect { x: r.x + 1, y: r.y + r.height - 2, width: r.width - 2, height: 1 };
+    let budget = area.width as usize;
+    // Most telling first — a narrow pane truncates the tail, so the id and
+    // the session name must survive; "esc" is the last thing to lose.
+    let space = rt.state.locate_pane(pane).map(|(wi, _)| rt.state.workspaces[wi].name.as_str());
+    let name = crate::agents::truncate_clean(&session_name(rt, pane), 28);
+    let text = match space {
+        Some(sp) => format!(" ↵ again → %{} {name} · {sp} · esc cancel ", pane.0),
+        None => format!(" ↵ again → %{} {name} · esc cancel ", pane.0),
+    };
+    let text = crate::agents::truncate_clean(&text, budget);
+    let style = Style::new().fg(Color::Black).bg(rt.theme.accent).add_modifier(Modifier::BOLD);
+    frame.render_widget(ratatui::widgets::Clear, area);
+    frame.render_widget(
+        ratatui::widgets::Paragraph::new(Line::from(Span::styled(text, style)))
+            .style(Style::new().bg(rt.theme.accent)),
+        area,
+    );
 }
 
 #[cfg(test)]

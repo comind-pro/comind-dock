@@ -28,6 +28,9 @@ struct Segment {
     text: String,
     hit: Option<Hit>,
     active: bool,
+    /// Session colour of the tab's focused agent: its first glyph (●) is
+    /// drawn in it. Same width either way, so hit-testing is unaffected.
+    dot: Option<Color>,
 }
 
 /// A tab whose name was never changed from its numeric default shows the
@@ -96,26 +99,31 @@ fn segments(rt: &Runtime, width: u16) -> Vec<Segment> {
     let state = &rt.state;
     let ws = state.active_workspace();
     let lead = if state.sidebar_visible {
-        Segment { text: " ".into(), hit: None, active: false }
+        Segment { text: " ".into(), hit: None, active: false, dot: None }
     } else {
-        Segment { text: " ≡  ".into(), hit: Some(Hit::ShowSidebar), active: false }
+        Segment { text: " ≡  ".into(), hit: Some(Hit::ShowSidebar), active: false, dot: None }
     };
-    let plus = Segment { text: "  +  ".into(), hit: Some(Hit::NewTab), active: false };
+    let plus = Segment { text: "  +  ".into(), hit: Some(Hit::NewTab), active: false, dot: None };
     let tab_segs: Vec<(Segment, Segment)> = (0..ws.tabs.len())
         .map(|ti| {
             let active = ti == ws.active_tab;
             let zoomed = active && ws.tabs[ti].zoomed.is_some();
             (
-                Segment {
-                    text: format!(
-                        "  {}{} ✕ ",
-                        tab_label(rt, state, ti),
-                        if zoomed { " [Z]" } else { "" }
-                    ),
-                    hit: Some(Hit::Tab(ti)),
-                    active,
+                {
+                    let dot = crate::ui::session_color(rt, ws.tabs[ti].focused_pane);
+                    Segment {
+                        text: format!(
+                            " {} {}{} ✕ ",
+                            if dot.is_some() { "●" } else { " " },
+                            tab_label(rt, state, ti),
+                            if zoomed { " [Z]" } else { "" }
+                        ),
+                        hit: Some(Hit::Tab(ti)),
+                        active,
+                        dot,
+                    }
                 },
-                Segment { text: " ".into(), hit: None, active: false },
+                Segment { text: " ".into(), hit: None, active: false, dot: None },
             )
         })
         .collect();
@@ -131,6 +139,7 @@ fn segments(rt: &Runtime, width: u16) -> Vec<Segment> {
             text: " ‹ ".into(),
             hit: Some(Hit::Tab(ws.active_tab.saturating_sub(1))),
             active: false,
+            dot: None,
         });
     }
     for (i, (tab, gap)) in tab_segs.into_iter().enumerate() {
@@ -144,6 +153,7 @@ fn segments(rt: &Runtime, width: u16) -> Vec<Segment> {
             text: " › ".into(),
             hit: Some(Hit::Tab((ws.active_tab + 1).min(widths.len() - 1))),
             active: false,
+            dot: None,
         });
     }
     out.push(plus);
@@ -153,7 +163,7 @@ fn segments(rt: &Runtime, width: u16) -> Vec<Segment> {
 pub fn render(rt: &Runtime, theme: &Theme, area: Rect, frame: &mut Frame) {
     let mut spans: Vec<Span> = segments(rt, area.width)
         .into_iter()
-        .map(|s| {
+        .flat_map(|s| {
             let style = if s.active {
                 Style::new().fg(Color::Black).bg(theme.accent)
             } else if matches!(s.hit, Some(Hit::NewTab)) {
@@ -163,7 +173,15 @@ pub fn render(rt: &Runtime, theme: &Theme, area: Rect, frame: &mut Frame) {
             } else {
                 Style::new()
             };
-            Span::styled(s.text, style)
+            match s.dot {
+                // " ● label ✕ " — colour the dot, keep the rest of the style.
+                Some(c) if s.text.starts_with(" ● ") => vec![
+                    Span::styled(" ", style),
+                    Span::styled("●", style.fg(c)),
+                    Span::styled(s.text[" ●".len()..].to_string(), style),
+                ],
+                _ => vec![Span::styled(s.text, style)],
+            }
         })
         .collect();
     // ✕ pinned to the right edge (quit + save session).
@@ -285,9 +303,9 @@ mod tests {
         // A couple of tab segments plus the `+` (NewTab) segment, same shape
         // `segments()` produces: widths 2, 3, 1 at cursors 0, 2, 5.
         let segs = vec![
-            Segment { text: "AA".into(), hit: Some(Hit::Tab(0)), active: false },
-            Segment { text: "BBB".into(), hit: Some(Hit::Tab(1)), active: false },
-            Segment { text: "+".into(), hit: Some(Hit::NewTab), active: false },
+            Segment { text: "AA".into(), hit: Some(Hit::Tab(0)), active: false, dot: None },
+            Segment { text: "BBB".into(), hit: Some(Hit::Tab(1)), active: false, dot: None },
+            Segment { text: "+".into(), hit: Some(Hit::NewTab), active: false, dot: None },
         ];
 
         // (a) TabDrop::Tab(id) returns the segment's exact span.
