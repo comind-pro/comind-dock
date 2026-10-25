@@ -28,7 +28,7 @@ prefix = "ctrl+b"
 # Actions: split_right, split_down, focus_left/down/up/right,
 # swap_left/down/up/right, resize_mode, zoom, close_pane, new_tab, next_tab,
 # prev_tab, rename_tab, close_tab, new_workspace, rename_workspace,
-# close_workspace, next_workspace, toggle_sidebar, help, quit.
+# close_workspace, next_workspace, filter_spaces, toggle_sidebar, help, quit.
 # prefix+1..9 always jumps to tab 1..9.
 
 # Custom bindings. type = "pane" runs in a new tab; "shell" runs silently.

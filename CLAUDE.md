@@ -35,7 +35,8 @@ server (`$!`), or match the dev name exactly: `pgrep -f "cdock-dev --server"`.
 `cargo clippy --all-targets` clean and `cargo test` green before every
 commit. New behavior gets a test or a sandboxed end-to-end check.
 UI input changes (focus, send guard, frame/sidebar labels) run
-`python3 scripts/e2e-send-guard.py` (real client in a pty, sandboxed).
+`python3 scripts/e2e-send-guard.py` (real client in a pty, sandboxed);
+sidebar space list (sort, favorites, filter) runs `python3 scripts/e2e-spaces.py`.
 Orchestration/team/api changes also run `sh scripts/e2e-orchestrator.sh`
 (throwaway cdock-dev server, never the live session) — extend it with the
 new behavior.

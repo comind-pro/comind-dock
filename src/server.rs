@@ -108,6 +108,8 @@ fn enter(rt: &mut Runtime, c: &mut Client) {
 }
 
 fn leave(rt: &mut Runtime, c: &mut Client) {
+    // Whatever a client was just shown counts as used: the "recent" sort.
+    rt.state.touch_active();
     c.scope = rt.state.scope.take();
     c.input_mode = std::mem::take(&mut rt.state.input_mode);
     c.sidebar_scroll = rt.sidebar_scroll;

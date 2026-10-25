@@ -58,6 +58,13 @@ The organizational model: **workspace → tab → pane**.
   declaratively **(planned)**.
 - **Sidebar** — the main dashboard of workspaces/tabs/panes/agents. Toggle
   `prefix+b`; collapsed mode compact or hidden.
+- **Space sort, favorites, filter** — click the `spaces ⇅ …` header to cycle
+  the sort: manual (creation order) → recent (last looked at) → a–z.
+  Right-click a space → `★ favorite` pins it on top in every sort. `⌕` on
+  the header (or `prefix+f`) filters live by space name, folder, branch, and
+  its agents' names/titles/tasks (all words must match); Enter keeps the
+  filter, `✕` on the filter row clears it. Sort and favorites persist in the
+  session; the filter does not. E2E: `python3 scripts/e2e-spaces.py`.
 - **Session navigator** — searchable workspace/tab/pane tree with agent-state
   filters, mouse and keyboard navigation. Key `prefix+g`.
 - **Folder-scoped attach** — `cdock -f [path]` (default: current directory)

@@ -198,6 +198,19 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                     Some(sidebar::Target::CollapseSidebar) => {
                         rt.state.sidebar_visible = false;
                     }
+                    Some(sidebar::Target::SpaceSort) => {
+                        rt.state.space_sort = rt.state.space_sort.next();
+                        rt.save_session();
+                    }
+                    Some(sidebar::Target::SpaceFilter) => {
+                        rt.state.input_mode = InputMode::Prompt {
+                            kind: crate::state::PromptKind::FilterSpaces,
+                            buffer: rt.state.space_filter.clone(),
+                        };
+                    }
+                    Some(sidebar::Target::ClearFilter) => {
+                        rt.state.space_filter.clear();
+                    }
                     Some(sidebar::Target::AppMenu) => {
                         rt.state.input_mode = InputMode::Menu {
                             x: ev.column,
@@ -562,12 +575,9 @@ pub fn handle(rt: &mut Runtime, ev: MouseEvent, area: Rect) -> InputOutcome {
                 ) {
                     Some(sidebar::Target::Workspace(wi)) => {
                         rt.state.active_workspace = wi;
-                        let ws_id = rt.state.workspaces[wi].id;
-                        rt.state.input_mode = InputMode::Menu {
-                            x: ev.column,
-                            y: ev.row,
-                            items: menu::space_items(ws_id),
-                        };
+                        let ws = &rt.state.workspaces[wi];
+                        let items = menu::space_items(ws.id, ws.favorite);
+                        rt.state.input_mode = InputMode::Menu { x: ev.column, y: ev.row, items };
                         rt.mark_dirty();
                     }
                     // Agent row: the options menu (behavior, focus, close).
@@ -706,6 +716,14 @@ fn run_menu_action(
                     kind: PromptKind::RenameWorkspace(ws),
                     buffer: String::new(),
                 };
+            }
+            Ok(())
+        }
+        MenuAction::ToggleFavorite(ws) => {
+            if let Some(wi) = rt.state.workspace_index(ws) {
+                let w = &mut rt.state.workspaces[wi];
+                w.favorite = !w.favorite;
+                rt.save_session();
             }
             Ok(())
         }

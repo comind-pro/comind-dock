@@ -41,7 +41,7 @@ screen history) lives in `$XDG_STATE_HOME/comind-dock`
   `split_down`, `focus_left/down/up/right`, `swap_*`, `resize_mode`,
   `zoom`, `close_pane`, `new_tab`, `next_tab`, `prev_tab`, `rename_tab`,
   `close_tab`, `new_workspace`, `rename_workspace`, `close_workspace`,
-  `next_workspace`, `toggle_sidebar`, `help`, `quit`. `prefix+1..9` jumps
+  `next_workspace`, `filter_spaces` (f), `toggle_sidebar`, `help`, `quit`. `prefix+1..9` jumps
   to tab 1..9.
 - `[[keys.command]]` — custom bindings: `key`, `type = "pane" | "shell"`,
   `command`, optional `description` (shown in the help overlay).

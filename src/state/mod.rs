@@ -23,6 +23,8 @@ pub enum PromptKind {
     NewProfile(Option<std::path::PathBuf>),
     /// Custom name for a pane / agent session (empty clears it).
     RenamePane(ids::PaneId),
+    /// Sidebar space filter (live while typing; empty clears it).
+    FilterSpaces,
     /// Command an orchestrator should run (claude, claude-oleh, codex…).
     OrchestratorCommand,
     /// New agent command for an EXISTING orchestrator (in-place switch).
@@ -47,6 +49,7 @@ pub enum MenuAction {
     ClosePane(ids::PaneId),
     RenameSpace(ids::WorkspaceId),
     CloseSpace(ids::WorkspaceId),
+    ToggleFavorite(ids::WorkspaceId),
     NewWorktree(ids::WorkspaceId),
     ListWorktrees(ids::WorkspaceId),
     OpenWorktree(ids::WorkspaceId, std::path::PathBuf),
@@ -270,6 +273,13 @@ pub struct AppState {
     /// them. Capped at RECENT_SPACES.
     #[serde(default)]
     pub recent_spaces: Vec<RecentSpace>,
+    /// Sidebar order of spaces; cycled from the "spaces" header.
+    #[serde(default)]
+    pub space_sort: workspace::SpaceSort,
+    /// Sidebar filter (⌕ on the "spaces" header): spaces whose name, folder,
+    /// branch or agents match. Empty = all. Session-wide, not persisted.
+    #[serde(default)]
+    pub space_filter: String,
     #[serde(default)]
     ids: IdGen,
 }
@@ -379,6 +389,8 @@ impl AppState {
             team_roles: std::collections::HashMap::new(),
             orch_added: std::collections::HashSet::new(),
             recent_spaces: Vec::new(),
+            space_sort: workspace::SpaceSort::default(),
+            space_filter: String::new(),
             workspaces: vec![ws],
             active_workspace: 0,
             sidebar_visible: true,
@@ -668,6 +680,21 @@ impl AppState {
     /// Panes of any workspace by index (close-space from the menu).
     /// Workspace index by public id — menu/prompt actions hold ids because
     /// indexes shift whenever a workspace closes underneath an open modal.
+    /// Stamp the active space as just looked at (the "recent" sort).
+    pub fn touch_active(&mut self) {
+        if let Some(w) = self.workspaces.get_mut(self.active_workspace) {
+            w.last_used = workspace::now_ms();
+        }
+    }
+
+    /// The sidebar filter in effect: the prompt's buffer while it is typed.
+    pub fn live_space_filter(&self) -> &str {
+        match &self.input_mode {
+            InputMode::Prompt { kind: PromptKind::FilterSpaces, buffer } => buffer,
+            _ => &self.space_filter,
+        }
+    }
+
     pub fn workspace_index(&self, id: ids::WorkspaceId) -> Option<usize> {
         self.workspaces.iter().position(|w| w.id == id)
     }

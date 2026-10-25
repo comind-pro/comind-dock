@@ -84,8 +84,9 @@ pub fn tab_items(tab: crate::state::ids::TabId) -> Vec<MenuItem> {
     .collect()
 }
 
-pub fn space_items(ws: crate::state::ids::WorkspaceId) -> Vec<MenuItem> {
+pub fn space_items(ws: crate::state::ids::WorkspaceId, favorite: bool) -> Vec<MenuItem> {
     [
+        (if favorite { "☆ unfavorite" } else { "★ favorite" }, MenuAction::ToggleFavorite(ws)),
         ("rename", MenuAction::RenameSpace(ws)),
         ("close", MenuAction::CloseSpace(ws)),
         ("new worktree", MenuAction::NewWorktree(ws)),

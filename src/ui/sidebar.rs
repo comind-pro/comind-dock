@@ -21,6 +21,12 @@ pub enum Target {
     ContinueAgent,
     /// The « at the menu row's right edge: hide the sidebar.
     CollapseSidebar,
+    /// "spaces ⇅ recent" header: cycle the sort.
+    SpaceSort,
+    /// ⌕ at the header's right edge, or the filter row: type a filter.
+    SpaceFilter,
+    /// ✕ at the filter row's right edge.
+    ClearFilter,
 }
 
 /// Clickable width of the « collapse zone at the menu row's right edge.
@@ -236,29 +242,73 @@ fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
         });
     }
 
+    // Header: the sort (click cycles it) and ⌕ at the right edge (filter).
+    let sort = format!(" ⇅ {}", state.space_sort.word());
+    let pad = (width as usize).saturating_sub(" spaces".width() + sort.width() + 2);
     out.push(Row {
-        line: Line::from(Span::styled(
-            " spaces",
-            Style::new().fg(theme.muted).add_modifier(Modifier::BOLD),
-        )),
-        target: None,
+        line: Line::from(vec![
+            Span::styled(" spaces", Style::new().fg(theme.muted).add_modifier(Modifier::BOLD)),
+            Span::styled(sort, Style::new().fg(theme.muted)),
+            Span::raw(" ".repeat(pad)),
+            Span::styled("⌕ ", Style::new().fg(theme.accent)),
+        ]),
+        target: Some(Target::SpaceSort),
     });
+    let filter = state.live_space_filter();
+    let typing = matches!(
+        state.input_mode,
+        crate::state::InputMode::Prompt { kind: crate::state::PromptKind::FilterSpaces, .. }
+    );
+    if typing || !filter.is_empty() {
+        let text = crate::agents::truncate_clean(
+            &format!("{filter}{}", if typing { "▏" } else { "" }),
+            (width as usize).saturating_sub(7).max(4),
+        );
+        let pad = (width as usize).saturating_sub(4 + text.width() + 2);
+        out.push(Row {
+            line: Line::from(vec![
+                Span::styled("  ⌕ ", Style::new().fg(theme.accent)),
+                Span::styled(text, Style::new().add_modifier(Modifier::BOLD)),
+                Span::raw(" ".repeat(pad)),
+                Span::styled("✕ ", Style::new().fg(theme.muted)),
+            ]),
+            target: Some(Target::SpaceFilter),
+        });
+    }
 
-    for (wi, ws) in state.workspaces.iter().enumerate() {
-        if !state.in_scope(wi) {
-            continue;
-        }
-        // A space that holds ONLY orchestrators (their home space) has
-        // nothing to say here — its chats live in the pinned block above.
-        let ws_panes: Vec<PaneId> = ws.tabs.iter().flat_map(|t| t.layout.panes()).collect();
-        if !ws_panes.is_empty() && ws_panes.iter().all(|p| state.orchestrators.contains(p)) {
-            continue;
-        }
+    let terms: Vec<String> = filter.split_whitespace().map(str::to_lowercase).collect();
+    let shown: Vec<usize> = (0..state.workspaces.len())
+        .filter(|&wi| state.in_scope(wi))
+        .filter(|&wi| {
+            // A space that holds ONLY orchestrators (their home space) has
+            // nothing to say here — its chats live in the pinned block above.
+            let ws_panes: Vec<PaneId> =
+                state.workspaces[wi].tabs.iter().flat_map(|t| t.layout.panes()).collect();
+            ws_panes.is_empty() || !ws_panes.iter().all(|p| state.orchestrators.contains(p))
+        })
+        .filter(|&wi| {
+            terms.is_empty() || {
+                let hay = space_haystack(rt, wi);
+                terms.iter().all(|t| hay.contains(t.as_str()))
+            }
+        })
+        .collect();
+    let order = crate::state::workspace::space_order(&state.workspaces, &shown, state.space_sort);
+    if order.is_empty() && !terms.is_empty() {
+        out.push(Row {
+            line: Line::from(Span::styled("  no matching spaces", Style::new().fg(theme.muted))),
+            target: Some(Target::SpaceFilter),
+        });
+    }
+
+    for wi in order.iter().copied() {
+        let ws = &state.workspaces[wi];
         // A blank line before each space separates the groups so a long list
         // doesn't read as one wall of text.
         out.push(Row { line: Line::from(""), target: None });
         let active = wi == state.active_workspace;
-        let child = ws.parent.is_some();
+        // Indented only under a parent that is actually listed above it.
+        let child = ws.parent.is_some_and(|p| order.iter().any(|&j| state.workspaces[j].id == p));
         let indent = if child { "  " } else { "" };
         let name_style = if active {
             Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
@@ -277,10 +327,15 @@ fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
             parts.push(format!("{tabs}·{panes}"));
         }
         let subtitle = parts.join(" · ");
-        let name = crate::agents::truncate_clean(&ws.name, 20);
-        let pad =
-            (width as usize).saturating_sub(indent.width() + name.width() + subtitle.width() + 1);
-        let mut spans = vec![Span::raw(indent.to_string()), Span::styled(name, name_style)];
+        let star = if ws.favorite { "★ " } else { "" };
+        let name = crate::agents::truncate_clean(&ws.name, 20 - star.width());
+        let pad = (width as usize)
+            .saturating_sub(indent.width() + star.width() + name.width() + subtitle.width() + 1);
+        let mut spans = vec![
+            Span::raw(indent.to_string()),
+            Span::styled(star, Style::new().fg(Color::Yellow)),
+            Span::styled(name, name_style),
+        ];
         if !subtitle.is_empty() {
             spans.push(Span::raw(" ".repeat(pad.max(1))));
             spans.push(Span::styled(subtitle, Style::new().fg(theme.muted)));
@@ -310,6 +365,29 @@ fn rows(rt: &Runtime, theme: &Theme, width: u16) -> Vec<Row> {
     out
 }
 
+/// Lowercased text a filter term may hit: the space's name, folder and
+/// branch, plus each agent's name, title and task.
+fn space_haystack(rt: &Runtime, wi: usize) -> String {
+    let state = &rt.state;
+    let ws = &state.workspaces[wi];
+    let mut hay = format!("{} {}", ws.name, ws.cwd.display());
+    if let Some(b) = rt.branches.get(&ws.id) {
+        hay.push(' ');
+        hay.push_str(b);
+    }
+    for pane in ws.tabs.iter().flat_map(|t| t.layout.panes()) {
+        for s in
+            [state.pane_name(pane), rt.titles.get(&pane).map(String::as_str), state.pane_task(pane)]
+                .into_iter()
+                .flatten()
+        {
+            hay.push(' ');
+            hay.push_str(s);
+        }
+    }
+    hay.to_lowercase()
+}
+
 /// Scroll offset clamped so the last row stays reachable.
 fn clamped_scroll(rt: &Runtime, row_count: usize, height: u16) -> u16 {
     rt.sidebar_scroll.min((row_count as u16).saturating_sub(height))
@@ -333,6 +411,12 @@ pub fn hit(rt: &Runtime, theme: &Theme, x: u16, y: u16, size: (u16, u16)) -> Opt
     match rows.get((y + scroll) as usize).and_then(|r| r.target) {
         Some(Target::AppMenu) if x >= width.saturating_sub(COLLAPSE_ZONE) => {
             Some(Target::CollapseSidebar)
+        }
+        Some(Target::SpaceSort) if x >= width.saturating_sub(COLLAPSE_ZONE) => {
+            Some(Target::SpaceFilter)
+        }
+        Some(Target::SpaceFilter) if x >= width.saturating_sub(COLLAPSE_ZONE) => {
+            Some(Target::ClearFilter)
         }
         t => t,
     }

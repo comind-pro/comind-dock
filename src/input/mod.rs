@@ -30,6 +30,7 @@ pub enum Action {
     RenameWorkspace,
     CloseWorkspace,
     CycleWorkspace,
+    FilterSpaces,
     ToggleSidebar,
     Search,
     ScrollbackEditor,
@@ -62,6 +63,7 @@ impl Action {
             Action::RenameWorkspace => "rename workspace",
             Action::CloseWorkspace => "close workspace",
             Action::CycleWorkspace => "next workspace",
+            Action::FilterSpaces => "filter spaces",
             Action::ToggleSidebar => "toggle sidebar",
             Action::Search => "search scrollback",
             Action::ScrollbackEditor => "scrollback in $EDITOR",
@@ -103,6 +105,7 @@ pub fn default_actions() -> Vec<(&'static str, &'static [&'static str], Action)>
         ("rename_workspace", &["W"], Action::RenameWorkspace),
         ("close_workspace", &["D"], Action::CloseWorkspace),
         ("next_workspace", &["o"], Action::CycleWorkspace),
+        ("filter_spaces", &["f"], Action::FilterSpaces),
         ("toggle_sidebar", &["b"], Action::ToggleSidebar),
         ("search", &["/"], Action::Search),
         ("scrollback_editor", &["e"], Action::ScrollbackEditor),
@@ -332,6 +335,13 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<Inp
                     let name = buffer.trim().to_string();
                     // Rename-pane accepts the empty string: it clears the
                     // custom name and falls back to the agent's own title.
+                    // Empty submit clears the filter: every space back.
+                    if let PromptKind::FilterSpaces = kind {
+                        rt.state.space_filter = name;
+                        rt.sidebar_scroll = 0;
+                        rt.state.input_mode = InputMode::Terminal;
+                        return Ok(InputOutcome::Continue);
+                    }
                     if let PromptKind::RenamePane(pane) = kind {
                         rt.rename_pane(pane, name);
                         rt.state.input_mode = InputMode::Terminal;
@@ -386,7 +396,9 @@ pub fn handle_key(rt: &mut Runtime, key: KeyEvent, area: Rect) -> io::Result<Inp
                                 }
                                 return Ok(InputOutcome::Continue);
                             }
-                            PromptKind::RenamePane(_) => unreachable!("handled above"),
+                            PromptKind::RenamePane(_) | PromptKind::FilterSpaces => {
+                                unreachable!("handled above")
+                            }
                             PromptKind::OrchestratorCommand => {
                                 rt.state.input_mode = InputMode::Terminal;
                                 if let Err(e) = rt.start_orchestrator(&name, None, None, None, area)
@@ -571,6 +583,13 @@ fn dispatch(rt: &mut Runtime, action: Action, area: Rect) -> io::Result<InputOut
             }
         }
         Action::CycleWorkspace => rt.state.cycle_workspace(),
+        Action::FilterSpaces => {
+            rt.state.sidebar_visible = true;
+            rt.state.input_mode = InputMode::Prompt {
+                kind: PromptKind::FilterSpaces,
+                buffer: rt.state.space_filter.clone(),
+            };
+        }
         Action::ToggleSidebar => rt.state.sidebar_visible = !rt.state.sidebar_visible,
         Action::Search => rt.state.input_mode = InputMode::Search { buffer: String::new() },
         Action::ScrollbackEditor => {

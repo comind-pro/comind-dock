@@ -97,6 +97,7 @@ pub fn render_prompt(
         PromptKind::OrchestratorCommand => " new orchestrator: command to run ",
         PromptKind::OrchestratorSwitch(_) => " switch orchestrator agent: command ",
         PromptKind::OrchestratorFolderCommand(_) => " continue orchestrator with agent: command ",
+        PromptKind::FilterSpaces => " filter spaces: name, folder, branch, agent ",
     };
     render_input_box(title, buffer, theme, area, frame);
 }

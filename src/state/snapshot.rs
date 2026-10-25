@@ -57,6 +57,8 @@ pub struct Snapshot {
     /// Closed orchestrators the "new orchestrator" menu relaunches.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recent_orchestrators: Vec<crate::state::RecentOrchestrator>,
+    #[serde(default)]
+    pub space_sort: crate::state::workspace::SpaceSort,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -80,6 +82,10 @@ pub struct WsSnap {
     /// The space's default agent profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub favorite: bool,
+    #[serde(default)]
+    pub last_used: u64,
     pub active_tab: usize,
     pub tabs: Vec<TabSnap>,
 }
@@ -228,6 +234,7 @@ impl Snapshot {
         Snapshot {
             active_workspace: state.active_workspace,
             recent_orchestrators: state.recent_orchestrators.clone(),
+            space_sort: state.space_sort,
             recent: state
                 .recent_spaces
                 .iter()
@@ -248,6 +255,8 @@ impl Snapshot {
                         .parent
                         .and_then(|pid| state.workspaces.iter().position(|w| w.id == pid)),
                     profile: ws.profile.clone(),
+                    favorite: ws.favorite,
+                    last_used: ws.last_used,
                     active_tab: ws.active_tab,
                     tabs: ws
                         .tabs
@@ -305,6 +314,8 @@ impl Snapshot {
                 profile: ws.profile.clone(),
                 tabs,
                 active_tab,
+                favorite: ws.favorite,
+                last_used: ws.last_used,
             });
         }
         if workspaces.is_empty() {
@@ -389,6 +400,8 @@ impl Snapshot {
                 .collect(),
             workspaces,
             active_workspace,
+            space_sort: self.space_sort,
+            space_filter: String::new(),
             sidebar_visible: true,
             scope: None,
             input_mode: InputMode::Terminal,
